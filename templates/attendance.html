@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Attendance — Team tracker{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Log attendance</h2>
+  <p class="lead">Type your name — roster suggestions appear as you type. Same person + day updates the row.</p>
+
+  <form method="post" action="{{ url_for('attendance') }}">
+    {% include "partials/csrf.html" %}
+    <div class="grid-2">
+      <div class="field">
+        <label for="employee_name">Your name</label>
+        <input id="employee_name" name="employee_name" type="text" required autocomplete="off" value="{{ form.get('employee_name', '') }}" />
+      </div>
+      <div class="field">
+        <label for="work_date">Date</label>
+        <input id="work_date" name="work_date" type="date" required value="{{ form.get('work_date', '') }}" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="status">Status</label>
+      <select id="status" name="status" required>
+        <option value="">Select…</option>
+        {% for value, label in statuses %}
+          <option value="{{ value }}" {% if form.get('status') == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="note">Optional note</label>
+      <input id="note" name="note" type="text" placeholder="e.g. late start, doctor appointment" value="{{ form.get('note', '') }}" />
+    </div>
+
+    <button type="submit">Save attendance</button>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='name_autocomplete.js') }}"></script>
+<script>
+  setupEmployeeAutocomplete("employee_name");
+</script>
+{% endblock %}

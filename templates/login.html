@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Sign in — TEAM PORTAL{% endblock %}
+{% block body_class %}login-body{% endblock %}
+{% block extra_head %}
+<style>
+/* --- Glassmorphic login page --- */
+.login-body{background:#13112c;min-height:100vh;overflow-x:hidden}
+.login-body .wrap{max-width:100%;padding:0}
+.login-body .site{display:none}
+.login-body .main-content{padding:0;margin:0;max-width:100%}
+.login-shell{position:relative;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem 1.25rem}
+.login-bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.login-bg::before,.login-bg::after{content:'';position:absolute;border-radius:50%;filter:blur(140px);opacity:.35}
+.login-bg::before{width:480px;height:480px;top:-80px;left:-100px;background:radial-gradient(circle,#6366f1 0%,transparent 70%)}
+.login-bg::after{width:600px;height:600px;bottom:-120px;right:-120px;background:radial-gradient(circle,#a855f7 0%,transparent 70%)}
+.login-top-bar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;justify-content:space-between;padding:.85rem 1.5rem}
+.login-brand{display:flex;align-items:center;gap:.55rem;font-weight:800;font-size:.95rem;color:#e2e8f0;letter-spacing:.06em}
+.login-brand svg{width:22px;height:22px;fill:none;stroke:#f1f5f9}
+.login-status-pill{font-size:.85rem;color:#94a3b8;background:rgba(30, 32, 60, 0.65);border-left:3px solid #10b981;border-radius:6px;padding:.5rem 1rem}
+.login-grid{position:relative;z-index:5;display:grid;grid-template-columns:1fr 1fr;gap:2rem;width:100%;max-width:56rem}
+.login-card{background:rgba(30,32,60,.65);backdrop-filter:blur(28px) saturate(1.3);-webkit-backdrop-filter:blur(28px) saturate(1.3);border:1px solid rgba(255,255,255,.04);border-radius:1.15rem;padding:2.2rem 2rem 2rem}
+.login-card-title{font-size:1.45rem;font-weight:800;color:#f1f5f9;margin:0 0 .55rem;letter-spacing:-.01em;text-align:center}
+.login-card-desc{font-size:.82rem;color:#94a3b8;line-height:1.5;margin:0 0 1.5rem;text-align:center}
+.login-card-desc strong{color:#e2e8f0}
+.login-label{display:block;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;margin-bottom:.4rem}
+.login-input{display:block;width:100%;font-size:.88rem;padding:.65rem .8rem;border-radius:.55rem;border:1px solid rgba(255,255,255,.05);background:rgba(10,10,25,.5);color:#f1f5f9;outline:none;transition:border-color .15s}
+.login-input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.18)}
+.login-input::placeholder{color:#475569}
+.login-field{margin-bottom:1.1rem}
+.login-btn{display:block;width:100%;font-size:.88rem;font-weight:700;text-align:center;padding:.72rem 1rem;border-radius:.55rem;border:none;cursor:pointer;transition:all .15s}
+.login-btn-primary{background:rgba(40,42,80,.8);color:#f1f5f9;border:1px solid rgba(255,255,255,.05)}
+.login-btn-primary:hover{background:rgba(50,52,95,.9);transform:translateY(-1px)}
+.login-btn-secondary{background:#6366f1;color:#fff}
+.login-btn-secondary:hover{background:#818cf8;transform:translateY(-1px)}
+.login-footer-text{font-size:.78rem;color:#64748b;text-align:center;margin-top:1.2rem}
+.login-footer-text a{color:#a78bfa;text-decoration:none;font-weight:600}
+.login-footer-text a:hover{text-decoration:underline}
+.login-otp-meta{display:flex;align-items:center;gap:.65rem;margin-top:.75rem;flex-wrap:wrap}
+.login-otp-link{font-size:.78rem;font-weight:600;color:#a78bfa;cursor:pointer;background:none;border:none;text-decoration:none;padding:0}
+.login-otp-link:hover{text-decoration:underline}
+@media(max-width:740px){.login-grid{grid-template-columns:1fr;max-width:28rem}}
+
+.flash-stack{position:relative;z-index:10;padding:0 1.25rem}
+</style>
+{% endblock %}
+{% block content %}
+<div class="login-shell">
+  <div class="login-bg"></div>
+  <div class="login-top-bar">
+    <span class="login-brand">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2L2 7L12 12L22 7L12 2Z"/>
+        <path d="M2 12L12 17L22 12"/>
+        <path d="M2 17L12 22L22 17"/>
+      </svg>
+      TEAM PORTAL
+    </span>
+    <span class="login-status-pill">
+      {% if portal_user %}Signed in as {{ portal_user.name }}{% elif manager_logged_in %}Manager{% else %}Signed out.{% endif %}
+    </span>
+  </div>
+
+  <div class="login-grid">
+    {# ── LEFT: Employee Portal ── #}
+    <div class="login-card">
+      {% if portal_otp_pending_email %}
+        <h2 class="login-card-title">Verify Code</h2>
+        <p class="login-card-desc">Enter the 6-digit code sent to <strong>{{ portal_otp_pending_email }}</strong>.</p>
+        <form method="post" action="{{ url_for('portal_email_otp_verify') }}">
+          {% include "partials/csrf.html" %}
+          <div class="login-field">
+            <label class="login-label" for="otp-code">One-Time Code</label>
+            <input class="login-input" id="otp-code" name="code" type="text" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" maxlength="14" required placeholder="123456" />
+          </div>
+          <button type="submit" class="login-btn login-btn-primary">Verify &amp; Sign In</button>
+        </form>
+        <div class="login-otp-meta">
+          <form method="post" action="{{ url_for('portal_email_otp_send') }}" style="display:inline">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="email" value="{{ portal_otp_pending_email }}" />
+            <button type="submit" class="login-otp-link">Resend code</button>
+          </form>
+          <a href="{{ url_for('portal_email_otp_cancel') }}" class="login-otp-link">Use a different email</a>
+        </div>
+      {% else %}
+        <h2 class="login-card-title">Employee Portal</h2>
+        <p class="login-card-desc">Access your dashboard, apply for leave, and manage your Sprint tasks.</p>
+        <form method="post" action="{{ url_for('login_page') }}">
+          {% include "partials/csrf.html" %}
+          <input type="hidden" name="gate_kind" value="employee" />
+          <div class="login-field">
+            <label class="login-label" for="emp-email">Work Email</label>
+            <input class="login-input" id="emp-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com" />
+          </div>
+          <button type="submit" class="login-btn login-btn-primary">Continue as Employee</button>
+        </form>
+      {% endif %}
+    </div>
+
+    {# ── RIGHT: Manager Access ── #}
+    <div class="login-card">
+      <h2 class="login-card-title">Manager Access</h2>
+      <p class="login-card-desc">Manage your team's approvals, trackers, and Scrum boards.</p>
+      <form method="post" action="{{ url_for('login_page') }}">
+        {% include "partials/csrf.html" %}
+        <input type="hidden" name="gate_kind" value="manager" />
+        <div class="login-field">
+          <label class="login-label" for="mgr-email">Email Address</label>
+          <input class="login-input" id="mgr-email" name="email" type="email" autocomplete="username" required placeholder="manager@company.com" />
+        </div>
+        <div class="login-field">
+          <label class="login-label" for="mgr-password">Password</label>
+          <input class="login-input" id="mgr-password" name="password" type="password" autocomplete="current-password" required placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;" />
+        </div>
+        <button type="submit" class="login-btn login-btn-secondary">Sign in to Workspace</button>
+      </form>
+      <p class="login-footer-text">Don't have a manager account? <a href="{{ url_for('register_page') }}">Create one now</a></p>
+    </div>
+  </div>
+</div>
+{% endblock %}

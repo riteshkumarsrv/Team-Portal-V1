@@ -1,0 +1,174 @@
+/* Nokia audit — screenshot paste zone + layout */
+
+.nokia-audit-intro {
+  margin-bottom: 0.5rem;
+}
+
+.nokia-audit-form .nokia-step-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.nokia-audit-form .nokia-step-title:not(:first-of-type) {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--surface2);
+}
+
+.nokia-paste-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.nokia-paste-zone {
+  min-height: 12rem;
+  border: 2px dashed var(--surface2);
+  border-radius: var(--radius);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1.25rem 1rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.nokia-paste-zone:hover,
+.nokia-paste-zone:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(78, 163, 247, 0.06);
+}
+
+.nokia-paste-zone.nokia-paste-zone--active {
+  border-color: var(--accent);
+  background: rgba(78, 163, 247, 0.1);
+}
+
+.nokia-paste-zone strong {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.nokia-paste-zone .nokia-paste-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  max-width: 28rem;
+  line-height: 1.45;
+}
+
+.nokia-paste-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.nokia-screenshot-input {
+  position: absolute;
+  width: 0.1px;
+  height: 0.1px;
+  opacity: 0;
+  overflow: hidden;
+  z-index: -1;
+}
+
+.nokia-client-preview-wrap {
+  margin-top: 0.5rem;
+}
+
+.nokia-client-preview-wrap img {
+  max-width: 100%;
+  max-height: 22rem;
+  object-fit: contain;
+  border: 1px solid var(--surface2);
+  border-radius: var(--radius-sm);
+}
+
+.nokia-analysis-card {
+  margin-top: 1rem;
+}
+
+.nokia-analysis-card > h3.page-heading {
+  margin-bottom: 0.75rem;
+}
+
+.nokia-analysis-refimg {
+  margin-bottom: 1.25rem;
+}
+
+.nokia-analysis-refimg img {
+  max-width: 100%;
+  max-height: 28rem;
+  object-fit: contain;
+  border: 1px solid var(--surface2);
+  border-radius: var(--radius-sm);
+}
+
+.nokia-analysis-sub {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.nokia-analysis-sub:first-of-type {
+  margin-top: 0;
+}
+
+.nokia-month-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.nokia-month-nav {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+}
+
+.nokia-month-nav a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.nokia-month-nav a:hover {
+  text-decoration: underline;
+}
+
+.nokia-month-nav-sep {
+  margin: 0 0.35rem;
+  color: var(--muted);
+}
+
+.nokia-analysis-month-line {
+  margin-bottom: 0.75rem;
+}
+
+.nokia-csv-field {
+  margin-bottom: 0.75rem;
+}
+
+.nokia-csv-textarea {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--surface2);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  min-height: 8rem;
+}

@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Leave Plan/DSM Attendance — {{ active_team_name or "Team" }} — TEAM MANAGEMENT PORTAL{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='meet.css') }}" />
+{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="page-heading-row">
+    <h2 class="page-heading">Leave Plan/DSM Attendance</h2>
+    <span class="page-heading-meta">{{ active_team_name or "Team" }} · {{ anchor_label }}</span>
+  </div>
+  <p class="meet-hint">
+    Three days: yesterday, <strong>center day</strong> (highlighted), tomorrow — use <strong>Today</strong> or ±1 to move the window.
+    Leave appears as soon as it is applied. <strong>Single-click</strong> a leave cell to <strong>approve that day</strong>;
+    <strong>double-click</strong> to <strong>remove that day</strong> from the grid for double-checking.
+    <strong>Single-click</strong> an empty cell (—) to <strong>add leave</strong> for that person and date.
+    Calendar <strong>today</strong> gets an extra tint when it appears in the strip.
+  </p>
+  <div class="meet-toolbar">
+    <a class="btn secondary" href="{{ url_for('meet', d=prev_anchor) }}">−1 day</a>
+    <a class="btn secondary" href="{{ url_for('meet') }}">Today</a>
+    <a class="btn secondary" href="{{ url_for('meet', d=next_anchor) }}">+1 day</a>
+    <a class="btn secondary" href="{{ url_for('dashboard') }}">Leave tracker</a>
+    <a class="btn secondary" href="{{ url_for('scrum', d=anchor.isoformat()) }}">ScrumBoard</a>
+    <a class="btn secondary" href="{{ url_for('reports') }}">Settings</a>
+  </div>
+
+  <div class="meet-wrap">
+    <table class="meet-table" role="grid" aria-label="Meet attendance grid">
+      <thead>
+        <tr>
+          <th class="meet-name" scope="col">Name</th>
+          {% for d in days %}
+            <th
+              class="meet-dayhead{% if d.is_anchor %} meet-anchor-col{% endif %}{% if d.is_today %} meet-today-col{% endif %}{% if d.is_weekend %} meet-weekend{% endif %}"
+              scope="col"
+            >
+              {{ d.weekday }}<br />
+              <span class="meet-dayhead-date">{{ d.label }}</span>
+            </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in grid_rows %}
+          <tr>
+            <th class="meet-name" scope="row">{{ row.employee }}</th>
+            {% for cell in row.cells %}
+              <td
+                class="meet-cell{% if cell.has_leave %} {{ cell.css }} meet-leave-interactive{% else %} meet-empty-add{% endif %}{% if cell.is_anchor %} meet-anchor-col{% endif %}{% if cell.is_today %} meet-today-col{% endif %}{% if cell.is_weekend %} meet-weekend{% endif %}"
+                data-emp="{{ row.employee }}"
+                data-date="{{ cell.iso }}"
+                data-anchor="{{ anchor.isoformat() }}"
+                {% if cell.has_leave %}data-leave-id="{{ cell.leave_id }}" title="{{ cell.title }} · single-click: approve day · double-click: remove day" tabindex="0"{% else %}title="Click to add leave for this day" tabindex="0"{% endif %}
+              >
+                <div class="meet-cell-inner">
+                  {% if cell.has_leave %}
+                    <div class="meet-code">{{ cell.code }}</div>
+                  {% else %}
+                    <span class="meet-empty">—</span>
+                  {% endif %}
+                </div>
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="meet-add-dialog" class="meet-dialog">
+  <form id="meet-add-form">
+    <h3 style="margin-top: 0">Add leave</h3>
+    <p class="date-fieldset-hint" id="meet-dlg-sub"></p>
+    <input type="hidden" name="anchor" value="{{ anchor.isoformat() }}" id="meet-dlg-anchor" />
+    <input type="hidden" name="employee_name" id="meet-dlg-emp" />
+    <input type="hidden" name="work_date" id="meet-dlg-date" />
+    <div class="field">
+      <label for="meet-dlg-reason">Leave type</label>
+      <select id="meet-dlg-reason" name="reason" required>
+        {% for value, label in reasons %}
+          <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="meet-dlg-dur">Duration</label>
+      <select id="meet-dlg-dur" name="duration_type" required>
+        <option value="full">Full day</option>
+        <option value="half_am">Half day — morning</option>
+        <option value="half_pm">Half day — afternoon</option>
+      </select>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn" name="meet_dlg_action" value="save">Save</button>
+      <button type="button" class="btn secondary" id="meet-dlg-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<input type="hidden" id="meet-page-csrf" value="{{ csrf_token() }}" />
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var csrf = document.getElementById("meet-page-csrf").value;
+
+    function postForm(url, data) {
+      var fd = new FormData();
+      Object.keys(data).forEach(function (k) {
+        fd.append(k, data[k]);
+      });
+      fd.append("csrf_token", csrf);
+      return fetch(url, { method: "POST", body: fd, credentials: "same-origin" }).then(function (r) {
+        return r.json();
+      });
+    }
+
+    var dlg = document.getElementById("meet-add-dialog");
+    var sub = document.getElementById("meet-dlg-sub");
+
+    document.querySelectorAll("td.meet-empty-add").forEach(function (td) {
+      td.addEventListener("click", function () {
+        document.getElementById("meet-dlg-emp").value = td.getAttribute("data-emp");
+        document.getElementById("meet-dlg-date").value = td.getAttribute("data-date");
+        sub.textContent = td.getAttribute("data-emp") + " · " + td.getAttribute("data-date");
+        dlg.showModal();
+      });
+    });
+
+    document.querySelectorAll("td[data-leave-id]").forEach(function (td) {
+      var timer = null;
+      td.addEventListener("click", function (ev) {
+        if (ev.detail !== 1) return;
+        timer = window.setTimeout(function () {
+          timer = null;
+          postForm("{{ url_for('meet_approve_day') }}", {
+            leave_id: td.getAttribute("data-leave-id"),
+            work_date: td.getAttribute("data-date"),
+            anchor: td.getAttribute("data-anchor"),
+          }).then(function (j) {
+            if (j.ok) location.reload();
+          });
+        }, 280);
+      });
+      td.addEventListener("dblclick", function (ev) {
+        ev.preventDefault();
+        if (timer) {
+          window.clearTimeout(timer);
+          timer = null;
+        }
+        postForm("{{ url_for('meet_remove_day') }}", {
+          leave_id: td.getAttribute("data-leave-id"),
+          work_date: td.getAttribute("data-date"),
+          anchor: td.getAttribute("data-anchor"),
+        }).then(function (j) {
+          if (j.ok) location.reload();
+        });
+      });
+    });
+
+    document.getElementById("meet-dlg-cancel").addEventListener("click", function () {
+      dlg.close();
+    });
+
+    document.getElementById("meet-add-form").addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var fd = new FormData(ev.target);
+      fd.append("csrf_token", csrf);
+      fetch("{{ url_for('meet_quick_leave') }}", { method: "POST", body: fd, credentials: "same-origin" })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (j) {
+          if (j.ok) {
+            dlg.close();
+            location.reload();
+          }
+        });
+    });
+  })();
+</script>
+{% endblock %}

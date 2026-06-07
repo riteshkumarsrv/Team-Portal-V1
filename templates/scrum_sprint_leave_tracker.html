@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Sprint leave — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
+{% endblock %}
+{% block content %}
+  <section class="card">
+    <div class="page-heading-row">
+      <h2 class="page-heading">Leave tracker (sprint window)</h2>
+      <span class="page-heading-meta">{{ sprint_name }} · {{ date_range_label }}</span>
+    </div>
+    <div class="ws-toolbar">
+      <a class="btn secondary" href="{{ back_url }}">← Sprint team</a>
+      <a class="btn secondary" href="{{ url_for('scrum') }}">Sprint hub</a>
+      <a class="btn secondary" href="{{ url_for('dashboard') }}">Monthly leave tracker</a>
+      <form method="post" action="{{ url_for('manager_logout') }}" class="inline-form ws-toolbar-spacer">
+        {% include "partials/csrf.html" %}
+        <button type="submit" class="btn secondary small">Sign out</button>
+      </form>
+    </div>
+
+    {% if days and grid_rows %}
+      <div class="worksheet-wrap">
+        <table class="ws-table" role="grid" aria-label="Sprint leave tracker grid">
+          <thead>
+            <tr>
+              <th class="ws-name" rowspan="2">Name</th>
+              {% for d in days %}
+                <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
+              {% endfor %}
+            </tr>
+            <tr>
+              {% for d in days %}
+                <th class="ws-datehead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.day }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in grid_rows %}
+              <tr>
+                <td class="ws-name">{{ row.employee }}</td>
+                {% for cell in row.cells %}
+                  {% set wk = days[loop.index0].is_weekend %}
+                  {% if cell %}
+                    <td class="ws-cell {{ cell.css }}{% if wk %} ws-col-weekend{% endif %}" title="{{ cell.title }}">{{ cell.code }}</td>
+                  {% else %}
+                    <td class="ws-cell ws-cell-empty{% if wk %} ws-col-weekend{% endif %}"></td>
+                  {% endif %}
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ws-legend" aria-label="Legend">
+        <span><span class="legend-box" style="background: #7dd3fc"></span>PL</span>
+        <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
+        <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
+        <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
+        <span class="ws-legend-note">½ = half day · dashed = pending</span>
+      </div>
+    {% else %}
+      <p class="flash error" role="alert">No roster members or no days in this sprint window — nothing to show.</p>
+    {% endif %}
+  </section>
+{% endblock %}

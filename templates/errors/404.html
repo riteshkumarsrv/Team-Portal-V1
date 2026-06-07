@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Not found{% endblock %}
+{% block content %}
+<section class="card card-narrow">
+  <h2 class="page-heading">404</h2>
+  <div class="form-actions">
+    <a class="btn" href="{{ url_for('home') }}">Home</a>
+  </div>
+</section>
+{% endblock %}

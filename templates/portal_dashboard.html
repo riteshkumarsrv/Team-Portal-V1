@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}My dashboard{% endblock %}
+{% block body_class %}portal-nokia-body portal-dashboard-page{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+{% endblock %}
+{% block content %}
+  <header class="portal-shell-top">
+    <div class="portal-user-pill">
+      <div class="portal-avatar" aria-hidden="true">{{ (portal_user.name or "?")[:1] }}</div>
+      <div class="portal-user-meta">
+        <span class="portal-user-name">{{ portal_user.name }}</span>
+        <span class="portal-user-email">{{ portal_user.email }}</span>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('portal_logout') }}" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit" class="btn secondary small">Sign out</button>
+    </form>
+  </header>
+
+  <section class="portal-dashboard-main" aria-labelledby="portal-dashboard-heading">
+    <h1 id="portal-dashboard-heading" class="portal-dashboard-heading">Dashboard</h1>
+
+    <nav class="portal-tiles" aria-label="Quick links">
+      <a class="portal-tile-link portal-tile-link--leave" href="{{ url_for('portal_leave_apply') }}">
+        <span class="portal-tile-icon-wrap" aria-hidden="true">
+          <svg class="portal-tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+            <path d="M16 2v4M8 2v4M3 10h18" />
+          </svg>
+        </span>
+        <span class="portal-tile-body">
+          <span class="portal-tile-title">Apply for leave</span>
+          <span class="portal-tile-desc">Paid, sick, and other leave types.</span>
+        </span>
+      </a>
+      <a class="portal-tile-link portal-tile-link--status" href="{{ url_for('my_requests') }}">
+        <span class="portal-tile-icon-wrap" aria-hidden="true">
+          <svg class="portal-tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+          </svg>
+        </span>
+        <span class="portal-tile-body">
+          <span class="portal-tile-title">My Leave Status</span>
+          <span class="portal-tile-desc">History and approval status.</span>
+        </span>
+      </a>
+      <a class="portal-tile-link portal-tile-link--sprint" href="{{ url_for('portal_my_sprint_kanban') }}">
+        <span class="portal-tile-icon-wrap" aria-hidden="true">
+          <svg class="portal-tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1" />
+            <rect x="14" y="3" width="7" height="5" rx="1" />
+            <rect x="14" y="12" width="7" height="9" rx="1" />
+            <rect x="3" y="16" width="7" height="5" rx="1" />
+          </svg>
+        </span>
+        <span class="portal-tile-body">
+          <span class="portal-tile-title">My sprint work</span>
+          <span class="portal-tile-desc">Sticky board; moves queue for manager approval.</span>
+        </span>
+      </a>
+    </nav>
+  </section>
+{% endblock %}

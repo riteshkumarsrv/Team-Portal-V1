@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}TEAM MANAGEMENT PORTAL{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    {% block extra_head %}{% endblock %}
+  </head>
+  <body class="{% block body_class %}{% endblock %}">
+    <div class="wrap{% if hide_nav|default(false) %} wrap-portal{% endif %}">
+      <header class="site{% if hide_nav|default(false) %} site-portal{% endif %}">
+        <div class="brand">
+          {% if hide_nav|default(false) %}
+            <a href="{{ url_for('home') }}" class="site-mark" style="display: flex; align-items: center; letter-spacing: 0.12em; font-weight: 700;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 0.5rem;">
+                <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              TEAM PORTAL
+            </a>
+          {% else %}
+            <h1>
+              <a href="{% if manager_logged_in %}{{ url_for('scrum') }}{% else %}{{ url_for('home') }}{% endif %}" style="display: flex; align-items: center; letter-spacing: 0.12em; font-weight: 700;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 0.5rem;">
+                  <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                TEAM PORTAL
+              </a>
+            </h1>
+          {% endif %}
+          {% if manager_logged_in %}
+            <p class="userbar">
+              <span class="userbar-status">{{ manager_nav_label }}</span>
+              <form method="post" action="{{ url_for('manager_logout') }}" class="inline-form">
+                {% include "partials/csrf.html" %}
+                <button type="submit" class="btn secondary small">Sign out</button>
+              </form>
+            </p>
+          {% endif %}
+        </div>
+        {% if not hide_nav|default(false) %}
+        <nav class="main-nav" aria-label="Main">
+          <a
+            href="{% if manager_logged_in %}{{ url_for('scrum') }}{% else %}{{ url_for('home') }}{% endif %}"
+            class="active"
+            >Home</a>
+          <a href="{{ url_for('leave_apply') }}">Apply-Leave</a>
+          <a href="{{ url_for('my_requests') }}">My Leave Status</a>
+          {% if manager_logged_in %}
+            <a href="{{ url_for('dashboard') }}">Leave tracker</a>
+            <a href="{{ url_for('scrum') }}">ScrumBoard</a>
+            <a href="{{ url_for('meet') }}">DSM-Attendance</a>
+            <a href="{{ url_for('reports') }}">Settings</a>
+            {% if manager_logged_in and manager_teams %}
+              <div class="nav-team-cluster">
+                <button
+                  type="button"
+                  class="nav-team-trigger"
+                  id="team-picker-open"
+                  aria-haspopup="dialog"
+                  aria-controls="team-picker-dialog"
+                  aria-expanded="false"
+                >
+                  <span class="nav-team-trigger-label">Team</span>
+                  <span class="nav-team-trigger-row">
+                    <span class="nav-team-trigger-value">{{ active_team_name or "Team" }}</span>
+                    <span class="nav-team-trigger-chev" aria-hidden="true"></span>
+                  </span>
+                </button>
+                <dialog id="team-picker-dialog" class="team-picker-dialog" aria-labelledby="team-picker-title">
+                  <div class="team-picker-panel">
+                    <header class="team-picker-header">
+                      <h2 id="team-picker-title" class="team-picker-title">Switch team</h2>
+                      <p class="team-picker-lede">
+                        Leave tracker, Scrum, Meet, Nokia compare, and exports use the roster for the team you choose here.
+                      </p>
+                    </header>
+                    <ul class="team-picker-list">
+                      {% for t in manager_teams %}
+                        <li style="display: flex; gap: 0.5rem; align-items: stretch; margin-bottom: 0.5rem;">
+                          <form method="post" action="{{ url_for('reports_team_select') }}" class="team-picker-form" style="flex: 1;">
+                            {% include "partials/csrf.html" %}
+                            <input type="hidden" name="next" value="{{ request.full_path }}" />
+                            <input type="hidden" name="team_id" value="{{ t.id }}" />
+                            <button type="submit" class="team-picker-choice{% if active_team_id is not none and t.id == active_team_id %} is-current{% endif %}">
+                              <span class="team-picker-choice-left">
+                                <span class="team-picker-choice-name">{{ t.name }}</span>
+                                {% if t.hub_mode == 'scrum' %}
+                                  <span class="team-hub-pill" title="Team default hub">Scrum</span>
+                                {% else %}
+                                  <span class="team-hub-pill is-leave" title="Team default hub">Leave</span>
+                                {% endif %}
+                              </span>
+                              {% if active_team_id is not none and t.id == active_team_id %}
+                                <span class="team-picker-current-badge">Current</span>
+                              {% endif %}
+                            </button>
+                          </form>
+                          <form method="post" action="{{ url_for('delete_team') }}" onsubmit="return confirmDeleteTeam(event, '{{ t.name|replace('\'', '\\\'') }}');" style="display: flex;">
+                            {% include "partials/csrf.html" %}
+                            <input type="hidden" name="team_id" value="{{ t.id }}" />
+                            <input type="hidden" name="next" value="{{ request.full_path }}" />
+                            <button type="submit" class="btn secondary" style="padding: 0 0.75rem; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05); background: rgba(30, 32, 60, 0.65);" title="Delete team">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                              </svg>
+                            </button>
+                          </form>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                    <div class="team-picker-footer">
+                      <button type="button" class="btn secondary team-picker-close">Close</button>
+                    </div>
+                  </div>
+                </dialog>
+              </div>
+            {% endif %}
+          {% endif %}
+        </nav>
+        {% endif %}
+      </header>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack" role="status">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <main class="main-content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    {% block scripts %}{% endblock %}
+    <script>
+      function confirmDeleteTeam(event, teamName) {
+        var confirmation = prompt("To delete this team, please type its name exactly: " + teamName);
+        if (confirmation !== teamName) {
+          event.preventDefault();
+          if (confirmation !== null) {
+            alert("Team name did not match. Deletion cancelled.");
+          }
+          return false;
+        }
+        return true;
+      }
+      
+      (function () {
+        var openBtn = document.getElementById("team-picker-open");
+        var dlg = document.getElementById("team-picker-dialog");
+        if (!openBtn || !dlg) return;
+        if (typeof dlg.showModal !== "function") {
+          openBtn.style.display = "none";
+          return;
+        }
+        var closeBtn = dlg.querySelector(".team-picker-close");
+        function setOpen(exp) {
+          openBtn.setAttribute("aria-expanded", exp ? "true" : "false");
+        }
+        openBtn.addEventListener("click", function () {
+          dlg.showModal();
+          setOpen(true);
+        });
+        function closeDlg() {
+          if (dlg.open) dlg.close();
+          setOpen(false);
+        }
+        if (closeBtn) closeBtn.addEventListener("click", closeDlg);
+        dlg.addEventListener("cancel", function () {
+          setOpen(false);
+        });
+        dlg.addEventListener("close", function () {
+          setOpen(false);
+        });
+        dlg.addEventListener("click", function (e) {
+          if (e.target === dlg) closeDlg();
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}My sprint work{% endblock %}
+{% block body_class %}portal-nokia-body{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+{% endblock %}
+{% block content %}
+  <a class="portal-back" href="{{ url_for('portal_dashboard') }}">← Dashboard</a>
+  <header class="portal-shell-top">
+    <div class="portal-user-pill">
+      <div class="portal-avatar" aria-hidden="true">{{ (portal_user.name or "?")[:1] }}</div>
+      <div class="portal-user-meta">
+        <span class="portal-user-name">{{ portal_user.name }}</span>
+        <span class="portal-user-email">{{ portal_user.email }}</span>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('portal_logout') }}" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit" class="btn secondary small">Sign out</button>
+    </form>
+  </header>
+
+  <h1 class="page-heading" style="color: #fff; margin-top: 0">My sprint work items</h1>
+
+  {% if (pending_proposals|default(0)) > 0 %}
+    <p style="color: #fbbf24; font-size: 0.9rem; margin: 0.35rem 0 0.75rem">
+      You have <strong>{{ pending_proposals }}</strong> change(s) waiting for your manager to approve. The shared sprint board stays as it is until then.
+    </p>
+  {% endif %}
+
+  <div class="portal-sprint-summary">
+    <span><strong>{{ total }}</strong> total</span>
+    <span><strong>{{ done_n }}</strong> done</span>
+    <span><strong>{{ prog_n }}</strong> in progress</span>
+    <span><strong>{{ todo_n }}</strong> to do</span>
+    <div class="portal-progress" title="{{ pct_complete }}% complete">
+      <i style="width: {{ pct_complete }}%"></i>
+    </div>
+    <span><strong>{{ pct_int }}%</strong> complete</span>
+  </div>
+
+  {% if not cards %}
+    <p style="color: #94a3b8">No sprint items are assigned to you yet.</p>
+  {% else %}
+    <div class="portal-card-grid">
+      {% for c in cards %}
+        <article class="portal-work-card">
+          <div class="portal-work-head">
+            <div>
+              <div class="portal-work-id">{{ c.task_code }}</div>
+              <h2 style="margin: 0.25rem 0 0; font-size: 1rem; color: #fff">{{ c.title }}</h2>
+              <p style="margin: 0.35rem 0 0; font-size: 0.82rem; color: #94a3b8">{{ c.sprint_name }}</p>
+            </div>
+            {% if c.dod_met %}
+              <span class="portal-dod-badge portal-dod-badge--met">DoD met</span>
+            {% else %}
+              <span class="portal-dod-badge portal-dod-badge--no">DoD incomplete</span>
+            {% endif %}
+          </div>
+            <div class="portal-btn-row" style="margin-top: 0.75rem">
+              <a class="btn secondary small" href="{{ url_for('portal_scrum_kanban_board', sprint_id=c.sprint_id) }}">Sticky board (drag &amp; columns)</a>
+            </div>
+            <form method="post" action="{{ url_for('portal_sprint') }}">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="item_id" value="{{ c.id }}" />
+            <div class="field">
+              <label for="status-{{ c.id }}">Status</label>
+              <select id="status-{{ c.id }}" name="portal_status">
+                <option value="todo" {% if c.portal_status == "todo" %}selected{% endif %}>To do</option>
+                <option value="progress" {% if c.portal_status == "progress" %}selected{% endif %}>In progress</option>
+                <option value="done" {% if c.portal_status == "done" %}selected{% endif %}>Done</option>
+              </select>
+            </div>
+            <p style="margin: 0.5rem 0 0.25rem; font-size: 0.78rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.06em">Definition of done</p>
+            <ul class="portal-dod-list">
+              {% for label in dod_labels %}
+                {% set i = loop.index0 %}
+                <li>
+                  <label>
+                    <input type="checkbox" name="dod_{{ i }}" value="1" {% if c.dod_states[i] %}checked{% endif %} />
+                    {{ label }}
+                  </label>
+                </li>
+              {% endfor %}
+            </ul>
+            <div class="portal-btn-row">
+              <button type="submit" class="btn secondary small">Save</button>
+            </div>
+          </form>
+        </article>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

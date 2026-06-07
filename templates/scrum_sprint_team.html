@@ -1,0 +1,939 @@
+{% extends "base.html" %}
+{% block title %}Sprint — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
+{% block body_class %}page-scrum-board{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css') }}" />
+{% endblock %}
+{% block content %}
+  {% macro scrum_col_label(c) -%}
+    {%- if c == 'doing' -%}In progress{%- elif c == 'do' -%}Do{%- elif c == 'backlog' -%}Backlog{%- elif c == 'done' -%}Done{%- else -%}{{ c }}{%- endif -%}
+  {%- endmacro %}
+  <section class="card scrum-board-hero scrum-team-hero">
+    <div class="scrum-team-hero-layout">
+      <div class="scrum-team-hero-main{% if sprint_readonly %} scrum-team-readonly{% endif %}">
+        <p class="scrum-hero-back"><a href="{{ url_for('scrum') }}">← Sprint hub</a></p>
+        <div class="scrum-team-hero-title-row scrum-team-hero-title-row--solo">
+          <h2 class="page-heading scrum-hero-title scrum-team-hero-title-text">
+            {{ sprint_name }}{% if sprint_team_capacity_hours is not none %} <span class="scrum-hero-title-cap">({{ "%.1f"|format(sprint_team_capacity_hours) }}h)</span>{% endif %}
+          </h2>
+        </div>
+        <div class="scrum-sprint-dates-below-name">
+          <p class="scrum-sprint-dates-below-summary" id="sprint-dates-summary" aria-live="polite">{{ sprint_start }} → {{ sprint_end }}</p>
+          <form method="post" action="{{ url_for('scrum_sprint_update') }}" class="scrum-sprint-dates-below-form">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+            <div class="scrum-sprint-dates-below-grid">
+              <div class="scrum-sprint-dates-below-field">
+                <label class="scrum-sprint-dates-below-label" for="sprint-edit-start">Start</label>
+                <input
+                  id="sprint-edit-start"
+                  name="start_date"
+                  type="date"
+                  required
+                  value="{{ sprint_start }}"
+                  {% if sprint_readonly %}readonly class="scrum-sprint-date-readonly scrum-sprint-dates-below-input"{% else %}class="scrum-sprint-dates-below-input"{% endif %}
+                  title="{% if sprint_readonly %}Sprint start (read-only){% else %}Sprint start — end is always 14 calendar days from this date (inclusive){% endif %}"
+                />
+              </div>
+              <div class="scrum-sprint-dates-below-field">
+                <label class="scrum-sprint-dates-below-label" for="sprint-preview-end">End</label>
+                <input
+                  id="sprint-preview-end"
+                  type="date"
+                  readonly
+                  class="scrum-sprint-date-readonly scrum-sprint-dates-below-input scrum-sprint-dates-below-end"
+                  value="{{ sprint_end }}"
+                  tabindex="0"
+                  title="Follows start: 14 calendar days inclusive (not sent on save)."
+                  aria-readonly="true"
+                />
+              </div>
+              <div class="scrum-sprint-dates-below-save">
+                {% if sprint_readonly %}
+                  <span class="scrum-readonly-hint">Read-only</span>
+                {% else %}
+                  <button type="submit" class="btn secondary small">Save</button>
+                {% endif %}
+              </div>
+            </div>
+          </form>
+        </div>
+        <div class="scrum-team-hero-oneline" role="group" aria-label="Sprint quick links and status">
+          {% if sprint_readonly %}
+            <span class="scrum-sprint-status-pill scrum-sprint-status-pill-closed">CLOSED</span>
+          {% else %}
+            <span class="scrum-sprint-status-pill scrum-sprint-status-pill-open">OPEN</span>
+          {% endif %}
+          <span class="scrum-team-hero-oneline-sep" aria-hidden="true">·</span>
+          <span class="scrum-sprint-leave-view scrum-team-hero-oneline-leave">
+            <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
+          </span>
+        </div>
+        <div class="scrum-sprint-lifecycle-row">
+          <div class="scrum-sprint-lifecycle-actions">
+            {% if sprint_readonly %}
+              <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form">
+                {% include "partials/csrf.html" %}
+                <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                <button type="submit" class="btn secondary small">Open sprint</button>
+              </form>
+            {% else %}
+              <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
+                {% include "partials/csrf.html" %}
+                <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                <button type="submit" class="btn secondary small">Close sprint</button>
+              </form>
+            {% endif %}
+          </div>
+          <form
+            id="scrum-sprint-delete-form"
+            method="post"
+            action="{{ url_for('scrum_sprint_delete') }}"
+            class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline"
+          >
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+            <button type="button" class="btn secondary small danger-ghost" id="scrum-delete-sprint-open" {% if sprint_readonly %}disabled title="Open the sprint before deleting"{% endif %}>
+              Delete sprint
+            </button>
+          </form>
+        </div>
+
+        {% if (portal_proposals_pending|default(0)) > 0 %}
+          <div class="scrum-team-pending-banner" role="status">
+            <strong>{{ portal_proposals_pending }}</strong> portal change(s) for this sprint are pending —
+            <a href="{{ url_for('scrum_portal_proposals') }}">Review requests</a>
+          </div>
+        {% endif %}
+
+        <dialog id="scrum-delete-sprint-dialog" class="scrum-delete-sprint-dialog" aria-labelledby="scrum-delete-sprint-title">
+          <div class="scrum-delete-sprint-panel">
+            <h3 id="scrum-delete-sprint-title" class="scrum-delete-sprint-title">Delete sprint</h3>
+            <div class="scrum-delete-sprint-step" data-step="1">
+              <p class="scrum-delete-sprint-lede">
+                Are you sure you want to delete the sprint data - Note it cannot be recovered later.
+              </p>
+              <p class="scrum-delete-sprint-hint">This is step 1 of 2. You will confirm with Y or N on the next screen.</p>
+              <div class="scrum-delete-sprint-actions">
+                <button type="button" class="btn secondary small" id="scrum-delete-sprint-step1-cancel">Cancel</button>
+                <button type="button" class="btn secondary small" id="scrum-delete-sprint-step1-next">Continue</button>
+              </div>
+            </div>
+            <div class="scrum-delete-sprint-step" data-step="2" hidden>
+              <p class="scrum-delete-sprint-lede">
+                Second confirmation: this permanently deletes the sprint and all stickies. It cannot be recovered later.
+              </p>
+              <p class="scrum-delete-sprint-hint">Please confirm Y/N:</p>
+              <div class="scrum-delete-sprint-actions">
+                <button type="button" class="btn secondary small" id="scrum-delete-sprint-n" aria-label="N — Cancel deletion">N — Cancel</button>
+                <button type="button" class="btn secondary small danger-ghost" id="scrum-delete-sprint-y" aria-label="Y — Permanently delete sprint">Y — Delete permanently</button>
+              </div>
+            </div>
+          </div>
+        </dialog>
+      </div>
+
+      <div class="scrum-team-charts-wrap">
+        <aside class="scrum-team-kind-stack" aria-label="Estimated versus burnt hours by task type">
+          {% if kind_stack_has_chart %}
+            <div class="scrum-bd-head">
+              <div class="scrum-bd-stats">
+                <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Est. (by type)</span> <strong>{{ "%.1f"|format(kind_stack_total_est) }}h</strong></span>
+                <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Burnt (by type)</span> <strong>{{ "%.1f"|format(kind_stack_total_burnt) }}h</strong></span>
+              </div>
+              <h3 class="scrum-bd-title">Type stack</h3>
+              <div class="scrum-bd-legend scrum-kst-legend">
+                <span class="scrum-bd-leg scrum-kst-leg-burnt"><i></i>Burnt ≤ est.</span>
+                <span class="scrum-bd-leg scrum-kst-leg-over"><i></i>Burnt over est.</span>
+                <span class="scrum-bd-leg scrum-kst-leg-rem"><i></i>Est. remaining</span>
+              </div>
+            </div>
+            <div class="scrum-bd-chart-wrap">
+              <svg
+                class="scrum-bd-svg"
+                viewBox="0 0 {{ kind_stack_svg_w }} {{ kind_stack_svg_h }}"
+                preserveAspectRatio="xMidYMid meet"
+                role="img"
+                aria-label="Stacked bars: estimated versus burnt hours per task type for this sprint"
+              >
+                {% for t in kind_stack_y_ticks %}
+                  <line class="scrum-bd-grid" x1="46" y1="{{ t.y }}" x2="{{ kind_stack_svg_w - 12 }}" y2="{{ t.y }}" />
+                  <text class="scrum-bd-y-label" x="4" y="{{ t.y + 4 }}">{{ t.label }}</text>
+                {% endfor %}
+                {% for b in kind_stack_bars %}
+                  <g class="scrum-kst-bar-group">
+                    <title>{{ b.title }}</title>
+                    {% for s in b.segments %}
+                      <rect
+                        class="scrum-kst-rect"
+                        x="{{ s.x }}"
+                        y="{{ s.y }}"
+                        width="{{ s.w }}"
+                        height="{{ s.h }}"
+                        fill="{{ s.fill }}"
+                        rx="3"
+                        ry="3"
+                      />
+                    {% endfor %}
+                  </g>
+                {% endfor %}
+                {% for b in kind_stack_bars %}
+                  <text class="scrum-bd-x-label" x="{{ b.cx }}" y="{{ kind_stack_svg_h - 8 }}" text-anchor="middle">{{ b.label_short }}</text>
+                {% endfor %}
+                <text class="scrum-bd-axis-title" x="{{ kind_stack_svg_w / 2 }}" y="{{ kind_stack_svg_h - 1 }}" text-anchor="middle">{{ kind_stack_axis_label }}</text>
+              </svg>
+            </div>
+          {% else %}
+            <h3 class="scrum-bd-title">Type stack</h3>
+            <p class="scrum-bd-empty">{{ kind_stack_message }}</p>
+          {% endif %}
+        </aside>
+
+        <aside class="scrum-team-burndown" aria-label="Sprint burndown">
+        {% if burndown_has_chart %}
+          <div class="scrum-bd-head">
+            <div class="scrum-bd-stats">
+              <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Scope (start)</span> <strong>{{ "%.1f"|format(burndown_total_hours) }}h</strong></span>
+              <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Remaining</span> <strong>{{ "%.1f"|format(burndown_remaining_hours) }}h</strong></span>
+            </div>
+            <h3 class="scrum-bd-title">Sprint burndown</h3>
+            <div class="scrum-bd-legend">
+              <span class="scrum-bd-leg scrum-bd-leg-ideal"><i></i>Ideal</span>
+              <span class="scrum-bd-leg scrum-bd-leg-actual"><i></i>Remaining effort</span>
+            </div>
+          </div>
+          <div class="scrum-bd-chart-wrap">
+            <svg
+              class="scrum-bd-svg"
+              viewBox="0 0 {{ burndown_svg_w }} {{ burndown_svg_h }}"
+              preserveAspectRatio="xMidYMid meet"
+              role="img"
+              aria-label="Burndown: ideal line vs remaining work in hours through {{ burndown_last_day_label }}"
+            >
+              <defs>
+                <linearGradient id="scrum-bd-fill-{{ sprint_id }}" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#fb7185" stop-opacity="0.28" />
+                  <stop offset="100%" stop-color="#fb7185" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              {% for g in burndown_y_ticks %}
+                <line class="scrum-bd-grid" x1="46" y1="{{ g.y }}" x2="{{ burndown_svg_w - 12 }}" y2="{{ g.y }}" />
+              {% endfor %}
+              {% for t in burndown_y_ticks %}
+                <text class="scrum-bd-y-label" x="4" y="{{ t.y + 4 }}">{{ t.label }}</text>
+              {% endfor %}
+              {% if burndown_area_d %}
+                <path class="scrum-bd-area" d="{{ burndown_area_d }}" fill="url(#scrum-bd-fill-{{ sprint_id }})" />
+              {% endif %}
+              <path class="scrum-bd-ideal" d="{{ burndown_ideal_d }}" fill="none" stroke="#7dd3fc" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+              {% if burndown_actual_d %}
+                <path class="scrum-bd-actual" d="{{ burndown_actual_d }}" fill="none" stroke="#fb7185" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+              {% endif %}
+              {% for p in burndown_actual_dots %}
+                <circle class="scrum-bd-dot" cx="{{ p.x }}" cy="{{ p.y }}" r="3.2" />
+              {% endfor %}
+              {% for xl in burndown_x_labels %}
+                <text class="scrum-bd-x-label" x="{{ xl.x }}" y="{{ burndown_svg_h - 8 }}" text-anchor="middle">{{ xl.label }}</text>
+              {% endfor %}
+              <text class="scrum-bd-axis-title" x="{{ burndown_svg_w / 2 }}" y="{{ burndown_svg_h - 1 }}" text-anchor="middle">{{ burndown_axis_label }}</text>
+            </svg>
+          </div>
+        {% else %}
+          <h3 class="scrum-bd-title">Sprint burndown</h3>
+          <p class="scrum-bd-empty">{{ burndown_message }}</p>
+        {% endif %}
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <section class="scrum-team-shell card" id="scrum-team-shell">
+    <div class="scrum-team-shell-head">
+      <div class="scrum-team-shell-title-row">
+        <h3 class="scrum-team-shell-title">Team overview</h3>
+        <span class="scrum-team-shell-bracketed-actions" role="group" aria-label="Expand or collapse all member rows">
+          <span class="scrum-team-shell-paren" aria-hidden="true">{</span>
+          <button type="button" class="scrum-team-bulk-toggle btn secondary small" id="scrum-team-expand-all" aria-label="Expand all member rows">
+            ExpandAll
+          </button>
+          <span class="scrum-team-shell-action-sep" aria-hidden="true">·</span>
+          <button type="button" class="scrum-team-bulk-toggle btn secondary small" id="scrum-team-collapse-all" aria-label="Collapse all member rows">
+            CollapseAll
+          </button>
+          <span class="scrum-team-shell-paren" aria-hidden="true">}</span>
+        </span>
+      </div>
+    </div>
+    <div class="scrum-team-table-wrap">
+      <table class="scrum-team-table">
+        <thead>
+          <tr>
+            <th scope="col" class="scrum-th-member">Member</th>
+            <th scope="col" class="scrum-th-queue">Queue <span class="scrum-th-hint">B·D·Dg·Dn</span></th>
+            <th scope="col" class="scrum-th-effort">Estimated vs Burnt</th>
+            <th scope="col" class="scrum-th-doing">In progress</th>
+            <th scope="col" class="scrum-th-notes">Latest activity</th>
+          </tr>
+        </thead>
+        <tbody id="scrum-team-member-tbody">
+          {% for m in members %}
+            {% set board_url = url_for('scrum_member_board', sprint_id=sprint_id, assignee=m.name) %}
+            <tr
+              class="scrum-team-row"
+              tabindex="0"
+              role="link"
+              aria-label="Open sticky board for {{ m.name }}"
+              data-board-url="{{ board_url }}"
+              data-expanded="0"
+            >
+              <td class="scrum-td-member">
+                <div class="scrum-member-block">
+                  <div class="scrum-member-top">
+                    <span class="scrum-member-name">{{ m.name }}</span>
+                    <button
+                      type="button"
+                      class="scrum-member-toggle"
+                      aria-expanded="false"
+                      aria-controls="scrum-member-expand-{{ sprint_id }}-{{ loop.index0 }}"
+                      aria-label="Collapse or expand details for {{ m.name }}"
+                    >
+                      <span class="scrum-member-toggle-icon" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                  <div class="scrum-member-peek">
+                    {% if m.task_count > 0 and m.progress_pct is not none %}
+                      <span class="scrum-member-peek-burn">{{ "%.0f"|format(m.progress_pct) }}%</span>
+                      <span class="scrum-member-peek-hrs">Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)</span>
+                    {% elif m.task_count > 0 %}
+                      <span class="scrum-member-peek-muted">Sprint burnt needs a positive total estimate</span>
+                    {% else %}
+                      <span class="scrum-member-peek-muted">No stickies this sprint</span>
+                    {% endif %}
+                    {% if m.pending_portal %}
+                      <span class="scrum-member-peek-pend">{{ (m.pending_portal or [])|length }} portal pending</span>
+                    {% endif %}
+                  </div>
+                  <div class="scrum-member-collapsed-summary">
+                    <div class="scrum-cl-line">
+                      {% if m.task_count > 0 and m.progress_pct is not none %}
+                        <strong>{{ "%.0f"|format(m.progress_pct) }}%</strong> Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)
+                        {% if m.pending_portal %}
+                          <span class="scrum-member-collapsed-pend"> · {{ (m.pending_portal or [])|length }} portal pending</span>
+                        {% endif %}
+                      {% elif m.task_count > 0 %}
+                        <span class="scrum-cl-line-muted">Sprint burnt needs a positive total estimate</span>
+                        {% if m.pending_portal %}
+                          <span class="scrum-member-collapsed-pend"> · {{ (m.pending_portal or [])|length }} portal pending</span>
+                        {% endif %}
+                      {% else %}
+                        <span class="scrum-cl-line-muted">No stickies this sprint</span>
+                      {% endif %}
+                    </div>
+                    {% for kl in m.collapsed_kind_lines %}
+                      <div class="scrum-cl-line">{{ kl.label }}{% if kl.pct is not none %} <strong>{{ "%.0f"|format(kl.pct) }}%</strong> burnt{% endif %} ({{ "%.1f"|format(kl.com) }}/{{ "%.1f"|format(kl.est) }} h)</div>
+                    {% endfor %}
+                    {% if (m.collapsed_kind_lines|length) < 1 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                    {% if (m.collapsed_kind_lines|length) < 2 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                    {% if (m.collapsed_kind_lines|length) < 3 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                  </div>
+                  <div class="scrum-member-expand" id="scrum-member-expand-{{ sprint_id }}-{{ loop.index0 }}">
+                  {% if m.show_kind_burn_breakdown %}
+                        <div class="scrum-member-kind-burn" role="group" aria-label="Burn by sticky type for {{ m.name }}">
+                          {% if m.burn_kind_ndy_est > 0.05 %}
+                            <div class="scrum-member-kind-line" title="NDY stickies: {{ "%.1f"|format(m.burn_kind_ndy_com) }}h burnt vs {{ "%.1f"|format(m.burn_kind_ndy_est) }}h estimated (this sprint)">
+                              <span class="scrum-kb-lb">NDY</span>
+                              {% if m.burn_kind_ndy_pct is not none %}
+                                <strong>{{ "%.0f"|format(m.burn_kind_ndy_pct) }}%</strong><span class="scrum-kb-suf"> burnt</span><span class="scrum-kb-hrs"> ({{ "%.1f"|format(m.burn_kind_ndy_com) }}/{{ "%.1f"|format(m.burn_kind_ndy_est) }} h)</span>
+                              {% else %}
+                                <span class="scrum-kb-muted">—</span><span class="scrum-kb-hrs scrum-kb-muted"> ({{ "%.1f"|format(m.burn_kind_ndy_com) }}/{{ "%.1f"|format(m.burn_kind_ndy_est) }} h)</span>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                          {% if m.burn_kind_fsy_est > 0.05 %}
+                            <div class="scrum-member-kind-line" title="FSY stickies: {{ "%.1f"|format(m.burn_kind_fsy_com) }}h burnt vs {{ "%.1f"|format(m.burn_kind_fsy_est) }}h estimated (this sprint)">
+                              <span class="scrum-kb-lb">FSY</span>
+                              {% if m.burn_kind_fsy_pct is not none %}
+                                <strong>{{ "%.0f"|format(m.burn_kind_fsy_pct) }}%</strong><span class="scrum-kb-suf"> burnt</span><span class="scrum-kb-hrs"> ({{ "%.1f"|format(m.burn_kind_fsy_com) }}/{{ "%.1f"|format(m.burn_kind_fsy_est) }} h)</span>
+                              {% else %}
+                                <span class="scrum-kb-muted">—</span><span class="scrum-kb-hrs scrum-kb-muted"> ({{ "%.1f"|format(m.burn_kind_fsy_com) }}/{{ "%.1f"|format(m.burn_kind_fsy_est) }} h)</span>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                          {% if m.burn_kind_code_est > 0.05 %}
+                            <div class="scrum-member-kind-line" title="CODE stickies: {{ "%.1f"|format(m.burn_kind_code_com) }}h burnt vs {{ "%.1f"|format(m.burn_kind_code_est) }}h estimated (this sprint)">
+                              <span class="scrum-kb-lb">CODE</span>
+                              {% if m.burn_kind_code_pct is not none %}
+                                <strong>{{ "%.0f"|format(m.burn_kind_code_pct) }}%</strong><span class="scrum-kb-suf"> burnt</span><span class="scrum-kb-hrs"> ({{ "%.1f"|format(m.burn_kind_code_com) }}/{{ "%.1f"|format(m.burn_kind_code_est) }} h)</span>
+                              {% else %}
+                                <span class="scrum-kb-muted">—</span><span class="scrum-kb-hrs scrum-kb-muted"> ({{ "%.1f"|format(m.burn_kind_code_com) }}/{{ "%.1f"|format(m.burn_kind_code_est) }} h)</span>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                          {% if m.burn_kind_improvement_est > 0.05 %}
+                            <div class="scrum-member-kind-line" title="Improvement stickies: {{ "%.1f"|format(m.burn_kind_improvement_com) }}h burnt vs {{ "%.1f"|format(m.burn_kind_improvement_est) }}h estimated (this sprint)">
+                              <span class="scrum-kb-lb">Improvement</span>
+                              {% if m.burn_kind_improvement_pct is not none %}
+                                <strong>{{ "%.0f"|format(m.burn_kind_improvement_pct) }}%</strong><span class="scrum-kb-suf"> burnt</span><span class="scrum-kb-hrs"> ({{ "%.1f"|format(m.burn_kind_improvement_com) }}/{{ "%.1f"|format(m.burn_kind_improvement_est) }} h)</span>
+                              {% else %}
+                                <span class="scrum-kb-muted">—</span><span class="scrum-kb-hrs scrum-kb-muted"> ({{ "%.1f"|format(m.burn_kind_improvement_com) }}/{{ "%.1f"|format(m.burn_kind_improvement_est) }} h)</span>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                          {% if m.burn_kind_process_tools_est > 0.05 %}
+                            <div class="scrum-member-kind-line" title="Process&amp;Tools stickies: {{ "%.1f"|format(m.burn_kind_process_tools_com) }}h burnt vs {{ "%.1f"|format(m.burn_kind_process_tools_est) }}h estimated (this sprint)">
+                              <span class="scrum-kb-lb">Process&amp;Tools</span>
+                              {% if m.burn_kind_process_tools_pct is not none %}
+                                <strong>{{ "%.0f"|format(m.burn_kind_process_tools_pct) }}%</strong><span class="scrum-kb-suf"> burnt</span><span class="scrum-kb-hrs"> ({{ "%.1f"|format(m.burn_kind_process_tools_com) }}/{{ "%.1f"|format(m.burn_kind_process_tools_est) }} h)</span>
+                              {% else %}
+                                <span class="scrum-kb-muted">—</span><span class="scrum-kb-hrs scrum-kb-muted"> ({{ "%.1f"|format(m.burn_kind_process_tools_com) }}/{{ "%.1f"|format(m.burn_kind_process_tools_est) }} h)</span>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                        </div>
+                  {% endif %}
+                  {% if m.pending_portal %}
+                    <div class="scrum-member-pending-stack" role="region" aria-label="Pending employee portal changes for {{ m.name }}">
+                      {% for pr in m.pending_portal %}
+                        {% set _ev = (pr.artifact_items or [])|length + (pr.verification_urls or [])|length %}
+                        <article class="scrum-member-pending-card">
+                          <div class="scrum-mp-top">
+                            <span class="scrum-mp-badge">{{ pr.action_label }}</span>
+                            <time class="scrum-mp-time" datetime="{{ pr.created_at }}">{{ pr.created_at_short }}</time>
+                          </div>
+                          <p class="scrum-mp-task">{{ pr.item_title }}</p>
+                          <p class="scrum-mp-summary">{{ pr.summary }}</p>
+                          {% if pr.target_column_label %}
+                            <p class="scrum-mp-meta"><span class="scrum-mp-k">Target</span> {{ pr.target_column_label }}</p>
+                          {% endif %}
+                          {% if pr.dod_rows %}
+                            <p class="scrum-mp-meta">
+                              <span class="scrum-mp-k">DoD</span>
+                              {% if pr.dod_all_met %}
+                                <span class="scrum-mp-pill scrum-mp-pill-ok">All met</span>
+                              {% else %}
+                                <span class="scrum-mp-pill scrum-mp-pill-warn">{{ pr.dod_checked_count }}/{{ pr.dod_rows|length }} items</span>
+                              {% endif %}
+                            </p>
+                          {% endif %}
+                          {% if pr.hours_hint %}
+                            <p class="scrum-mp-meta"><span class="scrum-mp-k">Hours</span> {{ pr.hours_hint }}</p>
+                          {% endif %}
+                          {% if pr.estimate_hint %}
+                            <p class="scrum-mp-meta"><span class="scrum-mp-k">Estimate</span> {{ pr.estimate_hint }}</p>
+                          {% endif %}
+                          {% if pr.from_column_label or pr.last_sync_body or pr.action == 'item_note' or pr.dod_rows %}
+                            <details class="scrum-mp-details" onclick="event.stopPropagation();">
+                              <summary class="scrum-mp-details-sum">Context &amp; diff</summary>
+                              <div class="scrum-mp-details-body">
+                                {% if pr.action == 'item_move' and pr.from_column_label and pr.target_column_label %}
+                                  <p class="scrum-mp-detail-line"><span class="scrum-mp-k">Move</span> {{ pr.from_column_label }} → {{ pr.target_column_label }}</p>
+                                {% elif pr.from_column_label %}
+                                  <p class="scrum-mp-detail-line"><span class="scrum-mp-k">Current column</span> {{ pr.from_column_label }}</p>
+                                {% endif %}
+                                {% if pr.action == 'item_note' %}
+                                  {% if pr.last_sync_body or pr.last_sync_at_short %}
+                                    <div class="scrum-mp-diff-block">
+                                      <div class="scrum-mp-diff-h">Last in-progress sync{% if pr.last_sync_at_short %} · {{ pr.last_sync_at_short }}{% endif %}{% if pr.last_sync_hours is not none %} · +{{ "%.2f"|format(pr.last_sync_hours) }}h{% endif %}</div>
+                                      <p class="scrum-mp-diff-t">{% if pr.last_sync_body %}{{ pr.last_sync_body }}{% else %}<span class="scrum-mp-muted">(no text)</span>{% endif %}</p>
+                                    </div>
+                                  {% endif %}
+                                  <div class="scrum-mp-diff-block scrum-mp-diff-new">
+                                    <div class="scrum-mp-diff-h">Proposed update</div>
+                                    <p class="scrum-mp-diff-t">{% if pr.proposed_standup_note %}{{ pr.proposed_standup_note }}{% else %}<span class="scrum-mp-muted">(no text)</span>{% endif %}</p>
+                                  </div>
+                                {% elif pr.last_sync_body %}
+                                  <div class="scrum-mp-diff-block">
+                                    <div class="scrum-mp-diff-h">Last in-progress sync{% if pr.last_sync_at_short %} · {{ pr.last_sync_at_short }}{% endif %}</div>
+                                    <p class="scrum-mp-diff-t">{{ pr.last_sync_body }}</p>
+                                  </div>
+                                {% endif %}
+                                {% if pr.dod_rows %}
+                                  <div class="scrum-mp-dod scrum-mp-dod-inline" aria-label="Proposed definition-of-done checklist">
+                                    <span class="scrum-mp-dod-title">Proposed DoD</span>
+                                    <ul class="scrum-mp-dod-list">
+                                      {% for d in pr.dod_rows %}
+                                        <li class="scrum-mp-dod-item {% if d.checked %}scrum-mp-dod-on{% else %}scrum-mp-dod-off{% endif %}">
+                                          <span class="scrum-mp-dod-ic" aria-hidden="true">{% if d.checked %}✓{% else %}○{% endif %}</span>
+                                          {{ d.label }}
+                                        </li>
+                                      {% endfor %}
+                                    </ul>
+                                  </div>
+                                {% endif %}
+                                {% if pr.note_preview and pr.action not in ('item_note',) %}
+                                  {% if pr.note_preview and pr.action not in ('item_move', 'item_note', 'item_add') %}
+                                    <p class="scrum-mp-snippet">{{ pr.note_preview }}{% if pr.note_preview|length >= 120 %}…{% endif %}</p>
+                                  {% elif pr.note_preview and pr.action in ('item_move', 'item_note', 'item_add') %}
+                                    <p class="scrum-mp-snippet scrum-mp-snippet-quote">“{{ pr.note_preview }}{% if pr.note_preview|length >= 140 %}…{% endif %}”</p>
+                                  {% endif %}
+                                {% endif %}
+                              </div>
+                            </details>
+                          {% elif pr.note_preview %}
+                            {% if pr.action not in ('item_move', 'item_note', 'item_add') %}
+                              <p class="scrum-mp-snippet">{{ pr.note_preview }}{% if pr.note_preview|length >= 120 %}…{% endif %}</p>
+                            {% elif pr.action in ('item_move', 'item_add') %}
+                              <p class="scrum-mp-snippet scrum-mp-snippet-quote">“{{ pr.note_preview }}{% if pr.note_preview|length >= 140 %}…{% endif %}”</p>
+                            {% endif %}
+                          {% endif %}
+
+                          <button type="button" class="btn secondary small scrum-mp-open-dlg" data-dlg="scrum-mp-dlg-{{ pr.id }}" onclick="event.stopPropagation();">
+                            {% if _ev %}Review evidence &amp; decide{% else %}Open details &amp; decide{% endif %}
+                          </button>
+
+                          <dialog id="scrum-mp-dlg-{{ pr.id }}" class="scrum-mp-dlg">
+                            <div class="scrum-mp-dlg-head">
+                              <div>
+                                <p class="scrum-mp-dlg-badge">{{ pr.action_label }}</p>
+                                <h4 class="scrum-mp-dlg-title">{{ pr.item_title }}</h4>
+                                <p class="scrum-mp-dlg-sub">{{ pr.summary }} · {{ pr.created_at_short }}</p>
+                              </div>
+                              <button type="button" class="scrum-mp-dlg-x" aria-label="Close dialog">×</button>
+                            </div>
+                            <div class="scrum-mp-dlg-scroll">
+                              {% if pr.action == 'item_move' and pr.from_column_label and pr.target_column_label %}
+                                <p class="scrum-mp-dlg-line"><span class="scrum-mp-k">Move</span> {{ pr.from_column_label }} → {{ pr.target_column_label }}</p>
+                              {% endif %}
+                              {% if pr.hours_hint %}
+                                <p class="scrum-mp-dlg-line"><span class="scrum-mp-k">Hours</span> {{ pr.hours_hint }} (this request)</p>
+                              {% endif %}
+                              {% if pr.estimate_hint %}
+                                <p class="scrum-mp-dlg-line"><span class="scrum-mp-k">Estimate</span> {{ pr.estimate_hint }}</p>
+                              {% endif %}
+                              {% if pr.action == 'item_note' %}
+                                <div class="scrum-mp-dlg-section">
+                                  <h5 class="scrum-mp-dlg-h">Stand-up vs last sync</h5>
+                                  {% if pr.last_sync_body or pr.last_sync_at_short %}
+                                    <div class="scrum-mp-diff-block">
+                                      <div class="scrum-mp-diff-h">Previous sync{% if pr.last_sync_at_short %} · {{ pr.last_sync_at_short }}{% endif %}{% if pr.last_sync_hours is not none %} · +{{ "%.2f"|format(pr.last_sync_hours) }}h{% endif %}</div>
+                                      <p class="scrum-mp-diff-t">{% if pr.last_sync_body %}{{ pr.last_sync_body }}{% else %}<span class="scrum-mp-muted">(no text)</span>{% endif %}</p>
+                                    </div>
+                                  {% else %}
+                                    <p class="scrum-mp-muted">No prior in-progress text update on record for this sticky.</p>
+                                  {% endif %}
+                                  <div class="scrum-mp-diff-block scrum-mp-diff-new">
+                                    <div class="scrum-mp-diff-h">Proposed update</div>
+                                    <p class="scrum-mp-diff-t">{% if pr.proposed_standup_note %}{{ pr.proposed_standup_note }}{% else %}<span class="scrum-mp-muted">(no text)</span>{% endif %}</p>
+                                  </div>
+                                </div>
+                              {% endif %}
+                              {% if pr.dod_rows %}
+                                <div class="scrum-mp-dlg-section">
+                                  <h5 class="scrum-mp-dlg-h">Definition of done (proposed)</h5>
+                                  {% if pr.dod_all_met %}
+                                    <p class="scrum-mp-dlg-line scrum-mp-dlg-ok">All checklist items are marked done.</p>
+                                  {% else %}
+                                    <p class="scrum-mp-dlg-line scrum-mp-dlg-warn">Some items are not checked — review before approving.</p>
+                                  {% endif %}
+                                  <ul class="scrum-mp-dod-list scrum-mp-dod-list-dlg">
+                                    {% for d in pr.dod_rows %}
+                                      <li class="scrum-mp-dod-item {% if d.checked %}scrum-mp-dod-on{% else %}scrum-mp-dod-off{% endif %}">
+                                        <span class="scrum-mp-dod-ic" aria-hidden="true">{% if d.checked %}✓{% else %}○{% endif %}</span>
+                                        {{ d.label }}
+                                      </li>
+                                    {% endfor %}
+                                  </ul>
+                                </div>
+                              {% endif %}
+                              {% if pr.artifact_items or pr.verification_urls %}
+                                <div class="scrum-mp-dlg-section">
+                                  <h5 class="scrum-mp-dlg-h">Artifacts &amp; proof links</h5>
+                                  {% if pr.artifact_items %}
+                                    <ul class="scrum-mp-ev-list">
+                                      {% for a in pr.artifact_items %}
+                                        <li>
+                                          <a href="{{ a.url }}" target="_blank" rel="noopener noreferrer">{{ a.label or a.url }}</a>
+                                          {% set lu = (a.url|lower) %}
+                                          {% if lu.endswith('.png') or lu.endswith('.jpg') or lu.endswith('.jpeg') or lu.endswith('.gif') or lu.endswith('.webp') %}
+                                            <div class="scrum-mp-ev-imgwrap">
+                                              <img class="scrum-mp-ev-img" src="{{ a.url }}" alt="" loading="lazy" />
+                                            </div>
+                                          {% endif %}
+                                        </li>
+                                      {% endfor %}
+                                    </ul>
+                                  {% endif %}
+                                  {% if pr.verification_urls %}
+                                    <ul class="scrum-mp-ev-list">
+                                      {% for u in pr.verification_urls %}
+                                        <li>
+                                          <a href="{{ u }}" target="_blank" rel="noopener noreferrer">{{ u }}</a>
+                                          {% set lu = (u|lower) %}
+                                          {% if lu.endswith('.png') or lu.endswith('.jpg') or lu.endswith('.jpeg') or lu.endswith('.gif') or lu.endswith('.webp') %}
+                                            <div class="scrum-mp-ev-imgwrap">
+                                              <img class="scrum-mp-ev-img" src="{{ u }}" alt="" loading="lazy" />
+                                            </div>
+                                          {% endif %}
+                                        </li>
+                                      {% endfor %}
+                                    </ul>
+                                  {% endif %}
+                                </div>
+                              {% endif %}
+                              {% if pr.note_preview and pr.action not in ('item_note',) %}
+                                <div class="scrum-mp-dlg-section">
+                                  <h5 class="scrum-mp-dlg-h">Notes</h5>
+                                  {% if pr.action not in ('item_move', 'item_add') %}
+                                    <p class="scrum-mp-dlg-note">{{ pr.note_preview }}{% if pr.note_preview|length >= 120 %}…{% endif %}</p>
+                                  {% else %}
+                                    <p class="scrum-mp-dlg-note scrum-mp-snippet-quote">“{{ pr.note_preview }}{% if pr.note_preview|length >= 140 %}…{% endif %}”</p>
+                                  {% endif %}
+                                </div>
+                              {% endif %}
+                            </div>
+                            <div class="scrum-mp-dlg-foot">
+                              <form id="mp-ap-{{ pr.id }}" method="post" action="{{ url_for('scrum_portal_proposal_resolve') }}" class="scrum-mp-dlg-form">
+                                {% include "partials/csrf.html" %}
+                                <input type="hidden" name="proposal_id" value="{{ pr.id }}" />
+                                <input type="hidden" name="decision" value="approve" />
+                                <input type="hidden" name="next" value="{{ url_for('scrum_sprint_team', sprint_id=sprint_id) }}" />
+                                <label class="scrum-mp-attest scrum-mp-attest-compact">
+                                  <input type="checkbox" name="manager_attest" value="1" required />
+                                  Reviewed — I approve applying this change.
+                                </label>
+                              </form>
+                              <form id="mp-rj-{{ pr.id }}" method="post" action="{{ url_for('scrum_portal_proposal_resolve') }}" class="scrum-mp-dlg-form scrum-mp-dlg-form-reject">
+                                {% include "partials/csrf.html" %}
+                                <input type="hidden" name="proposal_id" value="{{ pr.id }}" />
+                                <input type="hidden" name="decision" value="reject" />
+                                <input type="hidden" name="next" value="{{ url_for('scrum_sprint_team', sprint_id=sprint_id) }}" />
+                              </form>
+                              <div class="scrum-mp-dlg-actions">
+                                <button type="submit" form="mp-ap-{{ pr.id }}" class="btn scrum-mp-btn-approve">Approve</button>
+                                <button type="submit" form="mp-rj-{{ pr.id }}" class="btn scrum-mp-btn-reject">Reject</button>
+                              </div>
+                            </div>
+                          </dialog>
+                        </article>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                  </div>
+                </div>
+              </td>
+              <td class="scrum-td-queue scrum-td-expandable">
+                <div class="scrum-td-collapsed-summary">
+                  <div class="scrum-cl-line"><span class="scrum-cl-k">B</span> {{ m.counts["backlog"] }} backlog</div>
+                  <div class="scrum-cl-line"><span class="scrum-cl-k">D</span> {{ m.counts["do"] }} in Do</div>
+                  <div class="scrum-cl-line"><span class="scrum-cl-k">Dg</span> {{ m.counts["doing"] }} in progress</div>
+                  <div class="scrum-cl-line"><span class="scrum-cl-k">Dn</span> {{ m.counts["done"] }} done</div>
+                </div>
+                <div class="scrum-td-expanded-body">
+                  <div class="scrum-queue-mini" aria-label="Backlog {{ m.counts['backlog'] }}, Do {{ m.counts['do'] }}, In progress {{ m.counts['doing'] }}, Done {{ m.counts['done'] }}">
+                    <span class="qm qm-bl" title="Backlog"><abbr>B</abbr><b>{{ m.counts['backlog'] }}</b></span>
+                    <span class="qm qm-do" title="Do"><abbr>D</abbr><b>{{ m.counts['do'] }}</b></span>
+                    <span class="qm qm-dg" title="In progress"><abbr>Dg</abbr><b>{{ m.counts['doing'] }}</b></span>
+                    <span class="qm qm-dn" title="Done"><abbr>Dn</abbr><b>{{ m.counts['done'] }}</b></span>
+                  </div>
+                </div>
+              </td>
+              <td class="scrum-td-effort scrum-td-expandable">
+                <div class="scrum-td-collapsed-summary">
+                  <div class="scrum-cl-line">Cap: {{ "%.1f"|format(m.capacity_available_hours) }}h</div>
+                  <div class="scrum-cl-line">Est. {{ "%.1f"|format(m.est_total_hours) }}h</div>
+                  <div class="scrum-cl-line">Logged {{ "%.1f"|format(m.committed_total_hours) }}h</div>
+                  <div class="scrum-cl-line">
+                    {% if m.stretch_load_hours > 0.0001 %}
+                      Stretch +{{ "%.1f"|format(m.stretch_load_hours) }}h
+                    {% else %}
+                      <span class="scrum-cl-line-muted">—</span>
+                    {% endif %}
+                  </div>
+                </div>
+                <div class="scrum-td-expanded-body">
+                <div class="scrum-effort-meta">
+                  <span
+                    class="scrum-eff-chip scrum-eff-cap"
+                    title="Available hours for this sprint window from the leave tracker (Mon–Fri 8h/day minus pending/approved leave; DSM per-day rules apply). Same basis as sticky-board capacity."
+                    >Cap: {{ "%.1f"|format(m.capacity_available_hours) }}h</span>
+                  <span class="scrum-eff-chip scrum-eff-est">Est. {{ "%.1f"|format(m.est_total_hours) }}h</span>
+                  <span class="scrum-eff-chip scrum-eff-log">Logged {{ "%.1f"|format(m.committed_total_hours) }}h</span>
+                  {% if m.stretch_load_hours > 0.0001 %}
+                    <span class="scrum-eff-chip scrum-eff-stretch" title="Burnt hours beyond total estimate for this sprint">Stretch +{{ "%.1f"|format(m.stretch_load_hours) }}h</span>
+                  {% endif %}
+                </div>
+                <div class="scrum-bar-label">SCAPACITY (scale max {{ "%.1f"|format(m.effort_scale_max) }}h)</div>
+                <div class="scrum-bar-track" role="img" aria-label="Leave-adjusted capacity hours">
+                  <div class="scrum-bar-fill scrum-bar-capacity" style="width: {{ m.pct_capacity_bar }}%;"></div>
+                </div>
+                <div class="scrum-bar-label scrum-bar-label-tight">Estimate (scale max {{ "%.1f"|format(m.effort_scale_max) }}h)</div>
+                <div class="scrum-bar-track" role="img" aria-valuenow="{{ m.pct_est_bar }}" aria-valuemin="0" aria-valuemax="100">
+                  <div class="scrum-bar-fill scrum-bar-est" style="width: {{ m.pct_est_bar }}%;"></div>
+                </div>
+                <div class="scrum-bar-label scrum-bar-label-tight">Burnt (red = stretch load)</div>
+                <div class="scrum-bar-track scrum-bar-split" role="img">
+                  {% if m.pct_committed_regular_bar > 0 or m.pct_stretch_bar > 0 %}
+                    <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ m.pct_committed_regular_bar }}%;" title="Within estimate"></div>
+                    {% if m.pct_stretch_bar > 0.01 %}
+                      <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ m.pct_stretch_bar }}%;" title="Stretch load"></div>
+                    {% endif %}
+                  {% else %}
+                    <div class="scrum-bar-empty">—</div>
+                  {% endif %}
+                </div>
+                </div>
+              </td>
+              <td class="scrum-td-doing scrum-td-expandable">
+                {% set dp = m.doing_preview or [] %}
+                <div class="scrum-td-collapsed-summary">
+                  {% for i in [0, 1, 2, 3] %}
+                    <div class="scrum-cl-line">
+                      {% if i < dp|length %}
+                        {{ dp[i][:52] }}{% if dp[i]|length > 52 %}…{% endif %}
+                      {% else %}
+                        <span class="scrum-cl-line-muted">—</span>
+                      {% endif %}
+                    </div>
+                  {% endfor %}
+                </div>
+                <div class="scrum-td-expanded-body">
+                {% if m.doing_preview %}
+                  <div class="scrum-doing-stack">
+                    {% for t in m.doing_preview %}
+                      <span class="scrum-doing-chip" title="{{ t }}">{{ t[:48] }}{% if t|length > 48 %}…{% endif %}</span>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span class="scrum-empty-cell">Nothing in progress</span>
+                {% endif %}
+                </div>
+              </td>
+              <td class="scrum-td-notes scrum-td-expandable">
+                {% set nn = m.last_notes or [] %}
+                <div class="scrum-td-collapsed-summary">
+                  {% for n in nn[:4] %}
+                    <div class="scrum-cl-line{% if n.recent_24h %} scrum-note-recent-24h{% endif %}">
+                      <time datetime="{{ n.created_at }}">{{ n.created_at[:10] }}</time>
+                      {% if n.committed_hours and n.committed_hours > 0.0001 %}
+                        <span> +{{ "%.1f"|format(n.committed_hours) }}h</span>
+                      {% endif %}
+                      {% if n.title %}
+                        <span> · {{ n.title[:44] }}{% if n.title|length > 44 %}…{% endif %}</span>
+                      {% endif %}
+                    </div>
+                  {% endfor %}
+                  {% if nn|length < 1 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                  {% if nn|length < 2 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                  {% if nn|length < 3 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                  {% if nn|length < 4 %}<div class="scrum-cl-line scrum-cl-line-muted">—</div>{% endif %}
+                </div>
+                <div class="scrum-td-expanded-body">
+                {% if m.last_notes %}
+                  <div class="scrum-note-stack">
+                    {% for n in m.last_notes %}
+                      <div class="scrum-note-card{% if n.recent_24h %} scrum-note-card-recent-24h{% endif %}">
+                        <div class="scrum-note-card-top">
+                          <time class="scrum-note-date" datetime="{{ n.created_at }}">{{ n.created_at[:10] }}</time>
+                          {% if n.committed_hours and n.committed_hours > 0.0001 %}
+                            <span class="scrum-note-hours">+{{ "%.1f"|format(n.committed_hours) }}h</span>
+                          {% endif %}
+                          {% if n.from_column and n.to_column and n.from_column != n.to_column %}
+                            <span class="scrum-note-move">{{ scrum_col_label(n.from_column) }} → {{ scrum_col_label(n.to_column) }}</span>
+                          {% elif n.from_column == n.to_column and n.from_column == 'doing' %}
+                            <span class="scrum-note-move">In progress update</span>
+                          {% endif %}
+                        </div>
+                        {% if n.title %}
+                          <div class="scrum-note-task">{{ n.title[:70] }}{% if n.title|length > 70 %}…{% endif %}</div>
+                        {% endif %}
+                        {% if n.body %}
+                          <p class="scrum-note-body">{{ n.body[:160] }}{% if n.body|length > 160 %}…{% endif %}</p>
+                        {% elif n.committed_hours and n.committed_hours > 0.0001 %}
+                          <p class="scrum-note-body scrum-note-body-muted">Hours logged (no text).</p>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span class="scrum-empty-cell">No activity yet</span>
+                {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <script>
+    (function () {
+      var dlg = document.getElementById("scrum-delete-sprint-dialog");
+      var openBtn = document.getElementById("scrum-delete-sprint-open");
+      var form = document.getElementById("scrum-sprint-delete-form");
+      var step1 = dlg && dlg.querySelector('[data-step="1"]');
+      var step2 = dlg && dlg.querySelector('[data-step="2"]');
+      var btnStep1Next = document.getElementById("scrum-delete-sprint-step1-next");
+      var btnStep1Cancel = document.getElementById("scrum-delete-sprint-step1-cancel");
+      var btnY = document.getElementById("scrum-delete-sprint-y");
+      var btnN = document.getElementById("scrum-delete-sprint-n");
+
+      function resetSteps() {
+        if (!step1 || !step2) return;
+        step1.hidden = false;
+        step2.hidden = true;
+      }
+
+      function openDialog() {
+        if (!dlg || typeof dlg.showModal !== "function") {
+          if (form && window.confirm(
+            "Are you sure you want to delete the sprint data - Note it cannot be recovered later.\n\n" +
+            "Click OK for a second prompt."
+          ) && window.confirm(
+            "Second confirmation: permanently delete this sprint and all stickies? It cannot be recovered later.\n\nOK = delete, Cancel = keep sprint."
+          )) {
+            form.submit();
+          }
+          return;
+        }
+        resetSteps();
+        dlg.showModal();
+      }
+
+      function closeDialog() {
+        if (dlg && dlg.open) dlg.close();
+        resetSteps();
+      }
+
+      if (openBtn && form && dlg) {
+        openBtn.addEventListener("click", function () {
+          openDialog();
+        });
+      }
+      if (btnStep1Cancel) btnStep1Cancel.addEventListener("click", closeDialog);
+      if (btnN) btnN.addEventListener("click", closeDialog);
+      if (btnStep1Next && step1 && step2) {
+        btnStep1Next.addEventListener("click", function () {
+          step1.hidden = true;
+          step2.hidden = false;
+          var yBtn = btnY;
+          if (yBtn) yBtn.focus();
+        });
+      }
+      if (btnY && form) {
+        btnY.addEventListener("click", function () {
+          closeDialog();
+          form.submit();
+        });
+      }
+      if (dlg) {
+        dlg.addEventListener("click", function (e) {
+          if (e.target === dlg) closeDialog();
+        });
+        dlg.addEventListener("cancel", function () {
+          resetSteps();
+        });
+        dlg.addEventListener("close", function () {
+          resetSteps();
+        });
+      }
+    })();
+    (function () {
+      var startEl = document.getElementById("sprint-edit-start");
+      var endEl = document.getElementById("sprint-preview-end");
+      if (!startEl || !endEl || startEl.readOnly) return;
+      function sprintEndInclusiveTwoWeeks(startIso) {
+        if (!startIso || startIso.length < 10) return "";
+        var p = startIso.slice(0, 10).split("-");
+        var y = parseInt(p[0], 10);
+        var mo = parseInt(p[1], 10) - 1;
+        var d = parseInt(p[2], 10);
+        if (isNaN(y) || isNaN(mo) || isNaN(d)) return "";
+        var dt = new Date(Date.UTC(y, mo, d));
+        dt.setUTCDate(dt.getUTCDate() + 13);
+        return (
+          dt.getUTCFullYear() +
+          "-" +
+          String(dt.getUTCMonth() + 1).padStart(2, "0") +
+          "-" +
+          String(dt.getUTCDate()).padStart(2, "0")
+        );
+      }
+      function sync() {
+        var s = startEl.value;
+        if (!s) return;
+        var e = sprintEndInclusiveTwoWeeks(s);
+        if (!e) return;
+        endEl.value = e;
+        var sum = document.getElementById("sprint-dates-summary");
+        if (sum) sum.textContent = s + " → " + e;
+      }
+      startEl.addEventListener("change", sync);
+      startEl.addEventListener("input", sync);
+      sync();
+    })();
+    (function () {
+      function setTeamRowExpanded(row, expanded) {
+        var v = expanded ? "1" : "0";
+        row.setAttribute("data-expanded", v);
+        var btn = row.querySelector(".scrum-member-toggle");
+        if (btn) btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+      }
+      function allMemberRows() {
+        var tb = document.getElementById("scrum-team-member-tbody");
+        return tb ? tb.querySelectorAll("tr.scrum-team-row") : document.querySelectorAll(".scrum-team-row");
+      }
+      allMemberRows().forEach(function (row) {
+        function go() {
+          var u = row.getAttribute("data-board-url");
+          if (u) window.location.href = u;
+        }
+        row.addEventListener("click", function (e) {
+          if (e.target.closest("a, button, input, textarea, select, label, .scrum-member-pending-stack, dialog, .scrum-member-toggle, .scrum-td-collapsed-summary, .scrum-member-collapsed-summary, .scrum-team-bulk-toggle")) return;
+          go();
+        });
+        row.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            if (e.target.closest && e.target.closest("input, textarea, select, .scrum-member-pending-stack, dialog, .scrum-member-toggle, .scrum-td-collapsed-summary, .scrum-member-collapsed-summary, .scrum-team-bulk-toggle")) return;
+            e.preventDefault();
+            go();
+          }
+        });
+      });
+      document.querySelectorAll(".scrum-member-toggle").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var row = btn.closest(".scrum-team-row");
+          if (!row) return;
+          var open = row.getAttribute("data-expanded") !== "0";
+          setTeamRowExpanded(row, !open);
+        });
+      });
+      var teamShell = document.getElementById("scrum-team-shell");
+      if (teamShell) {
+        teamShell.addEventListener("click", function (e) {
+          if (e.target.closest("#scrum-team-expand-all")) {
+            e.preventDefault();
+            e.stopPropagation();
+            allMemberRows().forEach(function (row) {
+              setTeamRowExpanded(row, true);
+            });
+            return;
+          }
+          if (e.target.closest("#scrum-team-collapse-all")) {
+            e.preventDefault();
+            e.stopPropagation();
+            allMemberRows().forEach(function (row) {
+              setTeamRowExpanded(row, false);
+            });
+          }
+        });
+      }
+      document.querySelectorAll(".scrum-mp-open-dlg").forEach(function (btn) {
+        btn.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          var id = btn.getAttribute("data-dlg");
+          var dlg = id && document.getElementById(id);
+          if (dlg && typeof dlg.showModal === "function") dlg.showModal();
+        });
+      });
+      document.querySelectorAll(".scrum-mp-dlg-x").forEach(function (btn) {
+        btn.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          var dlg = btn.closest("dialog");
+          if (dlg && typeof dlg.close === "function") dlg.close();
+        });
+      });
+    })();
+  </script>
+{% endblock %}

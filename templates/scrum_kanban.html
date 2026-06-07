@@ -1,0 +1,1084 @@
+{% extends "base.html" %}
+{% block title %}Board — {{ assignee }} — {{ sprint_name }}{% endblock %}
+{% block body_class %}page-scrum-board{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=6) }}" />
+{% endblock %}
+{% block content %}
+  {% set col_labels = {'backlog': 'Backlog', 'do': 'Do', 'doing': 'In progress', 'done': 'Done'} %}
+  {% set _portal = portal_kanban|default(false) %}
+  {% set sprint_readonly = sprint_readonly|default(false) %}
+  <section class="card scrum-board-hero scrum-kb-hero">
+    <p class="scrum-hero-back">
+      <a href="{{ kb_back_url }}">← {% if kb_back_label|default('') %}{{ kb_back_label }}{% elif _portal %}My sprint work{% else %}{{ sprint_name }} · Team{% endif %}</a>
+    </p>
+    <h2 class="page-heading scrum-hero-title">Sticky board · {{ assignee }}</h2>
+    {% if sprint_readonly %}
+      <p class="scrum-kb-readonly-banner" role="status">
+        This sprint is <strong>closed</strong> — view only. A manager can click <strong>Open sprint</strong> on the sprint team page to allow edits again.
+      </p>
+    {% endif %}
+    {% if not _portal %}
+      <p class="scrum-sprint-leave-view">
+        <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
+      </p>
+    {% endif %}
+      <p class="scrum-hero-hint">
+        {% if _portal %}
+        <strong>Manager approval:</strong> moves, stand-up notes, new stickies, edits, and deletes are <strong>queued</strong> for your manager. The board does not change until they approve from <em>Sprint hub → Employee change requests</em>. You can still drag and submit — the page reloads with your previous state until approval.
+        {% else %}
+        New work: use <strong>Add in Do</strong> in the Do column (estimate required). Each sticky has type <strong>NDY</strong>, <strong>CODE</strong>, <strong>FSY</strong>, <strong>Improvement</strong>, or <strong>Process&amp;Tools</strong>. Drag between columns; each move logs <strong>Burnt hours</strong> and a note. Moving to <strong>Done</strong> lets you attach optional <strong>artifact links</strong> (PRs, builds, docs). Moving from <strong>Do</strong> to <strong>In progress</strong> clears all prior Burnt hours on that sticky; leave <strong>Burnt hours</strong> empty for that move unless you are logging time now (empty is stored as unset, not zero). Moving from <strong>In progress</strong> back to <strong>Do</strong> asks for confirmation, then clears all Burnt hours on that sticky to <strong>0</strong>. Stand-up updates in <strong>In progress</strong> can log hours too.
+        {% endif %}
+      </p>
+    <input type="hidden" id="kb-csrf" value="{{ csrf_token() }}" />
+    <script type="application/json" id="kb-cfg">{{ {"sprintId": sprint_id, "assignee": assignee, "readOnly": sprint_readonly}|tojson }}</script>
+    <script type="application/json" id="kb-kinds">{{ task_kinds_rows|tojson }}</script>
+    <script type="application/json" id="kb-api-urls">{{ kb_api_urls|tojson }}</script>
+  </section>
+
+  <section class="card scrum-kb-leave-card" aria-label="Sprint capacity and leave">
+    <h3 class="scrum-kb-leave-title">Sprint capacity · {{ kb_assignee }}</h3>
+    <p class="scrum-kb-leave-sub">{{ kb_leave_range_label }} · same leave rules as the <strong>Leave tracker</strong> worksheet (pending dashed, Meet day overrides).</p>
+    <div class="scrum-kb-capacity">
+      <div class="scrum-kb-capacity-head">
+        <div class="scrum-kb-capacity-nums">
+          <span>Weekday gross <strong>{{ kb_capacity_weekday_gross_hours }}h</strong></span>
+          <span>Leave applied <strong>−{{ kb_capacity_leave_hours }}h</strong></span>
+          <span>Available <strong>{{ kb_capacity_available_hours }}h</strong></span>
+          <span>Assigned (est.) <strong>{{ kb_capacity_assigned_hours }}h</strong></span>
+        </div>
+        {% if kb_capacity_stretch %}
+          <span class="scrum-kb-capacity-stretch-badge" title="Total sticky estimates exceed available hours after leave">Stretch</span>
+        {% endif %}
+      </div>
+      <div class="scrum-kb-capacity-bars">
+        <div class="scrum-bar-label scrum-bar-label-compact">Available vs assigned (scale max {{ kb_capacity_scale_max }}h)</div>
+        <div class="scrum-bar-track scrum-kb-capacity-track scrum-bar-track-compact">
+          <div class="scrum-bar-fill scrum-bar-cap-avail" style="width: {{ kb_capacity_pct_available_bar }}%;" title="Available hours"></div>
+        </div>
+        <div class="scrum-bar-track scrum-kb-capacity-track scrum-bar-track-compact scrum-bar-split">
+          {% if kb_capacity_pct_assigned_within_bar > 0.01 %}
+            <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ kb_capacity_pct_assigned_within_bar }}%;" title="Assigned within available"></div>
+          {% endif %}
+          {% if kb_capacity_pct_assigned_stretch_bar > 0.01 %}
+            <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ kb_capacity_pct_assigned_stretch_bar }}%;" title="Assigned over available"></div>
+          {% endif %}
+          {% if kb_capacity_pct_assigned_within_bar <= 0.01 and kb_capacity_pct_assigned_stretch_bar <= 0.01 %}
+            <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
+          {% endif %}
+        </div>
+      </div>
+      <p class="scrum-kb-capacity-foot">Each Mon–Fri in the sprint window counts as <strong>8h</strong> capacity; approved or pending leave (and half-days) reduces availability the same way as the worksheet. <strong>Daily totals</strong> under each date are <strong>burnt hours</strong> logged on the sticky board that calendar day (moves and in-progress updates), including <strong>weekends and holidays</strong>.</p>
+    </div>
+    <div class="worksheet-wrap scrum-kb-leave-sheet" style="--kb-ws-days: {{ kb_leave_days|length }};">
+      <table class="ws-table scrum-kb-ws-table" role="grid" aria-label="Leave across sprint dates">
+        <thead>
+          <tr>
+            <th class="ws-name" rowspan="2">Name</th>
+            {% for d in kb_leave_days %}
+              <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
+            {% endfor %}
+          </tr>
+          <tr>
+            {% for d in kb_leave_days %}
+              <th class="ws-datehead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.day }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="ws-name">{{ kb_assignee }}</td>
+            {% for cell in kb_leave_cells %}
+              {% set wk = kb_leave_days[loop.index0].is_weekend %}
+              {% set hrs = kb_leave_hours_logged[loop.index0] %}
+              <td
+                class="ws-cell scrum-ws-cell-stack{% if cell %} {{ cell.css }}{% endif %}{% if wk %} ws-col-weekend{% endif %}"
+                {% if cell %}title="{{ cell.title }} · {{ hrs }} logged"{% else %}title="{{ hrs }} burnt hours logged this day"{% endif %}
+              >
+                <div class="scrum-ws-cell-inner">
+                  {% if cell %}
+                    <span class="scrum-ws-cell-leave">{{ cell.code }}</span>
+                  {% endif %}
+                  <span class="scrum-ws-cell-effort{% if hrs == '0.0h' %} scrum-ws-cell-effort-zero{% endif %}">{{ hrs }}</span>
+                </div>
+              </td>
+            {% endfor %}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ws-legend scrum-kb-leave-legend" aria-label="Legend">
+      <span><span class="legend-box" style="background: #7dd3fc"></span>PL</span>
+      <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
+      <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
+      <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
+      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends)</span>
+    </div>
+  </section>
+
+  <div class="scrum-kb-wrap{% if sprint_readonly %} scrum-kb-readonly{% endif %}">
+    <div class="scrum-kb-columns">
+      {% for col in columns %}
+        <div class="scrum-kb-col scrum-kb-col-{{ col }}" data-column="{{ col }}">
+          <div class="scrum-kb-col-head scrum-kb-col-head-{{ col }}">{{ col_labels[col] }}</div>
+          <div class="scrum-kb-col-body" data-drop-column="{{ col }}">
+            {% if col == 'do' %}
+              <button type="button" class="scrum-kb-do-add" id="scrum-open-add-do" aria-haspopup="dialog">
+                + Add sticky in Do…
+              </button>
+            {% endif %}
+            {% for card in cards_by_col[col] %}
+              <div
+                class="scrum-sticky"
+                style="--sk: {{ card.kind_color_hex }};"
+                draggable="true"
+                data-item-id="{{ card.id }}"
+                data-from-column="{{ col }}"
+                data-logged-hours="{% if col == 'doing' %}{{ '%.2f'|format(card.committed_logged_hours) }}{% else %}0{% endif %}"
+              >
+                <div class="scrum-sticky-corner">
+                  {% if ((card.appreciation_count|default(0))|int > 0) or (not _portal and not sprint_readonly) %}
+                    {% if (card.appreciation_count|default(0))|int > 0 %}
+                      <span
+                        class="scrum-well-done-thumb-wrap"
+                        role="img"
+                        aria-label="Appreciation"
+                        title="{{ card.appreciation_preview|default('Appreciation', true) }}"
+                      >
+                        <svg class="scrum-well-done-thumb" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path
+                            fill="currentColor"
+                            d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"
+                          />
+                        </svg>
+                      </span>
+                    {% endif %}
+                    {% if not _portal and not sprint_readonly %}
+                      <button
+                        type="button"
+                        class="scrum-well-done-trigger"
+                        data-item-id="{{ card.id }}"
+                        data-appreciation-count="{{ (card.appreciation_count|default(0))|int }}"
+                        aria-label="Appreciation: click to add a comment, double-click to remove all"
+                        title="Click: add appreciation. Double-click: remove all appreciation comments for this sticky."
+                      >A</button>
+                    {% endif %}
+                  {% endif %}
+                  <button type="button" class="scrum-sticky-toggle" aria-label="Toggle details" title="Expand / Collapse">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="scrum-sticky-toggle-icon"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                </div>
+                <p class="scrum-sticky-title">{{ card.title }}</p>
+                <div class="scrum-sticky-meta">
+                  <span class="scrum-sticky-badge">{{ card.kind_label }}</span>
+                  <span>{{ "%.1f"|format(card.estimate_hours) }}h est.</span>
+                </div>
+                {% if card.area %}
+                  <p class="scrum-sticky-area" title="{{ card.area }}">{{ card.area }}</p>
+                {% endif %}
+                {% if col == 'do' and card.dod %}
+                  <p class="scrum-sticky-dod-preview" title="Definition of done">{{ card.dod }}</p>
+                {% endif %}
+                {% if col == 'do' %}
+                  <details class="scrum-do-edit">
+                    <summary class="scrum-do-edit-summary">Edit Task</summary>
+                    <form
+                      method="post"
+                      action="{{ kb_form_urls.item_update }}"
+                      class="scrum-do-edit-form"
+                      draggable="false"
+                      onclick="event.stopPropagation();"
+                      onmousedown="event.stopPropagation();"
+                    >
+                      {% include "partials/csrf.html" %}
+                      <input type="hidden" name="item_id" value="{{ card.id }}" />
+                      <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                      <div class="field">
+                        <label for="do-title-{{ card.id }}">Title</label>
+                        <input id="do-title-{{ card.id }}" name="title" type="text" required maxlength="500" value="{{ card.title }}" />
+                      </div>
+                      <div class="field">
+                        <label for="do-details-{{ card.id }}">Details</label>
+                        <textarea id="do-details-{{ card.id }}" name="notes" rows="2" maxlength="2000" placeholder="Plans, context, links, acceptance…">{{ card.notes }}</textarea>
+                      </div>
+                      <div class="field">
+                        <label for="do-dod-{{ card.id }}">DOD (definition of done)</label>
+                        <textarea id="do-dod-{{ card.id }}" name="dod" rows="2" maxlength="4000" placeholder="What must be true for this to be considered done?">{{ card.dod }}</textarea>
+                      </div>
+                      <div class="field">
+                        <label for="do-est-{{ card.id }}">Estimated hours <span class="req">*</span></label>
+                        <input id="do-est-{{ card.id }}" name="estimate_hours" type="text" inputmode="decimal" required value="{{ '%.2f'|format(card.estimate_hours) }}" />
+                      </div>
+                      <div class="field">
+                        <label for="do-kind-{{ card.id }}">Type</label>
+                        <select id="do-kind-{{ card.id }}" name="task_kind" class="scrum-do-kind-select" data-card-id="{{ card.id }}">
+                          {% for k in task_kinds_rows %}
+                            <option value="{{ k.code }}" {% if (card.task_kind or 'ndy') == k.code %}selected{% endif %}>{{ k.label }}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label for="do-area-{{ card.id }}">Area</label>
+                        <input id="do-area-{{ card.id }}" name="area" type="text" maxlength="500" value="{{ card.area }}" placeholder="e.g. component or stream" />
+                      </div>
+                      <div class="scrum-do-edit-actions">
+                        <button type="submit" class="btn secondary small">Save plan</button>
+                      </div>
+                    </form>
+                  </details>
+                {% endif %}
+                {% if col == 'doing' %}
+                  <div class="scrum-doing-burn" title="Logged hours on this sticky vs its estimate (all moves + stand-ups)">
+                    <div class="scrum-doing-burn-head">
+                      {% if card.burn_pct is not none %}
+                        <span class="scrum-doing-burn-pct"><strong>{{ "%.0f"|format(card.burn_pct) }}%</strong> Task burn</span>
+                      {% else %}
+                        <span class="scrum-doing-burn-pct scrum-doing-burn-muted">Task burn needs a positive estimate</span>
+                      {% endif %}
+                      <span class="scrum-doing-burn-meta">{{ "%.1f"|format(card.committed_logged_hours) }}h logged · {{ "%.1f"|format(card.estimate_hours) }}h est.</span>
+                    </div>
+                    <div class="scrum-bar-label scrum-bar-label-compact">Estimate (scale max {{ "%.1f"|format(card.effort_scale_max) }}h)</div>
+                    <div class="scrum-bar-track scrum-bar-track-compact">
+                      <div class="scrum-bar-fill scrum-bar-est" style="width: {{ card.pct_est_bar }}%;"></div>
+                    </div>
+                    <div class="scrum-bar-label scrum-bar-label-compact scrum-bar-label-tight">Burnt (red = stretch)</div>
+                    <div class="scrum-bar-track scrum-bar-track-compact scrum-bar-split">
+                      {% if card.pct_committed_regular_bar > 0 or card.pct_stretch_bar > 0 %}
+                        <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ card.pct_committed_regular_bar }}%;"></div>
+                        {% if card.pct_stretch_bar > 0.01 %}
+                          <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ card.pct_stretch_bar }}%;"></div>
+                        {% endif %}
+                      {% else %}
+                        <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
+                      {% endif %}
+                    </div>
+                  </div>
+                  {% if card.notes_display %}
+                    <div class="scrum-sticky-details scrum-sticky-details-context">{{ card.notes_display }}</div>
+                  {% endif %}
+                  {% if card.standup_updates %}
+                    <ul class="scrum-standup-list" aria-label="Stand-up history">
+                      {% for u in card.standup_updates %}
+                        <li class="scrum-standup-item" data-activity-id="{{ u.id }}">
+                          <div class="scrum-standup-item-content">
+                            <div class="scrum-standup-item-head">
+                              <time class="scrum-standup-time" datetime="{{ u.created_at }}">{{ u.created_at_display }}</time>
+                              {% if u.committed_hours is not none %}
+                                <span class="scrum-standup-hrs">+{{ "%.1f"|format(u.committed_hours) }}h</span>
+                              {% endif %}
+                              {% if not readOnly %}
+                                <button type="button" class="scrum-standup-edit-btn" aria-label="Edit update" title="Edit update">
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                                </button>
+                              {% endif %}
+                            </div>
+                            {% if u.body %}
+                              <p class="scrum-standup-body" data-raw-body="{{ u.body }}">{{ u.body }}</p>
+                            {% else %}
+                              <p class="scrum-standup-body" data-raw-body="" style="display: none;"></p>
+                            {% endif %}
+                          </div>
+                          {% if not readOnly %}
+                            <div class="scrum-standup-edit-form" style="display: none;">
+                              <textarea class="scrum-standup-edit-body" rows="2" placeholder="Update text...">{{ u.body }}</textarea>
+                              <div class="scrum-standup-edit-footer">
+                                <label>Burn: <input type="number" class="scrum-standup-edit-hrs" step="0.5" min="0" value="{{ "%.1f"|format(u.committed_hours) if u.committed_hours is not none else '' }}" /></label>
+                                <div class="scrum-standup-edit-actions">
+                                  <button type="button" class="scrum-standup-save-btn">Save</button>
+                                  <button type="button" class="scrum-standup-cancel-btn">Cancel</button>
+                                </div>
+                              </div>
+                            </div>
+                          {% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                {% elif col == 'done' %}
+                  {% if card.done_artifacts %}
+                    <ul class="scrum-sticky-artifacts" aria-label="Artifacts">
+                      {% for a in card.done_artifacts %}
+                        <li>
+                          <a href="{{ a.url }}" target="_blank" rel="noopener noreferrer">{{ a.label or a.url }}</a>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                  {% if card.notes %}
+                    <div class="scrum-sticky-details">{{ card.notes }}</div>
+                  {% endif %}
+                  <details class="scrum-done-edit">
+                    <summary class="scrum-done-edit-summary">Edit details &amp; artifacts</summary>
+                    <form
+                      method="post"
+                      action="{{ kb_form_urls.item_update }}"
+                      class="scrum-done-edit-form"
+                      draggable="false"
+                      onclick="event.stopPropagation();"
+                      onmousedown="event.stopPropagation();"
+                    >
+                      {% include "partials/csrf.html" %}
+                      <input type="hidden" name="item_id" value="{{ card.id }}" />
+                      <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                      <div class="field">
+                        <label for="done-details-{{ card.id }}">Details</label>
+                        <textarea id="done-details-{{ card.id }}" name="notes" rows="3" maxlength="2000" placeholder="Summary, handoff, context…">{{ card.notes }}</textarea>
+                      </div>
+                      <div class="field">
+                        <label for="done-artifacts-{{ card.id }}">Artifact links</label>
+                        <textarea id="done-artifacts-{{ card.id }}" name="done_artifacts_lines" rows="4" maxlength="8000" placeholder="One per line: https://…&#10;Or: Label | https://…">{{ card.done_artifacts_lines }}</textarea>
+                      </div>
+                      <p class="scrum-done-artifacts-hint">Only <code>http://</code> or <code>https://</code> links are kept (up to 20).</p>
+                      {% if _portal %}
+                      <div class="field">
+                        <label for="done-verify-{{ card.id }}">Extra proof URLs (optional)</label>
+                        <textarea id="done-verify-{{ card.id }}" name="verification_urls_lines" rows="2" maxlength="2400" placeholder="https://… one per line"></textarea>
+                        <p class="scrum-done-artifacts-hint">For manager review (screenshots, builds). Up to 12 links.</p>
+                      </div>
+                      {% endif %}
+                      <div class="scrum-done-edit-actions">
+                        <button type="submit" class="btn secondary small">Save</button>
+                      </div>
+                    </form>
+                  </details>
+                {% elif card.notes %}
+                  <div class="scrum-sticky-details">{{ card.notes }}</div>
+                {% endif %}
+                <div class="scrum-sticky-actions" draggable="false" onmousedown="event.stopPropagation();">
+                  <form method="post" action="{{ kb_form_urls.item_delete }}" class="inline-form" onsubmit="return confirm('Delete this sticky?');" draggable="false" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
+                    {% include "partials/csrf.html" %}
+                    <input type="hidden" name="item_id" value="{{ card.id }}" />
+                    <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                    <button type="submit" class="btn scrum-sticky-del">Remove</button>
+                  </form>
+                </div>
+                {% if col == 'doing' %}
+                  <div class="scrum-doing-note" draggable="false" onmousedown="event.stopPropagation();">
+                    <label class="scrum-doing-label" for="dn-{{ card.id }}">Stand-up update</label>
+                    <textarea id="dn-{{ card.id }}" rows="2" maxlength="2000" placeholder="What changed since last sync?"></textarea>
+                    <div class="scrum-doing-hrs">
+                      <label for="dh-{{ card.id }}">Burnt hours (this update)</label>
+                      <input id="dh-{{ card.id }}" type="text" inputmode="decimal" placeholder="0" class="scrum-doing-hrs-input" />
+                    </div>
+                    {% if _portal %}
+                    <div class="field scrum-doing-verify">
+                      <label for="dv-{{ card.id }}">Proof URLs (optional)</label>
+                      <textarea id="dv-{{ card.id }}" rows="2" maxlength="2400" placeholder="https://… screenshots or docs, one per line"></textarea>
+                    </div>
+                    {% endif %}
+                    <button type="button" class="btn secondary small kb-add-note scrum-note-save" data-item-id="{{ card.id }}">Save update</button>
+                  </div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if not _portal %}
+    <dialog id="kb-welldone-dialog" class="scrum-welldone-dialog" aria-labelledby="kb-welldone-title">
+      <div class="scrum-welldone-dialog-inner">
+        <h3 id="kb-welldone-title" class="scrum-welldone-dialog-title">Appreciation</h3>
+        <p class="scrum-welldone-dialog-lede">Add a short comment for this task. It is stored with the sticky and shown to the team.</p>
+        <input type="hidden" id="kb-welldone-item-id" value="" />
+        <div class="field">
+          <label for="kb-welldone-comment">Comment</label>
+          <textarea id="kb-welldone-comment" rows="4" maxlength="2000" required placeholder="What went well, thanks, recognition…"></textarea>
+        </div>
+        <div class="scrum-welldone-dialog-actions">
+          <button type="button" class="btn secondary" id="kb-welldone-cancel">Cancel</button>
+          <button type="button" class="btn" id="kb-welldone-submit">Save</button>
+        </div>
+      </div>
+    </dialog>
+  {% endif %}
+
+  <dialog id="kb-add-dialog" class="scrum-add-dialog">
+    <form method="dialog" class="scrum-add-dialog-inner" id="kb-add-form">
+      <h3 class="scrum-add-dialog-title">New sticky in Do</h3>
+      <p class="scrum-add-dialog-lede">Estimate is required. Items start in <strong>Do</strong>; drag to Backlog, In progress, or Done.</p>
+      <div class="field">
+        <label for="kb-add-title">Title</label>
+        <input id="kb-add-title" type="text" required maxlength="500" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="kb-add-details">Details</label>
+        <textarea id="kb-add-details" rows="2" maxlength="2000" placeholder="Plans, context, links, acceptance…"></textarea>
+      </div>
+      <div class="field">
+        <label for="kb-add-dod">DOD (definition of done)</label>
+        <textarea id="kb-add-dod" rows="2" maxlength="4000" placeholder="What must be true for this to be considered done?"></textarea>
+      </div>
+      <div class="field">
+        <label for="kb-add-est">Estimated hours <span class="req">*</span></label>
+        <input id="kb-add-est" type="text" inputmode="decimal" required placeholder="e.g. 4" />
+      </div>
+      <div class="field">
+        <label for="kb-add-kind">Type</label>
+        <select id="kb-add-kind"></select>
+      </div>
+      <div class="field">
+        <label for="kb-add-area">Area</label>
+        <input id="kb-add-area" type="text" maxlength="500" autocomplete="off" placeholder="e.g. component or stream" />
+      </div>
+      <div class="scrum-add-dialog-actions">
+        <button type="submit" class="btn scrum-add-submit" id="kb-add-submit">Create in Do</button>
+        <button type="button" class="btn secondary" id="kb-add-cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="kb-move-dialog" class="scrum-move-dialog">
+    <div class="scrum-move-dialog-inner">
+      <h3 class="scrum-move-dialog-title">Log this move</h3>
+      <p class="scrum-move-dialog-lede" id="kb-move-summary"></p>
+      <p class="scrum-move-dialog-note is-hidden" id="kb-move-reset-hint" aria-live="polite"></p>
+      <div class="field">
+        <label for="kb-move-hrs">Burnt hours</label>
+        <input id="kb-move-hrs" type="text" inputmode="decimal" placeholder="e.g. 2" />
+      </div>
+      <div class="field">
+        <label for="kb-move-note">Note</label>
+        <textarea id="kb-move-note" rows="3" maxlength="2000" placeholder="Outcome, risk, or handoff…"></textarea>
+      </div>
+      {% if _portal %}
+      <div class="field" id="kb-move-verify-wrap">
+        <label for="kb-move-verify">Proof / screenshot URLs (optional)</label>
+        <textarea id="kb-move-verify" rows="2" maxlength="2400" placeholder="https://… one per line (for manager review)"></textarea>
+        <p class="scrum-move-artifacts-hint">Shown to your manager when they approve this move.</p>
+      </div>
+      {% endif %}
+      <div class="field is-hidden" id="kb-move-artifacts-wrap">
+        <label for="kb-move-artifacts">Artifact links (optional)</label>
+        <textarea id="kb-move-artifacts" rows="4" maxlength="8000" placeholder="One https URL per line, or:&#10;My PR | https://github.com/org/repo/pull/1"></textarea>
+        <p class="scrum-move-artifacts-hint">Saved when the card lands in <strong>Done</strong> (http/https only, up to 20 links).</p>
+      </div>
+      <div class="scrum-move-dialog-actions">
+        <button type="button" class="btn" id="kb-move-confirm">Save move</button>
+        <button type="button" class="btn secondary" id="kb-move-cancel">Cancel</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="kb-doing-reset-dialog" class="scrum-move-dialog">
+    <div class="scrum-move-dialog-inner">
+      <h3 class="scrum-move-dialog-title">Return sticky to Do?</h3>
+      <p class="scrum-move-dialog-lede" id="kb-doing-reset-msg"></p>
+      <div class="scrum-move-dialog-actions">
+        <button type="button" class="btn" id="kb-doing-reset-ok">OK</button>
+        <button type="button" class="btn secondary" id="kb-doing-reset-cancel">Cancel</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    (function () {
+      var cfg = JSON.parse(document.getElementById("kb-cfg").textContent);
+      var kinds = JSON.parse(document.getElementById("kb-kinds").textContent);
+      var csrf = document.getElementById("kb-csrf").value;
+      var readOnly = !!cfg.readOnly;
+      if (readOnly) {
+        var addBtnRo = document.getElementById("scrum-open-add-do");
+        if (addBtnRo) addBtnRo.setAttribute("hidden", "hidden");
+        document.querySelectorAll(".scrum-sticky[draggable]").forEach(function (el) {
+          el.setAttribute("draggable", "false");
+        });
+      }
+      var dlg = document.getElementById("kb-move-dialog");
+      var addDlg = document.getElementById("kb-add-dialog");
+      var doingResetDlg = document.getElementById("kb-doing-reset-dialog");
+      var apiUrls = JSON.parse(document.getElementById("kb-api-urls").textContent);
+      var itemAddUrl = apiUrls.item_add;
+      var pending = null;
+      var pendingDoingToDo = null;
+
+      function parseArtifactLines(text) {
+        var out = [];
+        (text || "").split("\n").forEach(function (line) {
+          line = line.trim();
+          if (!line) return;
+          var pipe = line.indexOf("|");
+          if (pipe >= 0) {
+            out.push({
+              label: line.slice(0, pipe).trim(),
+              url: line.slice(pipe + 1).trim(),
+            });
+          } else {
+            out.push({ label: "", url: line });
+          }
+        });
+        return out;
+      }
+
+      function parseProofUrlLines(text) {
+        var out = [];
+        (text || "").split("\n").forEach(function (line) {
+          line = line.trim();
+          if (line) out.push(line);
+        });
+        return out;
+      }
+
+      function moveErrorMessage(code) {
+        if (!code) return "Move failed";
+        if (code === "bad_artifact_url") return "Each artifact line needs a valid http(s) URL after the label (if any).";
+        if (code === "bad_artifacts") return "Artifact links must be a list of URLs or label|url lines.";
+        if (code === "missing_comment") return "Please enter an appreciation comment.";
+        if (code === "sprint_closed") {
+          return "This sprint is closed (read-only). Open it from the sprint team page to edit.";
+        }
+        return "Request failed (" + code + ").";
+      }
+
+      function postJson(url, body) {
+        body.csrf_token = csrf;
+        return fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": csrf },
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          return r.json().then(function (j) {
+            return { ok: r.ok && j.ok, j: j, status: r.status };
+          });
+        });
+      }
+
+      function sendKanbanMove(moveBody) {
+        postJson(apiUrls.item_move, moveBody).then(function (res) {
+          if (res.ok) {
+            // Page reloads to show the immediate update
+
+            window.location.reload();
+          } else {
+            alert(moveErrorMessage(res.j && res.j.error ? res.j.error : ""));
+          }
+        });
+      }
+
+      function normalizeKbCol(s) {
+        return (s == null ? "" : String(s)).trim().toLowerCase();
+      }
+
+      function parseDragPayload(dt) {
+        if (!dt) return null;
+        var raw = dt.getData("application/json");
+        if (!raw || !String(raw).trim()) raw = dt.getData("text/plain");
+        if (!raw || !String(raw).trim()) return null;
+        try {
+          return JSON.parse(raw);
+        } catch (err) {
+          return null;
+        }
+      }
+
+      function handleColumnDrop(zone, e) {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.remove("drag-over");
+        var data = parseDragPayload(e.dataTransfer);
+        if (!data || data.itemId == null || data.itemId === "") return;
+        var toCol = normalizeKbCol(zone.getAttribute("data-drop-column"));
+        var fromCol = normalizeKbCol(data.from);
+        if (!toCol || toCol === fromCol) return;
+
+        if (fromCol === "doing" && toCol === "do") {
+          var lh =
+            typeof data.loggedHours === "number" && !isNaN(data.loggedHours)
+              ? data.loggedHours
+              : parseFloat(String(data.loggedHours || "0").replace(",", ".")) || 0;
+          var shown = lh.toFixed(1);
+          var msgEl = document.getElementById("kb-doing-reset-msg");
+          if (msgEl) {
+            msgEl.textContent =
+              "Moving this sticky from In progress back to Do will reset all Burnt hours on it to 0 " +
+              "(moves and stand-up updates are cleared). This task currently has " +
+              shown +
+              " h logged on the board. Choose OK to move, or Cancel to keep it in In progress.";
+          }
+          pendingDoingToDo = { data: data };
+          if (doingResetDlg && typeof doingResetDlg.showModal === "function") {
+            doingResetDlg.showModal();
+          } else if (window.confirm((msgEl && msgEl.textContent) || "Reset Burnt hours to 0 and move to Do?")) {
+            pendingDoingToDo = null;
+            sendKanbanMove({
+              item_id: parseInt(data.itemId, 10),
+              sprint_id: cfg.sprintId,
+              assignee: cfg.assignee,
+              to_column: "do",
+              note: "",
+              committed_hours: "0",
+            });
+          } else {
+            pendingDoingToDo = null;
+          }
+          return;
+        }
+
+        pending = { itemId: data.itemId, from: fromCol, to: toCol };
+        document.getElementById("kb-move-summary").textContent =
+          "Card #" + data.itemId + ": " + fromCol + " → " + toCol + ".";
+        var hint = document.getElementById("kb-move-reset-hint");
+        if (hint) {
+          if (fromCol === "do" && toCol === "doing") {
+            hint.textContent =
+              "Prior Burnt hours on this sticky are cleared when you leave Do for In progress. Leave Burnt hours empty unless you are logging time for this move (empty is not stored as zero).";
+            hint.classList.remove("is-hidden");
+          } else {
+            hint.textContent = "";
+            hint.classList.add("is-hidden");
+          }
+        }
+        document.getElementById("kb-move-hrs").value =
+          fromCol === "do" && toCol === "doing" ? "" : "0";
+        document.getElementById("kb-move-note").value = "";
+        var verTa = document.getElementById("kb-move-verify");
+        if (verTa) verTa.value = "";
+        var artWrap = document.getElementById("kb-move-artifacts-wrap");
+        var artTa = document.getElementById("kb-move-artifacts");
+        if (artWrap && artTa) {
+          if (toCol === "done") {
+            artWrap.classList.remove("is-hidden");
+            artTa.value = "";
+          } else {
+            artWrap.classList.add("is-hidden");
+            artTa.value = "";
+          }
+        }
+        if (typeof dlg.showModal === "function") dlg.showModal();
+      }
+
+      function syncColorInputs(colorEl, hexEl) {
+        if (!colorEl || !hexEl) return;
+        hexEl.addEventListener("input", function () {
+          var v = (hexEl.value || "").trim();
+          if (/^#[0-9A-Fa-f]{6}$/.test(v)) colorEl.value = v;
+        });
+        colorEl.addEventListener("input", function () {
+          hexEl.value = colorEl.value;
+        });
+        hexEl.value = colorEl.value;
+      }
+
+      function populateKinds() {
+        var sel = document.getElementById("kb-add-kind");
+        sel.innerHTML = "";
+        kinds.forEach(function (k) {
+          var o = document.createElement("option");
+          o.value = k.code;
+          o.textContent = k.label;
+          sel.appendChild(o);
+        });
+        var pick = "ndy";
+        if (!Array.prototype.some.call(sel.options, function (op) { return op.value === pick; })) {
+          pick = kinds.length ? kinds[0].code : "ndy";
+        }
+        sel.value = pick;
+      }
+
+      var openAdd = document.getElementById("scrum-open-add-do");
+      if (!readOnly && openAdd && addDlg) {
+        openAdd.addEventListener("click", function () {
+          populateKinds();
+          document.getElementById("kb-add-title").value = "";
+          document.getElementById("kb-add-details").value = "";
+          var dodEl = document.getElementById("kb-add-dod");
+          if (dodEl) dodEl.value = "";
+          document.getElementById("kb-add-est").value = "";
+          var areaEl = document.getElementById("kb-add-area");
+          if (areaEl) areaEl.value = "";
+          if (typeof addDlg.showModal === "function") addDlg.showModal();
+        });
+      }
+
+      document.getElementById("kb-add-cancel").addEventListener("click", function () {
+        if (typeof addDlg.close === "function") addDlg.close();
+      });
+
+      document.getElementById("kb-add-form").addEventListener("submit", function (e) {
+        e.preventDefault();
+        if (readOnly) return;
+        var title = (document.getElementById("kb-add-title").value || "").trim();
+        var notes = (document.getElementById("kb-add-details").value || "").trim();
+        var dod = ((document.getElementById("kb-add-dod") || { value: "" }).value || "").trim();
+        var est = (document.getElementById("kb-add-est").value || "").trim();
+        var area = ((document.getElementById("kb-add-area") || { value: "" }).value || "").trim();
+        var payload = {
+          sprint_id: cfg.sprintId,
+          assignee: cfg.assignee,
+          title: title,
+          notes: notes,
+          dod: dod,
+          estimate_hours: est,
+        };
+        if (area) payload.area = area;
+        payload.task_kind_code = document.getElementById("kb-add-kind").value || "ndy";
+        postJson(itemAddUrl, payload).then(function (res) {
+          if (res.ok) {
+            // Page reloads to show the immediate update
+
+            if (typeof addDlg.close === "function") addDlg.close();
+            window.location.reload();
+          } else {
+            var err = res.j && res.j.error ? res.j.error : "Could not create sticky";
+            if (err === "estimate_required") err = "Estimated hours must be greater than zero.";
+            if (err === "sprint_closed") err = "This sprint is closed (read-only).";
+            alert(err);
+          }
+        });
+      });
+
+      if (!readOnly) {
+      document.querySelectorAll("[data-drop-column]").forEach(function (zone) {
+        zone.addEventListener(
+          "dragover",
+          function (e) {
+            e.preventDefault();
+            try {
+              e.dataTransfer.dropEffect = "move";
+            } catch (err) {}
+            zone.classList.add("drag-over");
+          },
+          true
+        );
+        zone.addEventListener("dragleave", function (e) {
+          if (zone.contains(e.relatedTarget)) return;
+          zone.classList.remove("drag-over");
+        });
+        zone.addEventListener(
+          "drop",
+          function (e) {
+            handleColumnDrop(zone, e);
+          },
+          true
+        );
+      });
+
+      if (doingResetDlg) {
+        doingResetDlg.addEventListener("close", function () {
+          pendingDoingToDo = null;
+        });
+      }
+      var doingResetOk = document.getElementById("kb-doing-reset-ok");
+      if (doingResetOk) {
+        doingResetOk.addEventListener("click", function () {
+          var pack = pendingDoingToDo;
+          pendingDoingToDo = null;
+          if (!pack || !pack.data) {
+            if (doingResetDlg && typeof doingResetDlg.close === "function") doingResetDlg.close();
+            return;
+          }
+          var data = pack.data;
+          if (doingResetDlg && typeof doingResetDlg.close === "function") doingResetDlg.close();
+          sendKanbanMove({
+            item_id: parseInt(data.itemId, 10),
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+            to_column: "do",
+            note: "",
+            committed_hours: "0",
+          });
+        });
+      }
+      var doingResetCancel = document.getElementById("kb-doing-reset-cancel");
+      if (doingResetCancel) {
+        doingResetCancel.addEventListener("click", function () {
+          pendingDoingToDo = null;
+          if (doingResetDlg && typeof doingResetDlg.close === "function") doingResetDlg.close();
+        });
+      }
+
+      document.querySelectorAll(".scrum-sticky[draggable]").forEach(function (el) {
+        el.addEventListener("dragstart", function (e) {
+          var id = el.getAttribute("data-item-id");
+          var from = el.getAttribute("data-from-column");
+          var rawLh = el.getAttribute("data-logged-hours");
+          var loggedHours =
+            rawLh === null || String(rawLh).trim() === ""
+              ? 0
+              : parseFloat(String(rawLh).replace(",", "."));
+          if (isNaN(loggedHours)) loggedHours = 0;
+          var dragJson = JSON.stringify({ itemId: id, from: from, loggedHours: loggedHours });
+          e.dataTransfer.setData("application/json", dragJson);
+          e.dataTransfer.setData("text/plain", dragJson);
+          e.dataTransfer.effectAllowed = "move";
+        });
+      });
+
+      } /* end !readOnly: drag/drop */
+
+      document.getElementById("kb-move-cancel").addEventListener("click", function () {
+        pending = null;
+        var hint = document.getElementById("kb-move-reset-hint");
+        if (hint) {
+          hint.textContent = "";
+          hint.classList.add("is-hidden");
+        }
+        var artTa = document.getElementById("kb-move-artifacts");
+        if (artTa) artTa.value = "";
+        var verTa2 = document.getElementById("kb-move-verify");
+        if (verTa2) verTa2.value = "";
+        if (typeof dlg.close === "function") dlg.close();
+      });
+
+      document.getElementById("kb-move-confirm").addEventListener("click", function () {
+        if (!pending) return;
+        var hrsRaw = (document.getElementById("kb-move-hrs").value || "").trim();
+        var note = document.getElementById("kb-move-note").value || "";
+        var moveBody = {
+          item_id: parseInt(pending.itemId, 10),
+          sprint_id: cfg.sprintId,
+          assignee: cfg.assignee,
+          to_column: pending.to,
+          note: note,
+        };
+        if (pending.from === "do" && pending.to === "doing") {
+          moveBody.committed_hours = hrsRaw === "" ? null : hrsRaw;
+        } else {
+          moveBody.committed_hours = hrsRaw === "" ? "0" : hrsRaw;
+        }
+        if (pending.to === "done") {
+          var artEl = document.getElementById("kb-move-artifacts");
+          moveBody.artifacts = parseArtifactLines(artEl ? artEl.value : "");
+        }
+        var verEl = document.getElementById("kb-move-verify");
+        if (verEl) {
+          var pv = parseProofUrlLines(verEl.value);
+          if (pv.length) moveBody.verification_urls = pv;
+        }
+        sendKanbanMove(moveBody);
+      });
+
+      var welldoneDlg = document.getElementById("kb-welldone-dialog");
+      var apprecUrl = apiUrls.item_appreciation;
+      var apprecDeleteAllUrl = apiUrls.item_appreciation_delete_all;
+      if (welldoneDlg && apprecUrl) {
+        var welldoneItemId = document.getElementById("kb-welldone-item-id");
+        var welldoneTa = document.getElementById("kb-welldone-comment");
+        function openWelldoneDialog(itemId) {
+          if (welldoneItemId) welldoneItemId.value = itemId || "";
+          if (welldoneTa) welldoneTa.value = "";
+          if (typeof welldoneDlg.showModal === "function") welldoneDlg.showModal();
+        }
+        function deleteAllAppreciations(btn) {
+          if (!apprecDeleteAllUrl) {
+            alert("Removing appreciations is not available on this page. Refresh and try again.");
+            return;
+          }
+          var n = parseInt((btn.getAttribute("data-appreciation-count") || "0"), 10);
+          if (!n || isNaN(n)) {
+            alert("This sticky has no appreciation comments to remove.");
+            return;
+          }
+          if (
+            !confirm(
+              "Delete all appreciation comments for this sticky? The thumbs-up and notes will be removed. This cannot be undone."
+            )
+          ) {
+            return;
+          }
+          var itemId = parseInt(btn.getAttribute("data-item-id") || "0", 10);
+          postJson(apprecDeleteAllUrl, {
+            item_id: itemId,
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+          }).then(function (res) {
+            if (res.ok) {
+              window.location.reload();
+            } else {
+              var code = res.j && res.j.error ? res.j.error : "";
+              alert(moveErrorMessage(code));
+            }
+          });
+        }
+        document.querySelectorAll(".scrum-well-done-trigger").forEach(function (btn) {
+          btn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            if (e.detail === 2) {
+              if (btn._wdSingleTimer) {
+                clearTimeout(btn._wdSingleTimer);
+                btn._wdSingleTimer = null;
+              }
+              deleteAllAppreciations(btn);
+              return;
+            }
+            if (btn._wdSingleTimer) clearTimeout(btn._wdSingleTimer);
+            btn._wdSingleTimer = setTimeout(function () {
+              btn._wdSingleTimer = null;
+              openWelldoneDialog(btn.getAttribute("data-item-id"));
+            }, 280);
+          });
+        });
+        document.getElementById("kb-welldone-cancel").addEventListener("click", function () {
+          if (typeof welldoneDlg.close === "function") welldoneDlg.close();
+        });
+        document.getElementById("kb-welldone-submit").addEventListener("click", function () {
+          var idRaw = welldoneItemId ? welldoneItemId.value : "";
+          var itemId = parseInt(idRaw, 10);
+          var comment = ((welldoneTa && welldoneTa.value) || "").trim();
+          if (!comment) {
+            alert(moveErrorMessage("missing_comment"));
+            return;
+          }
+          postJson(apprecUrl, {
+            item_id: itemId,
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+            comment: comment,
+          }).then(function (res) {
+            if (res.ok) {
+              if (typeof welldoneDlg.close === "function") welldoneDlg.close();
+              window.location.reload();
+            } else {
+              var code = res.j && res.j.error ? res.j.error : "";
+              alert(moveErrorMessage(code));
+            }
+          });
+        });
+      }
+
+      if (!readOnly) {
+      document.querySelectorAll(".kb-add-note").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var id = btn.getAttribute("data-item-id");
+          var ta = document.getElementById("dn-" + id);
+          var hrsEl = document.getElementById("dh-" + id);
+          var verEl = document.getElementById("dv-" + id);
+          var txt = (ta && ta.value) || "";
+          var hrsRaw = (hrsEl && hrsEl.value) || "0";
+          if (!txt.trim() && (!hrsRaw || parseFloat(hrsRaw) < 0)) {
+            alert("Add a note and/or Burnt hours for this update.");
+            return;
+          }
+          var payload = {
+            item_id: parseInt(id, 10),
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+            note: txt,
+            committed_hours: hrsRaw,
+          };
+          if (verEl) {
+            var pv = parseProofUrlLines(verEl.value);
+            if (pv.length) payload.verification_urls = pv;
+          }
+          postJson(apiUrls.item_note, payload).then(function (res) {
+            if (res.ok) {
+              // Page reloads to show the immediate update
+
+              if (ta) ta.value = "";
+              if (hrsEl) hrsEl.value = "";
+              if (verEl) verEl.value = "";
+              window.location.reload();
+            } else {
+              alert(res.j && res.j.error ? res.j.error : "Could not save update");
+            }
+          });
+        });
+      });
+      }
+
+      document.querySelectorAll(".scrum-standup-edit-btn").forEach(function(btn) {
+        btn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          var li = btn.closest(".scrum-standup-item");
+          li.querySelector(".scrum-standup-item-content").style.display = "none";
+          li.querySelector(".scrum-standup-edit-form").style.display = "block";
+        });
+      });
+
+      document.querySelectorAll(".scrum-standup-cancel-btn").forEach(function(btn) {
+        btn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          var li = btn.closest(".scrum-standup-item");
+          li.querySelector(".scrum-standup-edit-form").style.display = "none";
+          li.querySelector(".scrum-standup-item-content").style.display = "block";
+        });
+      });
+
+      document.querySelectorAll(".scrum-standup-save-btn").forEach(function(btn) {
+        btn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          var li = btn.closest(".scrum-standup-item");
+          var actId = li.getAttribute("data-activity-id");
+          var txt = li.querySelector(".scrum-standup-edit-body").value;
+          var hrsRaw = li.querySelector(".scrum-standup-edit-hrs").value;
+          var card = li.closest(".scrum-sticky");
+          var itemId = card.getAttribute("data-id");
+
+          var payload = {
+            item_id: parseInt(itemId, 10),
+            activity_id: parseInt(actId, 10),
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+            note: txt,
+            committed_hours: hrsRaw
+          };
+
+          postJson(apiUrls.item_activity_update, payload).then(function(res) {
+            if (res.ok) {
+              window.location.reload();
+            } else {
+              alert(res.j && res.j.error ? res.j.error : "Could not update activity");
+            }
+          });
+        });
+      });
+
+
+      document.querySelectorAll(".scrum-sticky-toggle").forEach(function(btn) {
+        btn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          var sticky = btn.closest(".scrum-sticky");
+          if (sticky) {
+            var isExpanded = sticky.classList.toggle("is-expanded");
+            var icon = btn.querySelector("polyline");
+            if (icon) {
+              icon.setAttribute("points", isExpanded ? "18 15 12 9 6 15" : "6 9 12 15 18 9");
+            }
+          }
+        });
+      });
+
+      document.querySelectorAll(".scrum-do-edit-summary").forEach(function (sum) {
+        sum.addEventListener("click", function (e) {
+          e.stopPropagation();
+        });
+      });
+      document.querySelectorAll(".scrum-done-edit-summary").forEach(function (sum) {
+        sum.addEventListener("click", function (e) {
+          e.stopPropagation();
+        });
+      });
+      document.querySelectorAll(".scrum-do-edit").forEach(function (det) {
+        det.addEventListener("toggle", function () {
+          if (readOnly) return;
+          var sticky = det.closest(".scrum-sticky");
+          if (!sticky) return;
+          if (det.open) sticky.setAttribute("draggable", "false");
+          else sticky.setAttribute("draggable", "true");
+        });
+      });
+      document.querySelectorAll(".scrum-done-edit").forEach(function (det) {
+        det.addEventListener("toggle", function () {
+          if (readOnly) return;
+          var sticky = det.closest(".scrum-sticky");
+          if (!sticky) return;
+          if (det.open) sticky.setAttribute("draggable", "false");
+          else sticky.setAttribute("draggable", "true");
+        });
+      });
+      document.querySelectorAll(".scrum-sticky button, .scrum-sticky textarea, .scrum-sticky input, .scrum-sticky select, .scrum-sticky form, .scrum-sticky details").forEach(function (el) {
+        el.addEventListener("mousedown", function (e) {
+          e.stopPropagation();
+        });
+        el.addEventListener("dragstart", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+      });
+    })();
+  </script>
+{% endblock %}

@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}TEAM MANAGEMENT PORTAL — Sign in{% endblock %}
+{% block body_class %}portal-nokia-body{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+{% endblock %}
+{% block content %}
+  <div class="nokia-landing-grid">
+    <section class="nokia-login-card nokia-login-card--employee">
+      <p class="nokia-logo-text" aria-label="Nokia employee">NOKIA EMPLOYEE</p>
+      <p class="nokia-login-lead">
+        TEAM MANAGEMENT PORTAL (SPRINT Planning) — sign in with your Nokia account (Microsoft or email code).
+        <strong>Apply for leave</strong> and <strong>manage Sprint task updates</strong> are only available after you sign in.
+      </p>
+      {% if portal_user %}
+        <p class="nokia-login-lead">Signed in as <strong>{{ portal_user.name }}</strong>.</p>
+        <a class="nokia-btn-ms" href="{{ url_for('portal_dashboard') }}">Go to my dashboard</a>
+        <div class="nokia-signed-links">
+          <a href="{{ url_for('portal_leave_apply') }}">Apply for leave</a>
+          <span aria-hidden="true">·</span>
+          <a href="{{ url_for('my_requests') }}">My Leave Status</a>
+          <span aria-hidden="true">·</span>
+          <a href="{{ url_for('portal_my_sprint_kanban') }}">My sprint work</a>
+        </div>
+        <form method="post" action="{{ url_for('portal_logout') }}" class="nokia-signout-form">
+          {% include "partials/csrf.html" %}
+          <button type="submit" class="btn secondary" style="width: 100%">Sign out</button>
+        </form>
+      {% else %}
+        {% if not employee_signin_configured %}
+          <p class="nokia-login-foot nokia-login-warn">
+            Employee sign-in is not configured for production. Set <strong>MICROSOFT_OAUTH_CLIENT_ID</strong> (+ secret) or
+            <strong>PORTAL_OTP_SMTP_HOST</strong> + <strong>PORTAL_OTP_FROM</strong>.
+            For local use, leave <strong>TEAM_TRACKER_PRODUCTION</strong> unset and the app auto-enables email OTP dev mode (code on screen + log), or set <strong>PORTAL_OTP_DEV_CONSOLE=1</strong> explicitly.
+            To require real auth in staging, set <strong>TEAM_TRACKER_PRODUCTION=1</strong> and <strong>PORTAL_OTP_DEV_CONSOLE=0</strong>. See README.
+          </p>
+        {% endif %}
+        {% if microsoft_oauth_configured %}
+          <a id="ms-signin" class="nokia-btn-ms" href="{{ url_for('portal_ms_start') }}">
+            <span class="nokia-spinner" aria-hidden="true"></span>
+            <span class="nokia-btn-label">Sign in with Microsoft</span>
+          </a>
+        {% endif %}
+        {% if microsoft_oauth_configured and email_otp_configured %}
+          <p class="nokia-login-or" role="separator">or</p>
+        {% endif %}
+        {% if email_otp_configured %}
+          <div class="nokia-otp-block">
+            {% if portal_otp_pending_email %}
+              <p class="nokia-login-lead nokia-otp-lead">Enter the 6-digit code sent to <strong>{{ portal_otp_pending_email }}</strong>.</p>
+              <form method="post" action="{{ url_for('portal_email_otp_verify') }}" class="stack-form nokia-manager-form">
+                {% include "partials/csrf.html" %}
+                <div class="field">
+                  <label for="otp-code">One-time code</label>
+                  <input id="otp-code" name="code" type="text" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" maxlength="14" required placeholder="123456" />
+                </div>
+                <button type="submit" class="btn secondary" style="width: 100%">Verify and sign in</button>
+              </form>
+              <form method="post" action="{{ url_for('portal_email_otp_send') }}" class="nokia-otp-resend">
+                {% include "partials/csrf.html" %}
+                <input type="hidden" name="email" value="{{ portal_otp_pending_email }}" />
+                <button type="submit" class="btn secondary">Resend code</button>
+              </form>
+              <p class="nokia-login-foot"><a href="{{ url_for('portal_email_otp_cancel') }}">Use a different email</a></p>
+            {% else %}
+              <p class="nokia-login-lead nokia-otp-lead">Sign in with a one-time code sent to your Nokia email (must be in this team’s directory).</p>
+              <form method="post" action="{{ url_for('portal_email_otp_send') }}" class="stack-form nokia-manager-form">
+                {% include "partials/csrf.html" %}
+                <div class="field">
+                  <label for="otp-email">Nokia email</label>
+                  <input id="otp-email" name="email" type="email" autocomplete="username" required placeholder="you@nokia.com" />
+                </div>
+                <button type="submit" class="btn secondary" style="width: 100%">Email me a code</button>
+              </form>
+            {% endif %}
+          </div>
+        {% endif %}
+        {% if microsoft_oauth_configured and not email_otp_configured %}
+          <p class="nokia-login-foot">With Microsoft you use your Nokia corporate identity. You will only see <strong>your</strong> leave and sprint items.</p>
+        {% elif email_otp_configured and not microsoft_oauth_configured %}
+          <p class="nokia-login-foot">
+            One-time codes expire in a few minutes. With SMTP they are emailed to you; with
+            <strong>PORTAL_OTP_DEV_CONSOLE=1</strong> the code also appears on screen (local dev only). You will only see <strong>your</strong> leave and sprint items.
+          </p>
+        {% elif microsoft_oauth_configured and email_otp_configured %}
+          <p class="nokia-login-foot">You will only see <strong>your</strong> leave and sprint items.</p>
+        {% endif %}
+      {% endif %}
+    </section>
+
+    <div class="nokia-access-stack">
+      <section class="nokia-login-card nokia-login-card--manager">
+        <h2 class="nokia-manager-heading">Manager access</h2>
+        <p class="nokia-login-lead nokia-manager-lead">
+          Enter the team <strong>manager access code</strong> to open the full leave tracker, approvals, Scrum boards, Meet, and reports.
+        </p>
+        {% if manager_password_configured %}
+          <form method="post" action="{{ url_for('dashboard') }}" class="stack-form nokia-manager-form">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="gate_kind" value="manager" />
+            <div class="field">
+              <label for="mgr-secret" class="nokia-access-label">Access code</label>
+              <input id="mgr-secret" name="secret_code" type="password" autocomplete="current-password" required placeholder="Manager code" />
+            </div>
+            <button type="submit" class="btn secondary" style="width: 100%">Sign in as manager</button>
+          </form>
+        {% else %}
+          <p class="nokia-login-foot">Manager access is not configured on this server.</p>
+        {% endif %}
+      </section>
+
+      <section class="nokia-login-card nokia-login-card--manager nokia-login-card--lpo">
+        <h2 class="nokia-manager-heading">LPO/SM access</h2>
+        <p class="nokia-login-lead nokia-manager-lead">
+          Same <strong>access-code</strong> sign-in and <strong>full manager privileges</strong> (leave tracker, approvals, Scrum, Meet, reports) — use the <strong>separate LPO/SM code</strong> configured for this server (not the manager code).
+        </p>
+        {% if lpo_sm_password_configured %}
+          <form method="post" action="{{ url_for('dashboard') }}" class="stack-form nokia-manager-form">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="gate_kind" value="lpo_sm" />
+            <div class="field">
+              <label for="lpo-secret" class="nokia-access-label">Access code</label>
+              <input id="lpo-secret" name="secret_code" type="password" autocomplete="current-password" required placeholder="LPO/SM code" />
+            </div>
+            <button type="submit" class="btn secondary" style="width: 100%">Sign in as LPO/SM</button>
+          </form>
+        {% else %}
+          <p class="nokia-login-foot">
+            Set <strong>LPO_SM_DASHBOARD_PASSWORD</strong> in your <code>.env</code> (beside <code>app.py</code>) to a secret <strong>different from</strong> <strong>MANAGER_DASHBOARD_PASSWORD</strong>, then restart the app.
+          </p>
+        {% endif %}
+      </section>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var a = document.getElementById("ms-signin");
+      if (!a) return;
+      a.addEventListener("click", function () {
+        a.classList.add("is-loading");
+      });
+    })();
+  </script>
+{% endblock %}

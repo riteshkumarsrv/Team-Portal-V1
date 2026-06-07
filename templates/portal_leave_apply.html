@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Apply for leave{% endblock %}
+{% block body_class %}portal-nokia-body{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+{% endblock %}
+{% block content %}
+  <a class="portal-back" href="{{ url_for('portal_dashboard') }}">← Dashboard</a>
+  <header class="portal-shell-top">
+    <div class="portal-user-pill">
+      <div class="portal-avatar" aria-hidden="true">{{ (portal_user.name or "?")[:1] }}</div>
+      <div class="portal-user-meta">
+        <span class="portal-user-name">{{ portal_user.name }}</span>
+        <span class="portal-user-email">{{ portal_user.email }}</span>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('portal_logout') }}" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit" class="btn secondary small">Sign out</button>
+    </form>
+  </header>
+
+  <h1 class="page-heading" style="color: #fff; margin-top: 0">Apply for leave</h1>
+  <p class="portal-identity-banner">
+    Submitting as <strong>{{ portal_user.name }}</strong>
+    <span class="portal-identity-roster">({{ portal_user.roster_name }})</span>
+  </p>
+  <p class="portal-identity-note">Your name cannot be changed here — only your own requests are allowed.</p>
+  <div class="portal-form-card">
+    <form method="post" class="stack-form">
+      {% include "partials/csrf.html" %}
+      <div class="field">
+        <label for="leave_kind">Leave type</label>
+        <select id="leave_kind" name="leave_kind" required>
+          {% for code, label in leave_choices %}
+            <option value="{{ code }}" {% if form.get('leave_kind') == code %}selected{% elif not form.get('leave_kind') and loop.first %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="start_date">Start date</label>
+        <input id="start_date" name="start_date" type="date" required value="{{ form.get('start_date', default_start) }}" />
+      </div>
+      <div class="field">
+        <label for="end_date">End date</label>
+        <input id="end_date" name="end_date" type="date" required value="{{ form.get('end_date', default_end) }}" />
+      </div>
+      <div class="field">
+        <label for="reason">Reason</label>
+        <textarea id="reason" name="reason" rows="4" maxlength="300" required placeholder="Up to 300 characters">{{ form.get('reason', '') }}</textarea>
+      </div>
+      <button type="submit" class="btn">Submit request</button>
+    </form>
+  </div>
+{% endblock %}

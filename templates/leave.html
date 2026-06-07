@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Apply — TEAM MANAGEMENT PORTAL{% endblock %}
+{% block content %}
+<section class="card">
+  <h2 class="page-heading">Apply for leave</h2>
+
+  <form method="post" action="{{ url_for('leave_apply') }}" class="stack-form" id="leave-form" novalidate>
+    {% include "partials/csrf.html" %}
+    <div class="field">
+      <label for="employee_name">Name</label>
+      <input id="employee_name" name="employee_name" type="text" required autocomplete="off" value="{{ form.get('employee_name', '') }}" />
+    </div>
+
+    <div class="field">
+      <label for="reason">Leave type</label>
+      <select id="reason" name="reason" required>
+        <option value="" disabled {% if not form.get('reason') %}selected{% endif %}>—</option>
+        {% for value, label in reasons %}
+          <option value="{{ value }}" {% if form.get('reason') == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <fieldset class="date-fieldset">
+      <legend class="date-fieldset-legend">Leave dates</legend>
+      <p class="date-fieldset-hint" id="date-range-hint">Choose the first and last calendar day of your leave.</p>
+      <div class="grid-2 date-range-grid">
+        <div class="field">
+          <label for="start_date">First day off</label>
+          <input
+            id="start_date"
+            name="start_date"
+            type="date"
+            required
+            value="{{ form.get('start_date', default_start) }}"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field">
+          <label for="end_date">Last day off</label>
+          <input
+            id="end_date"
+            name="end_date"
+            type="date"
+            required
+            value="{{ form.get('end_date', default_end) }}"
+            autocomplete="off"
+            aria-describedby="date-range-hint"
+          />
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="day-part-fieldset" id="day_part_fieldset" aria-labelledby="day-part-legend">
+      <legend id="day-part-legend" class="date-fieldset-legend">Same first and last day</legend>
+      <p class="date-fieldset-hint" id="day-part-hint">Only needed when leave is a single calendar day.</p>
+      <div class="day-part-options" role="radiogroup" aria-labelledby="day-part-legend" aria-describedby="day-part-hint">
+        {% for value, label in day_parts %}
+          <label class="day-part-option">
+            <input
+              type="radio"
+              name="day_part"
+              value="{{ value }}"
+              {% if (form.get('day_part') or 'full') == value %}checked{% endif %}
+            />
+            <span>{{ label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">Submit</button>
+    </div>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='name_autocomplete.js') }}"></script>
+<script>
+  setupEmployeeAutocomplete("employee_name");
+</script>
+<script>
+  (function () {
+    var start = document.getElementById("start_date");
+    var end = document.getElementById("end_date");
+    var fieldset = document.getElementById("day_part_fieldset");
+
+    function syncEndMin() {
+      if (start.value) {
+        end.min = start.value;
+        if (end.value && end.value < start.value) {
+          end.value = start.value;
+        }
+      } else {
+        end.removeAttribute("min");
+      }
+    }
+
+    function syncDayPartVisibility() {
+      if (!start.value || !end.value) {
+        fieldset.hidden = false;
+        return;
+      }
+      var same = start.value === end.value;
+      fieldset.hidden = !same;
+      if (!same) {
+        var full = fieldset.querySelector('input[name="day_part"][value="full"]');
+        if (full) full.checked = true;
+      }
+    }
+
+    start.addEventListener("change", function () {
+      syncEndMin();
+      syncDayPartVisibility();
+    });
+    end.addEventListener("change", function () {
+      if (start.value && end.value < start.value) {
+        end.value = start.value;
+      }
+      syncDayPartVisibility();
+    });
+    syncEndMin();
+    syncDayPartVisibility();
+  })();
+</script>
+{% endblock %}

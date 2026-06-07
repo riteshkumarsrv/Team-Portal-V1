@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Employee change requests — Scrum{% endblock %}
+{% block body_class %}page-scrum-board{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css') }}" />
+{% endblock %}
+{% block content %}
+  <section class="card scrum-board-hero">
+    <p class="scrum-hero-back"><a href="{{ url_for('scrum') }}">← Sprint hub</a></p>
+    <h2 class="page-heading">Employee change requests</h2>
+    <p class="scrum-board-muted" style="max-width: 44rem">
+      When someone updates their sprint work from the <strong>employee portal</strong>, it appears here first.
+      <strong>Approve</strong> applies it to the shared sprint board and activity log (prefixed <code>[approved employee change]</code>).
+      <strong>Reject</strong> leaves the board unchanged.
+    </p>
+  </section>
+
+  {% if not proposals %}
+    <section class="card">
+      <p class="scrum-board-muted">No pending requests for this team.</p>
+    </section>
+  {% else %}
+    <section class="card">
+      <h3 class="section-subheading">Pending ({{ proposals|length }})</h3>
+      <div class="scrum-proposals-list">
+        {% for p in proposals %}
+          <article class="scrum-proposal-card">
+            <header class="scrum-proposal-head">
+              <div>
+                <span class="scrum-proposal-meta">{{ p.created_at }} · {{ p.proposer }}</span>
+                <h4 class="scrum-proposal-title">{{ p.summary }}</h4>
+                <p class="scrum-board-muted" style="margin: 0.25rem 0 0; font-size: 0.85rem">
+                  Sprint: <a href="{{ url_for('scrum_sprint_team', sprint_id=p.sprint_id) }}">{{ p.sprint_name }}</a>
+                  · action <code>{{ p.action }}</code>
+                </p>
+              </div>
+            </header>
+            <details class="scrum-proposal-payload">
+              <summary>Payload (JSON)</summary>
+              <pre class="scrum-proposal-pre">{{ p.payload_pretty }}</pre>
+            </details>
+            <div class="scrum-proposal-actions">
+              <form method="post" action="{{ url_for('scrum_portal_proposal_resolve') }}" class="inline-form">
+                {% include "partials/csrf.html" %}
+                <input type="hidden" name="proposal_id" value="{{ p.id }}" />
+                <input type="hidden" name="decision" value="approve" />
+                <div class="field" style="margin: 0 0 0.5rem">
+                  <label for="note-ap-{{ p.id }}">Manager note (optional)</label>
+                  <input id="note-ap-{{ p.id }}" name="note" type="text" maxlength="500" placeholder="e.g. LGTM" />
+                </div>
+                <label class="scrum-proposal-attest">
+                  <input type="checkbox" name="manager_attest" value="1" required />
+                  Reviewed — I approve applying this change.
+                </label>
+                <button type="submit" class="btn">Approve &amp; apply</button>
+              </form>
+              <form method="post" action="{{ url_for('scrum_portal_proposal_resolve') }}" class="inline-form">
+                {% include "partials/csrf.html" %}
+                <input type="hidden" name="proposal_id" value="{{ p.id }}" />
+                <input type="hidden" name="decision" value="reject" />
+                <div class="field" style="margin: 0 0 0.5rem">
+                  <label for="note-rj-{{ p.id }}">Reason (optional)</label>
+                  <input id="note-rj-{{ p.id }}" name="note" type="text" maxlength="500" placeholder="Why not" />
+                </div>
+                <button type="submit" class="btn secondary danger-ghost">Reject</button>
+              </form>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

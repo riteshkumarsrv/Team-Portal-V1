@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Edit #{{ row["id"] }} — TEAM MANAGEMENT PORTAL{% endblock %}
+{% block content %}
+<section class="card">
+  <h2 class="page-heading">Leave #{{ row["id"] }}</h2>
+
+  <form method="post" action="{{ url_for('dashboard_leave_edit', leave_id=row['id']) }}" class="stack-form">
+    {% include "partials/csrf.html" %}
+    <input type="hidden" name="return_year" value="{{ return_year }}" />
+    <input type="hidden" name="return_month" value="{{ return_month }}" />
+
+    <div class="field">
+      <label for="employee_name">Employee</label>
+      <select id="employee_name" name="employee_name" required>
+        {% for name in employees %}
+          <option value="{{ name }}" {% if (form.get('employee_name') or row['employee_name']) == name %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="reason">Leave type</label>
+      <select id="reason" name="reason" required>
+        {% for value, label in reasons %}
+          <option value="{{ value }}" {% if (form.get('reason') or row['reason']) == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="grid-2">
+      <div class="field">
+        <label for="start_date">First day</label>
+        <input id="start_date" name="start_date" type="date" required value="{{ form.get('start_date', row['start_date']) }}" />
+      </div>
+      <div class="field">
+        <label for="end_date">Last day</label>
+        <input id="end_date" name="end_date" type="date" required value="{{ form.get('end_date', row['end_date']) }}" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="duration_type">Duration</label>
+      <select id="duration_type" name="duration_type" required>
+        {% for value, label in durations %}
+          <option value="{{ value }}" {% if (form.get('duration_type') or row['duration_type']) == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="status">Status</label>
+      <select id="status" name="status" required>
+        {% for st in ["pending", "approved", "rejected"] %}
+          <option value="{{ st }}" {% if (form.get('status') or row['status']) == st %}selected{% endif %}>{{ st }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="field field-readonly">
+      <label>Source IP</label>
+      <div class="readonly-value">{{ row["submitted_ip"] or "—" }}</div>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">Save</button>
+      <a
+        class="btn secondary"
+        href="{% if return_year and return_month %}{{ url_for('dashboard', year=return_year|int, month=return_month|int) }}{% else %}{{ url_for('dashboard') }}{% endif %}"
+        >Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}My leave history{% endblock %}
+{% block body_class %}portal-nokia-body{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+{% endblock %}
+{% block content %}
+  <a class="portal-back" href="{{ url_for('portal_dashboard') }}">← Dashboard</a>
+  <header class="portal-shell-top">
+    <div class="portal-user-pill">
+      <div class="portal-avatar" aria-hidden="true">{{ (portal_user.name or "?")[:1] }}</div>
+      <div class="portal-user-meta">
+        <span class="portal-user-name">{{ portal_user.name }}</span>
+        <span class="portal-user-email">{{ portal_user.email }}</span>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('portal_logout') }}" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit" class="btn secondary small">Sign out</button>
+    </form>
+  </header>
+
+  <h1 class="page-heading" style="color: #fff; margin-top: 0">My leave history</h1>
+  {% if not display_rows %}
+    <p style="color: #94a3b8">You have not applied for any leave yet.</p>
+  {% else %}
+    <div class="portal-table-wrap">
+      <table class="portal-table">
+        <thead>
+          <tr>
+            <th>Leave type</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Working days</th>
+            <th>Reason</th>
+            <th>Status</th>
+            <th>Applied on</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in display_rows %}
+            {% set r = row.raw %}
+            <tr>
+              <td>{{ row.leave_type }}</td>
+              <td>{{ r.start_date[:10] }}</td>
+              <td>{{ r.end_date[:10] }}</td>
+              <td>{{ row.working_days }}</td>
+              <td>{{ (r.description or "")[:120] }}{% if (r.description or "")|length > 120 %}…{% endif %}</td>
+              <td>
+                {% if r.status == "pending" %}
+                  <span class="portal-badge portal-badge--pending">Pending</span>
+                {% elif r.status == "approved" %}
+                  <span class="portal-badge portal-badge--approved">Approved</span>
+                {% elif r.status == "rejected" %}
+                  <span class="portal-badge portal-badge--rejected">Rejected</span>
+                {% else %}
+                  <span class="portal-badge">{{ r.status }}</span>
+                {% endif %}
+              </td>
+              <td>{{ r.created_at[:19] }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

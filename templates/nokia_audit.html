@@ -1,0 +1,345 @@
+{% extends "base.html" %}
+{% block title %}Nokia e-tool — {{ active_team_name or "Team" }}{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_audit.css') }}" />
+{% endblock %}
+{% block content %}
+<section class="card nokia-audit-intro">
+  <h2 class="page-heading">Nokia e-tool vs leave tracker</h2>
+  <p class="meet-hint" style="margin-top: 0">
+    First choose the <strong>calendar month</strong> you want to compare (must match the Nokia grid). Then provide either a <strong>screenshot</strong> of the Nokia leave grid <em>or</em> a <strong>CSV export</strong> (Save As CSV from Excel / Nokia),
+    and run <strong>Compare</strong>. You can attach both: CSV is used for the table text;
+    the image still drives <strong>layout + color sampling</strong> for red / pink cells when day codes are not visible in export.
+    The server uses <strong>Tesseract OCR</strong> on screenshots when no CSV is given. Results are compared to this app’s leave tracker
+    (pending and approved leave for every roster member, same rules as the dashboard grid).
+    Non-empty Nokia day cells (except <code>-</code>, <code>.</code>, <code>0</code>, etc.) count as leave in Nokia.
+  </p>
+  <p class="meet-hint">
+    <a class="btn secondary" href="{{ url_for('dashboard', year=year, month=month) }}">Back to leave tracker</a>
+    <a class="btn secondary" href="{{ url_for('reports') }}">Settings</a>
+  </p>
+</section>
+
+<section class="card">
+  <form
+    id="nokia-audit-form"
+    method="post"
+    action="{{ url_for('nokia_audit') }}"
+    enctype="multipart/form-data"
+    class="stack-form nokia-audit-form"
+  >
+    {% include "partials/csrf.html" %}
+
+    <h3 class="nokia-step-title">1. Calendar month to compare</h3>
+    <p class="meet-hint" style="margin-top: 0">
+      Leave and Nokia day columns are interpreted for this month only. Use the links to switch months without leaving the page.
+    </p>
+    <div class="field-row nokia-month-row">
+      <div class="field">
+        <label for="year">Year</label>
+        <input id="year" name="year" type="number" min="2000" max="2100" value="{{ year }}" required />
+      </div>
+      <div class="field">
+        <label for="month">Month</label>
+        <select id="month" name="month" aria-label="Calendar month for Nokia compare">
+          {% for m, mname in month_choices %}
+            <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ mname }} ({{ m }})</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <p class="meet-hint nokia-month-nav">
+      <a href="{{ url_for('nokia_audit', year=prev_year, month=prev_month) }}">← {{ prev_ym }}</a>
+      <span class="nokia-month-nav-sep">·</span>
+      <a href="{{ url_for('nokia_audit', year=today_year, month=today_month) }}">This month</a>
+      <span class="nokia-month-nav-sep">·</span>
+      <a href="{{ url_for('nokia_audit', year=next_year, month=next_month) }}">{{ next_ym }} →</a>
+    </p>
+
+    <h3 class="nokia-step-title">2. Nokia e-tool screenshot</h3>
+    <p class="meet-hint" style="margin-top: 0">
+      Click the box, then <strong>Ctrl+V</strong> (Windows) or <strong>Cmd+V</strong> (Mac) to paste from the clipboard,
+      or drag an image onto it, or use <strong>Choose file</strong>.
+    </p>
+    <div class="nokia-paste-wrap">
+      <div
+        class="nokia-paste-zone"
+        id="nokia-paste-zone"
+        tabindex="0"
+        role="button"
+        aria-label="Paste Nokia screenshot from clipboard"
+      >
+        <strong>Paste screenshot here</strong>
+        <p class="nokia-paste-hint">
+          Open Nokia → show the leave grid → use Snipping Tool or screenshot — then click here and paste.
+        </p>
+      </div>
+      <div class="nokia-paste-actions">
+        <input
+          type="file"
+          id="screenshot"
+          name="screenshot"
+          class="nokia-screenshot-input"
+          accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+        />
+        <label for="screenshot" class="btn secondary">Choose image file</label>
+        <button type="button" class="btn secondary" id="nokia-clear-screenshot">Clear image</button>
+      </div>
+      <div class="nokia-client-preview-wrap" id="nokia-client-preview-wrap" hidden>
+        <p class="meet-hint" style="margin: 0 0 0.35rem">Preview (submitted with the form):</p>
+        <img id="nokia-client-preview" alt="Screenshot preview" src="" />
+      </div>
+    </div>
+
+    <h3 class="nokia-step-title">3. Or: CSV export of the grid</h3>
+    <p class="meet-hint" style="margin-top: 0">
+      If OCR misses the day header row, export the same grid from Excel as <strong>CSV (comma delimited)</strong>, then paste below or choose a <code>.csv</code> file (max 2 MB).
+      The file should include the header row with day numbers <code>1, 2, 3…</code> and the same name / Emp ID columns as on screen.
+    </p>
+    <div class="field nokia-csv-field">
+      <label for="nokia_csv">Paste CSV here</label>
+      <textarea
+        id="nokia_csv"
+        name="nokia_csv"
+        class="nokia-csv-textarea"
+        rows="8"
+        spellcheck="false"
+        placeholder="Emp ID,Name,Country,1,2,3,…"
+      >{{ csv_paste_value }}</textarea>
+    </div>
+    <div class="field">
+      <label for="nokia_csv_file">Or upload CSV file</label>
+      <input
+        id="nokia_csv_file"
+        name="nokia_csv_file"
+        type="file"
+        accept=".csv,text/csv,application/vnd.ms-excel"
+      />
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">Compare &amp; show analysis</button>
+    </div>
+  </form>
+</section>
+
+<section class="card nokia-analysis-card">
+  <h3 class="page-heading">Analysis</h3>
+  <p class="meet-hint nokia-analysis-month-line" style="margin-top: 0">
+    <strong>{{ month_label }}</strong> — leave tracker and Nokia day columns use this calendar month.
+  </p>
+
+  {% if preview_url %}
+    <div class="nokia-analysis-refimg">
+      <p class="meet-hint" style="margin-top: 0">Screenshot submitted with this run:</p>
+      <img src="{{ preview_url }}" alt="Nokia grid screenshot from upload" />
+    </div>
+  {% endif %}
+
+  {% if csv_used %}
+    <div class="flash" role="status">
+      The Nokia grid table text was parsed from pasted or uploaded CSV.
+    </div>
+  {% endif %}
+
+  {% if color_sampling_used %}
+    <div class="flash" role="status">
+      Colored leave cells were detected using the screenshot image (date columns × name rows), in addition to any text OCR.
+    </div>
+  {% endif %}
+
+  {% if worksheet_leave_rows %}
+    <h4 class="nokia-analysis-sub">Leave tracker (this site) — leave days for {{ month_label }}</h4>
+    <p class="meet-hint">Same source as the manager leave tracker: pending or approved leave that appears on the grid for each person.</p>
+    <div class="table-scroll">
+      <table class="nokia-worksheet-summary">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Days of month with leave</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in worksheet_leave_rows %}
+            <tr>
+              <td>{{ row.employee }}</td>
+              <td>{{ row.label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  {% if parse_error %}
+    <div class="flash error" role="alert">{{ parse_error }}</div>
+  {% endif %}
+
+  <h4 class="nokia-analysis-sub">Defaulters — leave here, not in Nokia grid</h4>
+  {% if defaults %}
+    <p class="meet-hint">Leave on this site for that date, but the Nokia grid (CSV or image) has no leave in that cell.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Day</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in defaults %}
+            <tr>
+              <td>{{ row.employee }}</td>
+              <td>{{ row.date }}</td>
+              <td>{{ row.day }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty-state">
+      {% if request.method == "POST" and not parse_error %}No mismatches of this type for {{ month_label }}.{% elif request.method == "POST" %}—{% else %}Run <strong>Compare &amp; show analysis</strong> above.{% endif %}
+    </p>
+  {% endif %}
+
+  <h4 class="nokia-analysis-sub">Nokia-only — in Nokia grid, not on this site</h4>
+  {% if nokia_only %}
+    <p class="meet-hint">Marked in the Nokia grid but no matching leave here for that day.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Day</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in nokia_only %}
+            <tr>
+              <td>{{ row.employee }}</td>
+              <td>{{ row.date }}</td>
+              <td>{{ row.day }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty-state">
+      {% if request.method == "POST" and not parse_error %}None for {{ month_label }}.{% elif request.method == "POST" %}—{% else %}—{% endif %}
+    </p>
+  {% endif %}
+
+  {% if unmatched %}
+    <h4 class="nokia-analysis-sub">Rows not matched to roster</h4>
+    <p class="meet-hint">Adjust spelling, add the person to the active team’s roster (Settings → Create/Update Team), or extend <code>EMPLOYEES</code> in <code>app.py</code> for the seeded Default team, then re-run.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Emp ID</th>
+            <th>Name (as read)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for emp_id, raw in unmatched %}
+            <tr>
+              <td>{{ emp_id }}</td>
+              <td>{{ raw }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var zone = document.getElementById("nokia-paste-zone");
+    var input = document.getElementById("screenshot");
+    var wrap = document.getElementById("nokia-client-preview-wrap");
+    var img = document.getElementById("nokia-client-preview");
+    var clearBtn = document.getElementById("nokia-clear-screenshot");
+
+    function setFile(file) {
+      if (!file || !file.type || file.type.indexOf("image/") !== 0) return;
+      try {
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+      } catch (e) {
+        return;
+      }
+      var url = URL.createObjectURL(file);
+      if (img._prevUrl) URL.revokeObjectURL(img._prevUrl);
+      img._prevUrl = url;
+      img.src = url;
+      wrap.hidden = false;
+      zone.classList.add("nokia-paste-zone--active");
+    }
+
+    function clearFile() {
+      try {
+        input.value = "";
+        var dt = new DataTransfer();
+        input.files = dt.files;
+      } catch (e) {}
+      if (img._prevUrl) URL.revokeObjectURL(img._prevUrl);
+      img._prevUrl = null;
+      img.removeAttribute("src");
+      wrap.hidden = true;
+      zone.classList.remove("nokia-paste-zone--active");
+    }
+
+    zone.addEventListener("click", function () {
+      zone.focus();
+    });
+
+    zone.addEventListener("paste", function (ev) {
+      var items = ev.clipboardData && ev.clipboardData.items;
+      if (!items) return;
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type && items[i].type.indexOf("image/") === 0) {
+          ev.preventDefault();
+          var f = items[i].getAsFile();
+          if (f) setFile(f);
+          return;
+        }
+      }
+    });
+
+    ["dragenter", "dragover"].forEach(function (evt) {
+      zone.addEventListener(evt, function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.add("nokia-paste-zone--active");
+      });
+    });
+    zone.addEventListener("dragleave", function (e) {
+      e.preventDefault();
+      zone.classList.remove("nokia-paste-zone--active");
+    });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.remove("nokia-paste-zone--active");
+      var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) setFile(f);
+    });
+
+    input.addEventListener("change", function () {
+      if (input.files && input.files[0]) setFile(input.files[0]);
+    });
+
+    clearBtn.addEventListener("click", function () {
+      clearFile();
+    });
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      FLASK_SECRET_KEY: change-me-in-compose
+      MANAGER_DASHBOARD_PASSWORD: ${MANAGER_DASHBOARD_PASSWORD:-}
+      LPO_SM_DASHBOARD_PASSWORD: ${LPO_SM_DASHBOARD_PASSWORD:-}
+      FLASK_DEBUG: "0"
+    volumes:
+      - ./data:/app/data

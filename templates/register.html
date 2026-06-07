@@ -1,0 +1,38 @@
+{% extends "login.html" %}
+{% block title %}Create account — TEAM PORTAL{% endblock %}
+{% block content %}
+<div class="login-shell">
+  <div class="login-bg"></div>
+  <div class="login-top-bar">
+    <span class="login-brand">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 3a3 3 0 110 6 3 3 0 010-6zm0 14.2a7.2 7.2 0 01-6-3.22c.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08a7.2 7.2 0 01-6 3.22z"/></svg>
+      TEAM PORTAL
+    </span>
+    <span class="login-status-pill">New account</span>
+  </div>
+
+  <div class="login-grid" style="max-width:30rem;grid-template-columns:1fr">
+    <div class="login-card">
+      <h2 class="login-card-title">Create Manager Account</h2>
+      <p class="login-card-desc">Set up your workspace. You'll start with an empty team — upload a roster from the dashboard after signing in.</p>
+      <form method="post" action="{{ url_for('register_page') }}">
+        {% include "partials/csrf.html" %}
+        <div class="login-field">
+          <label class="login-label" for="reg-email">Email Address</label>
+          <input class="login-input" id="reg-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com" />
+        </div>
+        <div class="login-field">
+          <label class="login-label" for="reg-password">Password</label>
+          <input class="login-input" id="reg-password" name="password" type="password" autocomplete="new-password" required minlength="4" placeholder="Choose a password" />
+        </div>
+        <div class="login-field">
+          <label class="login-label" for="reg-team">Team Name</label>
+          <input class="login-input" id="reg-team" name="team_name" type="text" maxlength="200" placeholder="My team (optional, default: Default)" />
+        </div>
+        <button type="submit" class="login-btn login-btn-secondary">Create &amp; Sign In</button>
+      </form>
+      <p class="login-footer-text">Already have an account? <a href="{{ url_for('login_page') }}">Sign in</a></p>
+    </div>
+  </div>
+</div>
+{% endblock %}

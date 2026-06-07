@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}My Leave Status — TEAM MANAGEMENT PORTAL{% endblock %}
+{% block content %}
+<section class="card">
+  <h2 class="page-heading">My Leave Status</h2>
+  {% if portal_employee_view|default(false) %}
+    <p class="portal-inline-note">
+      Signed in as <strong>{{ viewer }}</strong>. Only your leave history is shown; you cannot look up other people here.
+    </p>
+  {% else %}
+    <form method="post" action="{{ url_for('my_requests') }}" class="filter-bar filter-bar-tight">
+      {% include "partials/csrf.html" %}
+      <div class="field">
+        <label for="employee_name">Name</label>
+        <input id="employee_name" name="employee_name" type="text" required autocomplete="off" value="{{ form.get('employee_name', '') }}" />
+      </div>
+      <button type="submit" class="btn">Load</button>
+    </form>
+  {% endif %}
+</section>
+
+{% if viewer %}
+  <section class="card">
+    <h3 class="section-subheading">{{ viewer }}</h3>
+    {% if rows %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+            <th>Dates</th>
+            <th>Type</th>
+            {% if portal_employee_view|default(false) %}
+              <th>Details</th>
+            {% endif %}
+            <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>{{ row["start_date"] }}{% if row["end_date"] != row["start_date"] %} — {{ row["end_date"] }}{% endif %}</td>
+                <td>{{ reason_labels.get(row["reason"], row["reason"]) }}</td>
+                {% if portal_employee_view|default(false) %}
+                  <td>{{ (row["description"] or "")[:200] }}{% if (row["description"] or "")|length > 200 %}…{% endif %}</td>
+                {% endif %}
+                <td><span class="badge {{ row['status'] }}">{{ row["status"] }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">No records.</p>
+    {% endif %}
+  </section>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+  {% if not portal_employee_view|default(false) %}
+  <script src="{{ url_for('static', filename='name_autocomplete.js') }}"></script>
+  <script>
+    setupEmployeeAutocomplete("employee_name");
+  </script>
+  {% endif %}
+{% endblock %}

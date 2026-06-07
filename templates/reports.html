@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Leave Reports — {{ active_team_name or "Team" }} — TEAM MANAGEMENT PORTAL{% endblock %}
+{% block content %}
+<section class="card">
+  <h2 class="page-heading">Leave Reports</h2>
+  <p class="meet-hint" style="margin-top: 0">
+    Leave and attendance below are filtered to the <strong>{{ active_team_name or "active team" }}</strong> roster.
+    Use the <strong>Team</strong> control in the top nav to switch teams. Upload a CSV to define multiple teams and their members.
+  </p>
+  <form class="filter-bar" method="get" action="{{ url_for('reports') }}">
+    <div class="field">
+      <label for="start">From</label>
+      <input id="start" name="start" type="date" value="{{ start }}" />
+    </div>
+    <div class="field">
+      <label for="end">To</label>
+      <input id="end" name="end" type="date" value="{{ end }}" />
+    </div>
+    <button type="submit" class="btn">Update</button>
+    <a class="btn secondary" href="{{ url_for('reports_leave_export_xlsx', start=start, end=end) }}">Export</a>
+    <a class="btn secondary" href="{{ url_for('manager_audit_csv') }}">Audit</a>
+    <a class="btn secondary" href="{{ url_for('dashboard') }}">Leave tracker</a>
+  </form>
+</section>
+
+<section class="card">
+  <h3 class="section-subheading">Create/Update Team</h3>
+  <p class="meet-hint" style="margin-top: 0">
+    Upload an <strong>.xlsx</strong> workbook (first sheet) or a UTF-8 <strong>CSV</strong> with columns <strong>TeamName</strong> and <strong>EmployeeName</strong>
+    (legacy headers such as <strong>Team</strong> / <strong>Name</strong> still work).
+    Each row is one person. Teams that appear in the file have their roster <strong>replaced</strong> for this app; other teams are left unchanged.
+    Example:
+  </p>
+  <pre class="roster-csv-sample">TeamName,EmployeeName
+Alpha,Anas P
+Alpha,Farhan Thumalla
+Beta,Siya Chugh</pre>
+  <p class="meet-hint" style="margin-top: 0.5rem">
+    <a class="btn secondary" href="{{ url_for('reports_roster_export_xlsx') }}">Export roster mapping (.xlsx)</a>
+    — every <strong>TeamName</strong> / <strong>EmployeeName</strong> row in the database, plus <strong>Default</strong> rows for seeded employees who are not on any team. (Edit and re-upload to replace rosters per team.)
+  </p>
+  <form
+    method="post"
+    action="{{ url_for('reports_roster_upload') }}"
+    enctype="multipart/form-data"
+    class="stack-form roster-upload-form"
+  >
+    {% include "partials/csrf.html" %}
+    <div class="field">
+      <label for="roster_csv">Roster file (.xlsx or CSV, max 2 MB)</label>
+      <input
+        id="roster_csv"
+        name="roster_csv"
+        type="file"
+        accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+        required
+      />
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn">Upload &amp; update rosters</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h3 class="section-subheading">Leave</h3>
+  {% if leaves %}
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Dates</th>
+          <th>Duration</th>
+          <th>Type</th>
+          <th>IP</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in leaves %}
+          <tr>
+            <td>{{ row["employee_name"] }}</td>
+            <td>{{ row["start_date"] }} — {{ row["end_date"] }}</td>
+            <td>{{ duration_labels.get(row["duration_type"], row["duration_type"]) }}</td>
+            <td>{{ reason_labels.get(row["reason"], row["reason"]) }}</td>
+            <td class="cell-mono">{{ row["submitted_ip"] or "—" }}</td>
+            <td><span class="badge {{ row['status'] }}">{{ row["status"] }}</span></td>
+            <td>
+              {% if row["status"] == "pending" %}
+                <div class="row-actions">
+                  <form class="inline-form" method="post" action="{{ url_for('update_leave_status', leave_id=row['id']) }}">
+                    {% include "partials/csrf.html" %}
+                    <input type="hidden" name="report_start" value="{{ start }}" />
+                    <input type="hidden" name="report_end" value="{{ end }}" />
+                    <input type="hidden" name="status" value="approved" />
+                    <button type="submit" class="small">Approve</button>
+                  </form>
+                  <form class="inline-form" method="post" action="{{ url_for('update_leave_status', leave_id=row['id']) }}">
+                    {% include "partials/csrf.html" %}
+                    <input type="hidden" name="report_start" value="{{ start }}" />
+                    <input type="hidden" name="report_end" value="{{ end }}" />
+                    <input type="hidden" name="status" value="rejected" />
+                    <button type="submit" class="small secondary">Reject</button>
+                  </form>
+                </div>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p class="empty-state">No leave in range.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3 class="section-subheading">Attendance</h3>
+  {% if attendance_rows %}
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in attendance_rows %}
+          <tr>
+            <td>{{ row["work_date"] }}</td>
+            <td>{{ row["employee_name"] }}</td>
+            <td>{{ status_labels.get(row["status"], row["status"]) }}</td>
+            <td>{{ row["note"] or "—" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p class="empty-state">No rows in range.</p>
+  {% endif %}
+</section>
+{% endblock %}

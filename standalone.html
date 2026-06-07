@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Team attendance &amp; leave</title>
+    <style>
+      :root {
+        --bg: #0f1419;
+        --surface: #1a2332;
+        --surface2: #243044;
+        --text: #e8eef5;
+        --muted: #8b9cb3;
+        --accent: #3d9cf0;
+        --success: #3ecf8e;
+        --warning: #f0b429;
+        --danger: #f05b61;
+        --radius: 12px;
+        --font: "Segoe UI", system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: var(--font);
+        background: radial-gradient(1200px 600px at 10% -10%, #1a3050 0%, transparent 55%),
+          radial-gradient(900px 500px at 100% 0%, #1e2840 0%, transparent 50%), var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 1.5rem 1.25rem 3rem;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--surface2);
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.25rem;
+      }
+      nav button {
+        background: none;
+        border: none;
+        color: var(--muted);
+        font: inherit;
+        cursor: pointer;
+        padding: 0;
+      }
+      nav button.active {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--surface2);
+        border-radius: var(--radius);
+        padding: 1.25rem 1.35rem;
+        margin-bottom: 1.25rem;
+      }
+      .lead {
+        color: var(--muted);
+        margin: 0 0 1rem;
+        font-size: 0.95rem;
+      }
+      h2 {
+        margin: 0 0 1rem;
+        font-size: 1.05rem;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+      input,
+      textarea,
+      select {
+        width: 100%;
+        padding: 0.6rem 0.75rem;
+        border-radius: 8px;
+        border: 1px solid var(--surface2);
+        background: #0f1419;
+        color: var(--text);
+        font: inherit;
+      }
+      textarea {
+        min-height: 88px;
+      }
+      .field {
+        margin-bottom: 1rem;
+      }
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      @media (max-width: 640px) {
+        .grid-2 {
+          grid-template-columns: 1fr;
+        }
+      }
+      .btn {
+        display: inline-block;
+        padding: 0.55rem 1rem;
+        border-radius: 8px;
+        border: none;
+        background: var(--accent);
+        color: #061018;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .btn.secondary {
+        background: var(--surface2);
+        color: var(--text);
+      }
+      .btn.small {
+        padding: 0.35rem 0.65rem;
+        font-size: 0.8rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.88rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.45rem 0.5rem;
+        border-bottom: 1px solid var(--surface2);
+      }
+      th {
+        color: var(--muted);
+        font-weight: 500;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+      }
+      .badge.pending {
+        background: #3a3220;
+        color: var(--warning);
+      }
+      .badge.approved {
+        background: #163528;
+        color: var(--success);
+      }
+      .badge.rejected {
+        background: #3a1e22;
+        color: var(--danger);
+      }
+      .msg {
+        padding: 0.65rem 0.85rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 0.9rem;
+      }
+      .msg.ok {
+        background: #163528;
+        color: var(--success);
+      }
+      .msg.err {
+        background: #3a1e22;
+        color: #ffb4b8;
+      }
+      .hidden {
+        display: none !important;
+      }
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .filter-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: flex-end;
+        margin-bottom: 1rem;
+      }
+      .filter-bar .field {
+        margin: 0;
+        min-width: 140px;
+      }
+      footer {
+        margin-top: 1rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      code {
+        font-size: 0.85em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Team attendance &amp; leave</h1>
+        <nav>
+          <button type="button" data-view="dash" class="active">Dashboard</button>
+          <button type="button" data-view="leave">Request leave</button>
+          <button type="button" data-view="att">Attendance</button>
+          <button type="button" data-view="rep">Reports</button>
+        </nav>
+      </header>
+
+      <div id="flash"></div>
+
+      <section id="view-dash" class="card">
+        <p class="lead">
+          This standalone page stores data in your browser (<code>localStorage</code>). Use
+          <strong>Export JSON</strong> on the Reports tab for backups. For one shared database for the whole team, run
+          the Flask app (<code>python app.py</code>) or Docker instead.
+        </p>
+        <p>
+          <button type="button" class="btn" data-go="leave">Request leave</button>
+          <button type="button" class="btn secondary" data-go="att" style="margin-left: 0.5rem">Log attendance</button>
+        </p>
+        <h2 style="margin-top: 1.5rem">Pending leave</h2>
+        <div id="dash-pending"></div>
+        <h2>Recent attendance</h2>
+        <div id="dash-att"></div>
+      </section>
+
+      <section id="view-leave" class="card hidden">
+        <h2>Apply for leave</h2>
+        <p class="lead">Name, leave type, first and last day off, and duration.</p>
+        <form id="form-leave">
+          <div class="field">
+            <label for="l_name">Your name</label>
+            <input id="l_name" name="employee_name" type="text" required />
+          </div>
+          <div class="field">
+            <label for="l_reason">Leave type</label>
+            <select id="l_reason" name="reason" required>
+              <option value="">Select…</option>
+              <option value="pl">PL — Planned leave</option>
+              <option value="ul">UL — Unplanned leave</option>
+              <option value="sl">SL — Sick leave</option>
+              <option value="ll">LL — Long leave</option>
+            </select>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label for="l_start">First day off</label>
+              <input id="l_start" name="start_date" type="date" required />
+            </div>
+            <div class="field">
+              <label for="l_end">Last day off</label>
+              <input id="l_end" name="end_date" type="date" required />
+            </div>
+          </div>
+          <div class="field">
+            <label for="l_dur">Duration</label>
+            <select id="l_dur" name="duration_type" required>
+              <option value="">Select…</option>
+              <option value="half_am">Half day — morning</option>
+              <option value="half_pm">Half day — afternoon</option>
+              <option value="full">Full day</option>
+              <option value="multi">Multiple days (range)</option>
+            </select>
+          </div>
+          <button type="submit" class="btn">Submit request</button>
+        </form>
+      </section>
+
+      <section id="view-att" class="card hidden">
+        <h2>Log attendance</h2>
+        <p class="lead">One entry per person per day; resubmitting updates the same day.</p>
+        <form id="form-att">
+          <div class="grid-2">
+            <div class="field">
+              <label for="a_name">Your name</label>
+              <input id="a_name" name="employee_name" type="text" required />
+            </div>
+            <div class="field">
+              <label for="a_date">Date</label>
+              <input id="a_date" name="work_date" type="date" required />
+            </div>
+          </div>
+          <div class="field">
+            <label for="a_status">Status</label>
+            <select id="a_status" name="status" required>
+              <option value="">Select…</option>
+              <option value="present">In office</option>
+              <option value="remote">Remote / WFH</option>
+              <option value="leave">On approved leave</option>
+              <option value="absent">Absent (unplanned)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="a_note">Optional note</label>
+            <input id="a_note" name="note" type="text" placeholder="e.g. late start" />
+          </div>
+          <button type="submit" class="btn">Save attendance</button>
+        </form>
+      </section>
+
+      <section id="view-rep" class="card hidden">
+        <h2>Reports &amp; backup</h2>
+        <p class="lead">Filter overlapping leave and attendance. Approve or reject pending requests.</p>
+        <div class="filter-bar">
+          <div class="field">
+            <label for="r_start">From</label>
+            <input id="r_start" type="date" />
+          </div>
+          <div class="field">
+            <label for="r_end">To</label>
+            <input id="r_end" type="date" />
+          </div>
+          <button type="button" class="btn" id="r_apply">Apply</button>
+          <button type="button" class="btn secondary" id="r_csv">Download leave CSV</button>
+        </div>
+        <div class="field">
+          <label>Backup</label>
+          <button type="button" class="btn secondary small" id="r_export">Export JSON</button>
+          <button type="button" class="btn secondary small" id="r_import">Import JSON…</button>
+          <input type="file" id="r_file" accept="application/json" class="hidden" />
+        </div>
+        <h2>Leave in range</h2>
+        <div id="r_leaves"></div>
+        <h2>Attendance in range</h2>
+        <div id="r_att"></div>
+      </section>
+
+      <footer>
+        Standalone mode — data stays in this browser unless you export/import JSON.
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        var KEY = "teamTrackerStandaloneV1";
+        var REASONS = {
+          pl: "PL — Planned leave",
+          ul: "UL — Unplanned leave",
+          sl: "SL — Sick leave",
+          ll: "LL — Long leave",
+        };
+        var DURS = {
+          half_am: "Half day — morning",
+          half_pm: "Half day — afternoon",
+          full: "Full day",
+          multi: "Multiple days (range)",
+        };
+        var STATS = {
+          present: "In office",
+          remote: "Remote / WFH",
+          leave: "On approved leave",
+          absent: "Absent (unplanned)",
+        };
+
+        function load() {
+          try {
+            var raw = localStorage.getItem(KEY);
+            if (!raw) return { leaves: [], attendance: [] };
+            var d = JSON.parse(raw);
+            if (!d.leaves) d.leaves = [];
+            if (!d.attendance) d.attendance = [];
+            return d;
+          } catch (e) {
+            return { leaves: [], attendance: [] };
+          }
+        }
+
+        function save(data) {
+          localStorage.setItem(KEY, JSON.stringify(data));
+        }
+
+        function uid() {
+          return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+        }
+
+        function flash(ok, text) {
+          var el = document.getElementById("flash");
+          el.className = "msg " + (ok ? "ok" : "err");
+          el.textContent = text;
+          el.style.display = "block";
+          setTimeout(function () {
+            el.style.display = "none";
+          }, 4500);
+        }
+
+        function todayISO() {
+          var d = new Date();
+          return d.toISOString().slice(0, 10);
+        }
+
+        function monthStartISO() {
+          var d = new Date();
+          return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+        }
+
+        function showView(name) {
+          ["dash", "leave", "att", "rep"].forEach(function (v) {
+            document.getElementById("view-" + (v === "att" ? "att" : v === "rep" ? "rep" : v === "leave" ? "leave" : "dash")).classList.toggle("hidden", v !== name);
+          });
+          document.querySelectorAll("nav button").forEach(function (b) {
+            b.classList.toggle("active", b.getAttribute("data-view") === name);
+          });
+          if (name === "dash") renderDash();
+          if (name === "rep") renderReport();
+        }
+
+        document.querySelectorAll("nav button[data-view]").forEach(function (b) {
+          b.addEventListener("click", function () {
+            showView(b.getAttribute("data-view"));
+          });
+        });
+        document.querySelectorAll("[data-go]").forEach(function (b) {
+          b.addEventListener("click", function () {
+            showView(b.getAttribute("data-go"));
+          });
+        });
+
+        var lStart = document.getElementById("l_start");
+        var lEnd = document.getElementById("l_end");
+        var lDur = document.getElementById("l_dur");
+        function syncEnd() {
+          if (lDur.value === "multi") {
+            lEnd.required = true;
+          } else {
+            lEnd.required = false;
+            if (lStart.value) lEnd.value = lStart.value;
+          }
+        }
+        lDur.addEventListener("change", syncEnd);
+        lStart.addEventListener("change", syncEnd);
+
+        document.getElementById("form-leave").addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          var name = document.getElementById("l_name").value.trim();
+          var reason = document.getElementById("l_reason").value;
+          var start = document.getElementById("l_start").value;
+          var dur = document.getElementById("l_dur").value;
+          var end = (document.getElementById("l_end").value || start).trim();
+          if (!name || !reason || !start || !dur) {
+            flash(false, "Please fill all required fields.");
+            return;
+          }
+          if (dur === "multi" && !end) {
+            flash(false, "Last day required for multiple days.");
+            return;
+          }
+          if (dur === "multi" && end < start) {
+            flash(false, "Last day must be on or after the first day.");
+            return;
+          }
+          if (dur !== "multi") end = start;
+          var data = load();
+          data.leaves.push({
+            id: uid(),
+            employee_name: name,
+            reason: reason,
+            description: "",
+            start_date: start,
+            end_date: end,
+            duration_type: dur,
+            status: "pending",
+            created_at: new Date().toISOString(),
+          });
+          save(data);
+          ev.target.reset();
+          lEnd.value = "";
+          syncEnd();
+          flash(true, "Leave request saved.");
+          showView("dash");
+        });
+
+        document.getElementById("a_date").value = todayISO();
+        document.getElementById("form-att").addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          var name = document.getElementById("a_name").value.trim();
+          var workDate = document.getElementById("a_date").value;
+          var status = document.getElementById("a_status").value;
+          var note = document.getElementById("a_note").value.trim();
+          if (!name || !workDate || !status) {
+            flash(false, "Name, date, and status are required.");
+            return;
+          }
+          var data = load();
+          var found = -1;
+          data.attendance.forEach(function (row, i) {
+            if (row.employee_name === name && row.work_date === workDate) found = i;
+          });
+          var row = {
+            id: uid(),
+            employee_name: name,
+            work_date: workDate,
+            status: status,
+            note: note,
+            created_at: new Date().toISOString(),
+          };
+          if (found >= 0) data.attendance[found] = row;
+          else data.attendance.push(row);
+          save(data);
+          flash(true, "Attendance saved.");
+          showView("dash");
+        });
+
+        function renderDash() {
+          var data = load();
+          var pend = data.leaves
+            .filter(function (l) {
+              return l.status === "pending";
+            })
+            .sort(function (a, b) {
+              return b.created_at.localeCompare(a.created_at);
+            })
+            .slice(0, 10);
+          var att = data.attendance
+            .slice()
+            .sort(function (a, b) {
+              if (a.work_date !== b.work_date) return b.work_date.localeCompare(a.work_date);
+              return a.employee_name.localeCompare(b.employee_name);
+            })
+            .slice(0, 15);
+          document.getElementById("dash-pending").innerHTML = tablePending(pend);
+          document.getElementById("dash-att").innerHTML = tableAttShort(att);
+        }
+
+        function tablePending(rows) {
+          if (!rows.length) return "<p class='lead' style='margin:0'>No pending requests.</p>";
+          var h = "<table><thead><tr><th>Name</th><th>Dates</th><th>Type</th><th>Status</th></tr></thead><tbody>";
+          rows.forEach(function (r) {
+            var dr = r.start_date === r.end_date ? r.start_date : r.start_date + " → " + r.end_date;
+            h +=
+              "<tr><td>" +
+              esc(r.employee_name) +
+              "</td><td>" +
+              esc(dr) +
+              "</td><td>" +
+              esc(REASONS[r.reason] || r.reason) +
+              "</td><td><span class='badge pending'>pending</span></td></tr>";
+          });
+          return h + "</tbody></table>";
+        }
+
+        function tableAttShort(rows) {
+          if (!rows.length) return "<p class='lead' style='margin:0'>No attendance yet.</p>";
+          var h = "<table><thead><tr><th>Date</th><th>Name</th><th>Status</th></tr></thead><tbody>";
+          rows.forEach(function (r) {
+            h +=
+              "<tr><td>" +
+              esc(r.work_date) +
+              "</td><td>" +
+              esc(r.employee_name) +
+              "</td><td>" +
+              esc(r.status) +
+              "</td></tr>";
+          });
+          return h + "</tbody></table>";
+        }
+
+        function esc(s) {
+          return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        }
+
+        var rStart = document.getElementById("r_start");
+        var rEnd = document.getElementById("r_end");
+        rStart.value = monthStartISO();
+        rEnd.value = todayISO();
+
+        function overlapLeave(l, rs, re) {
+          return l.start_date <= re && l.end_date >= rs;
+        }
+
+        function renderReport() {
+          var rs = rStart.value || monthStartISO();
+          var re = rEnd.value || todayISO();
+          var data = load();
+          var leaves = data.leaves
+            .filter(function (l) {
+              return overlapLeave(l, rs, re);
+            })
+            .sort(function (a, b) {
+              return a.start_date.localeCompare(b.start_date) || a.employee_name.localeCompare(b.employee_name);
+            });
+          var att = data.attendance
+            .filter(function (a) {
+              return a.work_date >= rs && a.work_date <= re;
+            })
+            .sort(function (a, b) {
+              return b.work_date.localeCompare(a.work_date) || a.employee_name.localeCompare(b.employee_name);
+            });
+
+          var lh =
+            "<table><thead><tr><th>Name</th><th>Dates</th><th>Duration</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>";
+          if (!leaves.length) lh = "<p class='lead' style='margin:0'>No leave in range.</p>";
+          else {
+            leaves.forEach(function (l) {
+              lh += "<tr><td>" + esc(l.employee_name) + "</td><td>" + esc(l.start_date + " → " + l.end_date) + "</td><td>";
+              lh += esc(DURS[l.duration_type] || l.duration_type) + "</td><td>";
+              lh += esc(REASONS[l.reason] || l.reason) + "</td><td>";
+              lh += "<span class='badge " + esc(l.status) + "'>" + esc(l.status) + "</span></td><td>";
+              if (l.status === "pending") {
+                lh +=
+                  "<div class='row-actions'><button type='button' class='btn small' data-act='ap' data-id='" +
+                  esc(l.id) +
+                  "'>Approve</button> <button type='button' class='btn secondary small' data-act='rj' data-id='" +
+                  esc(l.id) +
+                  "'>Reject</button></div>";
+              } else lh += "—";
+              lh += "</td></tr>";
+            });
+            lh += "</tbody></table>";
+          }
+          document.getElementById("r_leaves").innerHTML = lh;
+
+          var ah =
+            "<table><thead><tr><th>Date</th><th>Name</th><th>Status</th><th>Note</th></tr></thead><tbody>";
+          if (!att.length) ah = "<p class='lead' style='margin:0'>No attendance in range.</p>";
+          else {
+            att.forEach(function (a) {
+              ah +=
+                "<tr><td>" +
+                esc(a.work_date) +
+                "</td><td>" +
+                esc(a.employee_name) +
+                "</td><td>" +
+                esc(STATS[a.status] || a.status) +
+                "</td><td>" +
+                esc(a.note || "—") +
+                "</td></tr>";
+            });
+            ah += "</tbody></table>";
+          }
+          document.getElementById("r_att").innerHTML = ah;
+
+          document.querySelectorAll("#r_leaves button[data-id]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              var id = btn.getAttribute("data-id");
+              var act = btn.getAttribute("data-act");
+              var st = act === "ap" ? "approved" : "rejected";
+              var d = load();
+              d.leaves.forEach(function (l) {
+                if (l.id === id) l.status = st;
+              });
+              save(d);
+              flash(true, "Leave updated.");
+              renderReport();
+            });
+          });
+        }
+
+        document.getElementById("r_apply").addEventListener("click", renderReport);
+        document.getElementById("r_csv").addEventListener("click", function () {
+          var rs = rStart.value || monthStartISO();
+          var re = rEnd.value || todayISO();
+          var data = load();
+          var leaves = data.leaves.filter(function (l) {
+            return overlapLeave(l, rs, re);
+          });
+          var lines = [
+            ["employee_name", "reason", "start_date", "end_date", "duration_type", "status", "created_at"].join(
+              ","
+            ),
+          ];
+          leaves.forEach(function (l) {
+            lines.push(
+              [l.employee_name, l.reason, l.start_date, l.end_date, l.duration_type, l.status, l.created_at].join(
+                ","
+              )
+            );
+          });
+          var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "leave_report_" + rs + "_to_" + re + ".csv";
+          a.click();
+          URL.revokeObjectURL(a.href);
+        });
+
+        function csvEsc(s) {
+          s = String(s).replace(/"/g, '""');
+          if (/[",\n]/.test(s)) return '"' + s + '"';
+          return s;
+        }
+
+        document.getElementById("r_export").addEventListener("click", function () {
+          var blob = new Blob([JSON.stringify(load(), null, 2)], { type: "application/json" });
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "team_tracker_backup.json";
+          a.click();
+          URL.revokeObjectURL(a.href);
+          flash(true, "JSON export downloaded.");
+        });
+
+        document.getElementById("r_import").addEventListener("click", function () {
+          document.getElementById("r_file").click();
+        });
+        document.getElementById("r_file").addEventListener("change", function (ev) {
+          var f = ev.target.files[0];
+          if (!f) return;
+          var reader = new FileReader();
+          reader.onload = function () {
+            try {
+              var d = JSON.parse(reader.result);
+              if (!d.leaves || !d.attendance) throw new Error("bad shape");
+              save(d);
+              flash(true, "Import complete.");
+              renderReport();
+              renderDash();
+            } catch (e) {
+              flash(false, "Invalid JSON file.");
+            }
+            ev.target.value = "";
+          };
+          reader.readAsText(f);
+        });
+
+        lStart.value = todayISO();
+        syncEnd();
+        renderDash();
+      })();
+    </script>
+  </body>
+</html>

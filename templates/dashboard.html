@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+{% block title %}{% if gate_only %}Sign in — TEAM MANAGEMENT PORTAL{% else %}Leave tracker — {{ active_team_name or "Team" }} — {{ month_label }}{% endif %}{% endblock %}
+{% block extra_head %}
+  {% if not gate_only %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
+  {% endif %}
+{% endblock %}
+{% block content %}
+  {% if gate_only %}
+    <div class="gate-dual-grid">
+      <section class="card gate-card">
+        <h2 class="page-heading">Manager access</h2>
+        {% if not password_configured %}
+          <div class="flash error" role="alert">Manager access is not configured on this server.</div>
+        {% endif %}
+        <p class="gate-card-lead">
+          Enter the team <strong>manager access code</strong> to open the full leave tracker, approvals, Scrum boards, Meet, and reports.
+        </p>
+        <form method="post" action="{{ url_for('dashboard') }}" class="stack-form" id="dashboard-gate-form-manager">
+          {% include "partials/csrf.html" %}
+          <input type="hidden" name="gate_kind" value="manager" />
+          {% if next_url %}
+            <input type="hidden" name="next" value="{{ next_url }}" />
+          {% endif %}
+          <div class="field">
+            <label for="secret_code" class="gate-access-label">Access code</label>
+            <input
+              id="secret_code"
+              name="secret_code"
+              type="password"
+              autocomplete="current-password"
+              {% if password_configured %}required{% else %}disabled{% endif %}
+              placeholder="Manager code"
+            />
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn" {% if not password_configured %}disabled{% endif %}>Sign in as manager</button>
+            <a class="btn secondary" href="{{ url_for('home') }}">Cancel</a>
+          </div>
+        </form>
+      </section>
+
+      <section class="card gate-card">
+        <h2 class="page-heading">LPO/SM access</h2>
+        {% if not lpo_sm_password_configured|default(false) %}
+          <div class="flash error" role="alert">
+            LPO/SM access is not configured. Set <strong>LPO_SM_DASHBOARD_PASSWORD</strong> in <code>.env</code> (different from the manager code) and restart.
+          </div>
+        {% endif %}
+        <p class="gate-card-lead">
+          Same <strong>access-code</strong> sign-in and <strong>full manager privileges</strong> — enter the <strong>separate LPO/SM code</strong> (not the manager code).
+        </p>
+        <form method="post" action="{{ url_for('dashboard') }}" class="stack-form" id="dashboard-gate-form-lpo">
+          {% include "partials/csrf.html" %}
+          <input type="hidden" name="gate_kind" value="lpo_sm" />
+          {% if next_url %}
+            <input type="hidden" name="next" value="{{ next_url }}" />
+          {% endif %}
+          <div class="field">
+            <label for="lpo_sm_code" class="gate-access-label">Access code</label>
+            <input
+              id="lpo_sm_code"
+              name="secret_code"
+              type="password"
+              autocomplete="current-password"
+              {% if lpo_sm_password_configured|default(false) %}required{% else %}disabled{% endif %}
+              placeholder="LPO/SM code"
+            />
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn" {% if not lpo_sm_password_configured|default(false) %}disabled{% endif %}>Sign in as LPO/SM</button>
+            <a class="btn secondary" href="{{ url_for('home') }}">Cancel</a>
+          </div>
+        </form>
+      </section>
+    </div>
+  {% else %}
+    {% if not grid_rows %}
+    <section class="card" style="background:rgba(30,41,59,.55);backdrop-filter:blur(24px);border:1px solid rgba(148,163,184,.15);border-radius:1rem;padding:2rem;margin-bottom:1.5rem">
+      <h2 class="page-heading" style="color:#f1f5f9">Welcome to your workspace</h2>
+      <p style="color:#94a3b8;font-size:.88rem;line-height:1.6;margin:.55rem 0 1.1rem">
+        Your team roster is empty. To get started, <strong>download the Excel template</strong>, fill in your team members (Name, Email, Team Name), then <strong>upload it in Settings</strong>.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.75rem">
+        <a class="btn secondary" href="{{ url_for('reports_roster_template_xlsx') }}">Download roster template (.xlsx)</a>
+        <a class="btn" href="{{ url_for('reports') }}">Go to Settings &amp; upload</a>
+      </div>
+    </section>
+    {% endif %}
+    <section class="card">
+      <div class="page-heading-row">
+        <h2 class="page-heading">Leave tracker</h2>
+        <span class="page-heading-meta">{{ active_team_name or "Team" }} · {{ month_label }}</span>
+      </div>
+      <div class="scrum-hub-bar" style="margin-top: 1rem; margin-bottom: 1.5rem;">
+        <form method="post" action="{{ url_for('team_hub_mode_set') }}" class="inline-form">
+          {% include "partials/csrf.html" %}
+          <input type="hidden" name="hub_mode" value="leave" />
+          <input type="hidden" name="next" value="{{ request.full_path }}" />
+          <button type="submit" class="btn secondary small is-selected">Leave tracker</button>
+        </form>
+        <form method="post" action="{{ url_for('team_hub_mode_set') }}" class="inline-form">
+          {% include "partials/csrf.html" %}
+          <input type="hidden" name="hub_mode" value="scrum" />
+          <input type="hidden" name="next" value="{{ url_for('scrum') }}" />
+          <button type="submit" class="btn secondary small">Scrum hub</button>
+        </form>
+      </div>
+
+      <div class="ws-toolbar">
+        <a class="btn secondary" href="{{ url_for('dashboard', year=prev_y, month=prev_m) }}">← Previous Month</a>
+        <a class="btn secondary" href="{{ url_for('dashboard', year=next_y, month=next_m) }}">Next Month →</a>
+        <div class="ws-toolbar-spacer"></div>
+        <a class="btn secondary" href="{{ url_for('nokia_audit', year=year, month=month) }}">Nokia e-tool</a>
+        <a class="btn secondary" href="{{ url_for('export_csv', start=month_start, end=month_end) }}">Export CSV</a>
+      </div>
+
+      <div class="worksheet-wrap">
+        <table class="ws-table" role="grid" aria-label="Leave tracker month grid">
+          <thead>
+            <tr>
+              <th class="ws-name" rowspan="2">Name</th>
+              {% for d in days %}
+                <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
+              {% endfor %}
+            </tr>
+            <tr>
+              {% for d in days %}
+                <th class="ws-datehead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.day }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in grid_rows %}
+              <tr>
+                <td class="ws-name">{{ row.employee }}</td>
+                {% for cell in row.cells %}
+                  {% set wk = days[loop.index0].is_weekend %}
+                  {% if cell %}
+                    <td class="ws-cell {{ cell.css }}{% if wk %} ws-col-weekend{% endif %}" title="{{ cell.title }}">{{ cell.code }}</td>
+                  {% else %}
+                    <td class="ws-cell ws-cell-empty{% if wk %} ws-col-weekend{% endif %}"></td>
+                  {% endif %}
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ws-legend" aria-label="Legend">
+        <span><span class="legend-box" style="background: #7dd3fc"></span>PL</span>
+        <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
+        <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
+        <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
+        <span class="ws-legend-note">½ = half day · dashed = pending</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 class="section-subheading">Pending</h3>
+      {% if pending %}
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Dates</th>
+              <th>Reason</th>
+              <th>IP</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in pending %}
+              <tr>
+                <td>{{ row["employee_name"] }}</td>
+                <td>{{ row["start_date"] }}{% if row["end_date"] != row["start_date"] %} — {{ row["end_date"] }}{% endif %}</td>
+                <td>{{ reason_labels.get(row["reason"], row["reason"]) }}</td>
+                <td class="cell-mono">{{ row["submitted_ip"] or "—" }}</td>
+                <td>
+                  <div class="row-actions">
+                    <form class="inline-form" method="post" action="{{ url_for('update_leave_status', leave_id=row['id']) }}">
+                      {% include "partials/csrf.html" %}
+                      <input type="hidden" name="redirect_manager" value="1" />
+                      <input type="hidden" name="mgr_year" value="{{ year }}" />
+                      <input type="hidden" name="mgr_month" value="{{ month }}" />
+                      <input type="hidden" name="report_start" value="{{ month_start }}" />
+                      <input type="hidden" name="report_end" value="{{ month_end }}" />
+                      <input type="hidden" name="status" value="approved" />
+                      <button type="submit" class="small">Approve</button>
+                    </form>
+                    <form class="inline-form" method="post" action="{{ url_for('update_leave_status', leave_id=row['id']) }}">
+                      {% include "partials/csrf.html" %}
+                      <input type="hidden" name="redirect_manager" value="1" />
+                      <input type="hidden" name="mgr_year" value="{{ year }}" />
+                      <input type="hidden" name="mgr_month" value="{{ month }}" />
+                      <input type="hidden" name="report_start" value="{{ month_start }}" />
+                      <input type="hidden" name="report_end" value="{{ month_end }}" />
+                      <input type="hidden" name="status" value="rejected" />
+                      <button type="submit" class="small secondary">Reject</button>
+                    </form>
+                    <a class="btn secondary small" href="{{ url_for('dashboard_leave_edit', leave_id=row['id'], year=year, month=month) }}">Edit</a>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      {% else %}
+        <p class="empty-state">None.</p>
+      {% endif %}
+    </section>
+
+    {% if dashboard_sprint_summaries %}
+      <section class="card dashboard-sprint-card">
+        <h3 class="section-subheading">Sprint delivery (Scrum)</h3>
+        <p>Per-sprint completion and hours logged on the daily board within sprint dates. Open a sprint to assign work and run stand-up.</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Sprint</th>
+                <th>Dates</th>
+                <th class="num">Done</th>
+                <th class="num">Logged h</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for sp in dashboard_sprint_summaries %}
+                <tr{% if sp.in_sprint_window %} class="dashboard-sprint-active"{% endif %}>
+                  <td>
+                    <strong>{{ sp.name }}</strong>
+                  </td>
+                  <td class="cell-mono">{{ sp.start }} → {{ sp.end }}</td>
+                  <td class="num">{{ sp.done_count }}/{{ sp.item_count }} ({{ sp.pct_done }}%)</td>
+                  <td class="num">{{ sp.logged_hours }}</td>
+                  <td>
+                    <a class="btn secondary small" href="{{ url_for('scrum_sprint_team', sprint_id=sp.id) }}">Open sprint</a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endif %}
+
+    <section class="card">
+      <h3 class="section-subheading">All records</h3>
+      {% if all_leaves %}
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Dates</th>
+              <th>Reason</th>
+              <th>Status</th>
+              <th>IP</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in all_leaves %}
+              <tr>
+                <td>{{ row["id"] }}</td>
+                <td>{{ row["employee_name"] }}</td>
+                <td>{{ row["start_date"] }} — {{ row["end_date"] }}</td>
+                <td>{{ reason_labels.get(row["reason"], row["reason"]) }}</td>
+                <td><span class="badge {{ row['status'] }}">{{ row["status"] }}</span></td>
+                <td class="cell-mono">{{ row["submitted_ip"] or "—" }}</td>
+                <td>
+                  <a class="btn secondary small" href="{{ url_for('dashboard_leave_edit', leave_id=row['id'], year=year, month=month) }}">Edit</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      {% else %}
+        <p class="empty-state">None.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

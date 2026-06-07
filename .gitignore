@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/*.db
+*.db
+.env
+.pytest_cache/
+
+# Cursor / local IDE (not part of the app)
+terminals/
+mcps/
+.cursor/
