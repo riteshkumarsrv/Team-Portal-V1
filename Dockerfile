@@ -14,7 +14,9 @@ ENV TEAM_TRACKER_DB_PATH=/app/data/team_tracker.db
 COPY requirements.txt requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
-COPY app.py wsgi.py .
+COPY app.py wsgi.py main.py config.py .
+COPY database ./database
+COPY team_portal ./team_portal
 COPY static ./static
 COPY templates ./templates
 

@@ -13,6 +13,7 @@ import re
 import base64
 import io
 import json
+import math
 import requests
 import logging
 import os
@@ -24,13 +25,22 @@ import threading
 import sqlite3
 import unicodedata
 from calendar import monthrange
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[misc, assignment]
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 from urllib.parse import urlparse
 
-from dotenv import dotenv_values, load_dotenv
+from werkzeug.utils import secure_filename
+
+from config import apply_flask_config_from_environ, load_application_environment
+from database.session import get_db
+from team_portal.views import register_blueprints
 
 from nokia_portal_roster import NOKIA_PORTAL_DIRECTORY, lookup_portal_directory, normalize_email
 from flask import (
@@ -38,6 +48,7 @@ from flask import (
     Response,
     flash,
     g,
+    has_request_context,
     jsonify,
     redirect,
     render_template,
@@ -48,8 +59,6 @@ from flask import (
 )
 from flask_wtf import CSRFProtect
 from flask_wtf.csrf import validate_csrf
-
-DB_DEFAULT = Path(__file__).resolve().parent / "data" / "team_tracker.db"
 
 _log = logging.getLogger(__name__)
 
@@ -92,7 +101,7 @@ LEAVE_REASONS = [
     ("ul", "UL — Unplanned leave"),
     ("sl", "SL — Sick leave"),
     ("ll", "LL — Long leave"),
-    ("wfh", "WFH — Work from home"),
+    ("compoff", "CompOFF"),
 ]
 
 # Portal apply form maps UI labels to stored `reason` codes (manager grid uses same labels dict).
@@ -100,7 +109,7 @@ PORTAL_LEAVE_FORM_CHOICES = [
     ("pl", "Annual leave"),
     ("sl", "Sick leave"),
     ("ul", "Casual leave"),
-    ("wfh", "Work from home"),
+    ("compoff", "CompOFF"),
 ]
 
 PORTAL_DOD_CHECKLIST_LABELS: tuple[str, ...] = (
@@ -145,6 +154,49 @@ SCRUM_HOUR_EPS = 0.05
 SCRUM_SPRINT_READONLY_FLASH = (
     "This sprint is closed and cannot be edited. On the sprint team page, click “Open sprint” to unlock it."
 )
+SCRUM_SPRINT_AFTER_END_FLASH = (
+    "This sprint’s end date has passed — the board is read-only, burndown counts activity only through the "
+    "last sprint day, and you cannot change sprint dates or names here. Create or open a new sprint for new work."
+)
+
+
+def _sprint_clock_utc() -> datetime:
+    """UTC wall clock for sprint window end and auto-close (tests may monkeypatch ``app._sprint_clock_utc``)."""
+    return datetime.now(timezone.utc)
+
+
+def _sprint_close_zone():
+    """IANA zone for sprint calendar boundaries (``TEAM_TRACKER_SCRUM_SPRINT_CLOSE_TZ``, default UTC)."""
+    if ZoneInfo is None:
+        return None
+    key = (os.environ.get("TEAM_TRACKER_SCRUM_SPRINT_CLOSE_TZ") or "UTC").strip()
+    try:
+        return ZoneInfo(key)
+    except Exception:
+        try:
+            return ZoneInfo("UTC")
+        except Exception:
+            return None
+
+
+def _sprint_inclusive_calendar_window_ended(end_date_iso: str, *, now_utc: datetime | None = None) -> bool:
+    """
+    True when ``now_utc`` is at or after the first instant of the calendar day *after* the sprint's inclusive
+    ``end_date`` in ``TEAM_TRACKER_SCRUM_SPRINT_CLOSE_TZ`` (default UTC). That marks the end of the last sprint day
+    in that timezone.
+    """
+    try:
+        ed = date.fromisoformat(str(end_date_iso or "")[:10])
+    except ValueError:
+        return False
+    now = now_utc or _sprint_clock_utc()
+    zi = _sprint_close_zone()
+    if zi is None:
+        return now.date() > ed
+    cutoff_local = datetime.combine(ed + timedelta(days=1), time.min, tzinfo=zi)
+    return now >= cutoff_local.astimezone(timezone.utc)
+
+
 SCRUM_STICKY_AREA_MAX_LEN = 500
 SCRUM_KANBAN_WEEKDAY_HOURS = 8.0
 SCRUM_TEAM_KIND_BURN_BREAKDOWN_BELOW_PCT = 67.0
@@ -153,6 +205,36 @@ SCRUM_DONE_ARTIFACT_URL_MAX = 600
 SCRUM_DONE_ARTIFACT_LABEL_MAX = 120
 SCRUM_VERIFICATION_URL_MAX = 12
 SCRUM_APPRECIATION_BODY_MAX = 2000
+# Sticky file attachments (stored under `<db-dir>/scrum_item_attachments/`).
+SCRUM_ITEM_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+SCRUM_ITEM_ATTACHMENTS_MAX_PER_STICKY = 20
+SCRUM_ITEM_ATTACHMENT_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".pdf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".txt",
+        ".csv",
+        ".md",
+        ".json",
+        ".xlsx",
+        ".xls",
+        ".docx",
+        ".pptx",
+        ".zip",
+        ".gz",
+        ".log",
+        ".patch",
+        ".svg",
+        ".drawio",
+        ".xml",
+        ".html",
+        ".htm",
+    }
+)
 # Fixed sprint window on create / date save: 14 calendar days inclusive of the start day (2 weeks).
 SCRUM_SPRINT_DEFAULT_CALENDAR_DAYS_INCLUSIVE = 14
 
@@ -160,6 +242,48 @@ SCRUM_SPRINT_DEFAULT_CALENDAR_DAYS_INCLUSIVE = 14
 def scrum_sprint_default_end_date(start: date) -> date:
     """Last day of the default sprint window: N calendar days inclusive of start (N=14 → end = start + 13)."""
     return start + timedelta(days=SCRUM_SPRINT_DEFAULT_CALENDAR_DAYS_INCLUSIVE - 1)
+
+
+def _next_sprint_start_after_latest_end(conn: sqlite3.Connection, team_id: int) -> date | None:
+    """Calendar day after the team's latest sprint end (MAX(end_date)); None if there are no sprints."""
+    row = conn.execute(
+        "SELECT MAX(substr(end_date, 1, 10)) AS m FROM scrum_sprint WHERE team_id = ?",
+        (int(team_id),),
+    ).fetchone()
+    raw = (row["m"] if row else None) or ""
+    raw = str(raw).strip()[:10]
+    if not raw:
+        return None
+    try:
+        d_end = date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return d_end + timedelta(days=1)
+
+
+def suggest_next_sprint_name_from_previous(previous_name: str) -> str | None:
+    """
+    If the previous sprint name ends with a digit block (e.g. FRONTIER-FB2612), return the same
+    prefix with that integer incremented (FRONTIER-FB2613). Preserves zero-padding width when the
+    incremented value fits; otherwise uses the natural string form (e.g. ...099 -> ...100).
+    Returns None when there is no trailing digit run to increment.
+    """
+    s = (previous_name or "").strip()
+    if not s:
+        return None
+    m = re.match(r"^(.*?)(\d+)$", s)
+    if not m:
+        return None
+    prefix, digits = m.group(1), m.group(2)
+    try:
+        n = int(digits, 10)
+    except ValueError:
+        return None
+    nxt = n + 1
+    s_next = str(nxt)
+    if len(s_next) < len(digits):
+        s_next = s_next.zfill(len(digits))
+    return f"{prefix}{s_next}"
 
 
 # Default rows for scrum_team_task_kind (code, label, color_hex, sort_order). One row per team; no ad-hoc types.
@@ -180,6 +304,33 @@ SPRINT_TEAM_KIND_STACK_ORDER: tuple[str, ...] = (
     "process_tools",
     "improvement",
 )
+
+# Sprint team: area stack chart — only roll into "Other" above this many distinct areas (safety cap).
+SCRUM_AREA_STACK_MAX_BUCKETS: int = 120
+SCRUM_AREA_STACK_NO_AREA_LABEL: str = "(no area)"
+SCRUM_AREA_STACK_OTHER_LABEL: str = "Other"
+
+# HPPM-style summary: fixed “Work type” order; sticky `task_kind` maps into these (Absences = leave debit hours).
+SCRUM_HPPM_SUMMARY_ROWS: tuple[tuple[str | None, str], ...] = (
+    ("fsy", "Feature Support (Y)"),
+    ("ndy", "New Development"),
+    (None, "Absences"),
+    ("code", "Verification"),
+    ("improvement", "Internal Improvement"),
+    ("process_tools", "Competence Development"),
+)
+SCRUM_HPPM_LABEL_BY_CODE: dict[str, str] = {c: lab for c, lab in SCRUM_HPPM_SUMMARY_ROWS if c is not None}
+
+# Stacked “est vs burnt” bar colors: burnt≤est, burnt>est, remaining (HPPM view uses a cooler contrast set).
+SCRUM_STACK_SEGMENT_FILLS_DEFAULT: tuple[str, str, str] = ("#fb7185", "#f59e0b", "#38bdf8")
+SCRUM_STACK_SEGMENT_FILLS_HPPM: tuple[str, str, str] = ("#a78bfa", "#fb923c", "#2dd4bf")
+
+
+def _stack_segment_fills(chart_palette: str) -> tuple[str, str, str]:
+    if (chart_palette or "").strip().lower() == "hppm":
+        return SCRUM_STACK_SEGMENT_FILLS_HPPM
+    return SCRUM_STACK_SEGMENT_FILLS_DEFAULT
+
 
 # Sprint export Summary charts: kind order for clustered est vs burnt (includes CODE).
 _SUMMARY_EXPORT_KIND_CHART_CODES: tuple[str, ...] = (
@@ -673,6 +824,1238 @@ def parse_nokia_grid_combined(
     return None, [], errs[0] if errs else e2
 
 
+# Stored on leave_requests.description for rows created from Nokia e-tool → Mark Approved; grid shows green "A".
+NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER = "[nokia-audit-approved]"
+# Flask session key: last successful "Show Approved" parse so "Mark Approved" applies the same segments
+# when paste text + employee match (fingerprint).
+NOKIA_AUDIT_SESSION_APPROVED_SEGS = "nokia_audit_approved_segments_v1"
+# Last successful Show Approved / Show DSM tables (same employee) for Compare merge.
+NOKIA_AUDIT_SESSION_LAST_APPROVED_PREVIEW = "nokia_audit_last_approved_preview_v1"
+NOKIA_AUDIT_SESSION_LAST_DSM = "nokia_audit_last_dsm_v1"
+
+
+def _leave_reason_counts_toward_day_units(reason: str | None) -> bool:
+    """CompOFF is shown on grids but excluded from leave day-units, capacity debits, and HPPM-style absence totals."""
+    return (reason or "").strip().casefold() != "compoff"
+
+
+def _leave_row_display_tiebreak(row: sqlite3.Row) -> tuple[int, int]:
+    """Prefer Nokia-audit tagged rows when several leaves overlap the same calendar day (then highest id)."""
+    desc = str(row["description"] or "")
+    has_marker = 1 if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in desc else 0
+    return (has_marker, int(row["id"]))
+
+
+def _nokia_reason_and_label_from_line(low: str) -> tuple[str, str]:
+    """Map a Nokia summary line (lowercased) to a leave_requests.reason code and display label."""
+    rl = dict(LEAVE_REASONS)
+    if "sick" in low or "medical" in low or "hospital" in low or "health" in low or "doctor" in low:
+        return "sl", rl["sl"]
+    if "birthday" in low or "anniversary" in low or "b'day" in low or "bday" in low:
+        return "ll", rl["ll"]
+    if re.search(r"\bcomp[\s-]*off\b", low) or ("compensatory" in low and "off" in low):
+        return "compoff", rl["compoff"]
+    if "casual" in low or "unplanned" in low or "emergency" in low or "personal" in low or "compassionate" in low:
+        return "ul", rl["ul"]
+    if "work from home" in low or re.search(r"\bwfh\b", low):
+        return "ul", rl["ul"]
+    if "maternity" in low or "paternity" in low or "bereavement" in low:
+        return "ul", rl["ul"]
+    return "pl", rl["pl"]
+
+
+def _nokia_segment_tuples_from_filtered_approved_lines(filtered: str) -> list[tuple[date, date, str, str, bool]]:
+    """
+    Parse lines that already contain 'approved' (case-insensitive).
+    Returns one tuple per parseable row: (start, end, reason_code, reason_label, half_day_hint), unclipped.
+    """
+    patt = re.compile(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b")
+
+    def to_date(m: re.Match[str]) -> date | None:
+        try:
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            return date(y, mo, d)
+        except ValueError:
+            return None
+
+    out: list[tuple[date, date, str, str, bool]] = []
+    for line in (filtered or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if not any(
+            k in low
+            for k in (
+                "approved",
+                "leave entry",
+                "pending",
+                "rejected",
+            )
+        ):
+            continue
+        matches = list(patt.finditer(s))
+        if not matches:
+            continue
+        dates: list[date] = []
+        for m in matches:
+            dd = to_date(m)
+            if dd:
+                dates.append(dd)
+        if not dates:
+            continue
+        if len(dates) >= 2:
+            d0, d1 = dates[0], dates[1]
+        else:
+            d0 = d1 = dates[0]
+        if d1 < d0:
+            d0, d1 = d1, d0
+        reason, label = _nokia_reason_and_label_from_line(low)
+        half_hint = bool(re.search(r"(-\s*0\.5|0\.5\s*day|\b0\.5\b)", low, re.I))
+        out.append((d0, d1, reason, label, half_hint))
+    return out
+
+
+def iter_nokia_employee_approved_segments_clipped_to_month(
+    text: str, year: int, month: int
+) -> tuple[list[tuple[date, date, str, str, bool]], str | None]:
+    """
+    Parse Nokia *per-employee leave summary* (Annual / Sick tables): lines with status keywords
+    and From/To dates as DD-MM-YYYY or DD/MM/YYYY. Returns segments clipped to [year, month] as
+    (start, end, reason_code, reason_label, half_day_hint).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return [], "No text to parse (paste OCR text or CSV, or use a screenshot so OCR can run)."
+    patt = re.compile(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b")
+
+    def to_date(m: re.Match[str]) -> date | None:
+        try:
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            return date(y, mo, d)
+        except ValueError:
+            return None
+
+    first = date(year, month, 1)
+    _, last_d = monthrange(year, month)
+    last = date(year, month, last_d)
+
+    segments: list[tuple[date, date, str, str, bool]] = []
+
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if not any(
+            k in low
+            for k in (
+                "approved",
+                "leave entry",
+                "pending",
+                "rejected",
+            )
+        ):
+            continue
+        matches = list(patt.finditer(s))
+        if not matches:
+            continue
+        dates: list[date] = []
+        for m in matches:
+            dd = to_date(m)
+            if dd:
+                dates.append(dd)
+        if not dates:
+            continue
+        if len(dates) >= 2:
+            d0, d1 = dates[0], dates[1]
+        else:
+            d0 = d1 = dates[0]
+        if d1 < d0:
+            d0, d1 = d1, d0
+        ov_lo = max(d0, first)
+        ov_hi = min(d1, last)
+        if ov_lo > ov_hi:
+            continue
+        reason, label = _nokia_reason_and_label_from_line(low)
+        half_hint = bool(re.search(r"(-\s*0\.5|0\.5\s*day|\b0\.5\b)", low, re.I))
+        segments.append((ov_lo, ov_hi, reason, label, half_hint))
+
+    if not segments:
+        return [], (
+            f"No leave rows with dates in {calendar.month_name[month]} {year} were found. "
+            "Use lines that include Approved (or Leave entry) and From/To dates like 15-05-2026, "
+            "or switch to team calendar grid mode."
+        )
+    return segments, None
+
+
+def parse_nokia_employee_summary_leave_dates(
+    text: str, year: int, month: int
+) -> tuple[set[int] | None, str | None]:
+    """
+    Parse Nokia *per-employee leave summary* (Annual / Sick tables): lines with Approved leave
+    and From/To dates as DD-MM-YYYY or DD/MM/YYYY. Returns day-of-month numbers in [year, month]
+    that Nokia marks as leave (full-day presence; half-days still count as that calendar day).
+    """
+    segs, err = iter_nokia_employee_approved_segments_clipped_to_month(text, year, month)
+    if err:
+        return None, err
+    out: set[int] = set()
+    for lo, hi, _, _, _ in segs:
+        cur = lo
+        while cur <= hi:
+            out.add(cur.day)
+            cur += timedelta(days=1)
+    return out, None
+
+
+def _employee_tracker_leave_dates_covered(
+    conn: sqlite3.Connection, employee_name: str, range_start: date, range_end: date
+) -> set[date]:
+    """Calendar dates in [range_start, range_end] where employee already has pending or approved leave."""
+    covered: set[date] = set()
+    rows = conn.execute(
+        """
+        SELECT start_date, end_date FROM leave_requests
+        WHERE employee_name = ?
+          AND status IN ('pending', 'approved')
+          AND start_date <= ? AND end_date >= ?
+        """,
+        (employee_name, range_end.isoformat(), range_start.isoformat()),
+    ).fetchall()
+    for r in rows:
+        sd = date.fromisoformat(str(r["start_date"])[:10])
+        ed = date.fromisoformat(str(r["end_date"])[:10])
+        a = max(sd, range_start)
+        b = min(ed, range_end)
+        if a > b:
+            continue
+        cur = a
+        while cur <= b:
+            covered.add(cur)
+            cur += timedelta(days=1)
+    return covered
+
+
+def _nokia_tag_tracker_leave_description_marker_for_days(
+    conn: sqlite3.Connection, employee_name: str, cover_dates: Iterable[date]
+) -> int:
+    """
+    For each calendar day in cover_dates, append the Nokia marker to pending/approved leave rows
+    for that employee that overlap the day but do not already contain the marker.
+    Returns how many distinct leave_requests rows were updated.
+    """
+    marker = NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER
+    updated_ids: set[int] = set()
+    for d in cover_dates:
+        d_iso = d.isoformat()
+        rows = conn.execute(
+            """
+            SELECT id, description FROM leave_requests
+            WHERE employee_name = ?
+              AND status IN ('pending', 'approved')
+              AND start_date <= ? AND end_date >= ?
+            """,
+            (employee_name, d_iso, d_iso),
+        ).fetchall()
+        for r in rows:
+            rid = int(r["id"])
+            if rid in updated_ids:
+                continue
+            desc = str(r["description"] or "")
+            if marker in desc:
+                continue
+            new_desc = f"{desc} {marker}".strip() if desc else marker
+            conn.execute("UPDATE leave_requests SET description = ? WHERE id = ?", (new_desc, rid))
+            updated_ids.add(rid)
+    return len(updated_ids)
+
+
+def _nokia_paste_fingerprint(raw_text: str) -> str:
+    return hashlib.sha256((raw_text or "").strip().encode("utf-8")).hexdigest()
+
+
+PREVIEW_LEAVE_TYPE_LABEL = {
+    "sl": "Sick leave",
+    "pl": "Annual leave",
+    "ul": "Casual leave",
+    "ll": "Birthday / anniversary leave",
+    "compoff": "CompOFF",
+}
+
+
+def _nokia_eleavetool_type_display(type_label: str, days_val: Any) -> str:
+    """
+    Nokia eLeave tool tables: show planned/annual leave as **A** (1 day) or **A1/2** (0.5 day)
+    from day-units. Other leave types keep their full label.
+    Recognizes preview text ``Annual leave`` and segment label ``PL — Planned leave``.
+    """
+    t = (type_label or "").strip()
+    if t not in ("Annual leave", "PL — Planned leave"):
+        return t or "—"
+    try:
+        d = float(str(days_val).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        d = 1.0
+    if abs(d - 0.5) < 1e-6:
+        return "A1/2"
+    return "A"
+
+
+def _nokia_segs_to_store(segs: list[tuple[date, date, str, str, bool]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for lo, hi, reason, label, half in segs:
+        out.append(
+            {
+                "lo": lo.isoformat(),
+                "hi": hi.isoformat(),
+                "reason": reason,
+                "label": label,
+                "half": bool(half),
+            }
+        )
+    return out
+
+
+def _nokia_segs_from_store(items: Any) -> list[tuple[date, date, str, str, bool]] | None:
+    if not isinstance(items, list):
+        return None
+    try:
+        segs: list[tuple[date, date, str, str, bool]] = []
+        for it in items:
+            if not isinstance(it, dict):
+                return None
+            segs.append(
+                (
+                    date.fromisoformat(str(it["lo"])[:10]),
+                    date.fromisoformat(str(it["hi"])[:10]),
+                    str(it["reason"]),
+                    str(it["label"]),
+                    bool(it.get("half")),
+                )
+            )
+        return segs
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _nokia_all_cover_weekdays_from_segs(segs: list[tuple[date, date, str, str, bool]]) -> set[date]:
+    """Weekdays (Mon–Fri) in each Nokia segment range — used when tagging existing tracker rows."""
+    all_cover: set[date] = set()
+    for lo, hi, _, _, _ in segs:
+        for cur in _weekdays_in_range_inclusive(lo, hi):
+            all_cover.add(cur)
+    return all_cover
+
+
+def _nokia_plan_inserts_for_segments(
+    conn: sqlite3.Connection,
+    employee_name: str,
+    segs: list[tuple[date, date, str, str, bool]],
+) -> list[dict[str, Any]]:
+    """
+    Build planned INSERT rows for the given segments against the current DB (same connection),
+    including rows inserted earlier in this transaction. Re-queries covered dates at the start
+    of each segment so later Nokia lines are not dropped by in-memory simulation of earlier lines.
+    Only **Monday–Friday** dates in each segment range are considered (weekends never get new rows).
+    """
+    overall_lo = min(t[0] for t in segs)
+    overall_hi = max(t[1] for t in segs)
+    plans: list[dict[str, Any]] = []
+
+    for lo, hi, reason, label, half_hint in segs:
+        have_dates = _employee_tracker_leave_dates_covered(conn, employee_name, overall_lo, overall_hi)
+        missing: list[date] = []
+        dates_to_consider = _weekdays_in_range_inclusive(lo, hi)
+        for cur in dates_to_consider:
+            if cur not in have_dates:
+                missing.append(cur)
+        if not missing:
+            continue
+        i = 0
+        while i < len(missing):
+            j = i
+            while j + 1 < len(missing) and missing[j + 1] == missing[j] + timedelta(days=1):
+                j += 1
+            run_start, run_end = missing[i], missing[j]
+            n_days = (run_end - run_start).days + 1
+            use_half = bool(half_hint and n_days == 1 and lo == hi)
+            if use_half:
+                dur = "half_am"
+                days_label = "0.5"
+            elif n_days == 1:
+                dur = "full"
+                days_label = "1"
+            else:
+                dur = "multi"
+                days_label = str(n_days)
+            plans.append(
+                {
+                    "run_start": run_start,
+                    "run_end": run_end,
+                    "dur": dur,
+                    "reason": reason,
+                    "label": label,
+                    "days_label": days_label,
+                }
+            )
+            i = j + 1
+
+    return plans
+
+
+def _nokia_preview_rows_from_segments(
+    employee_name: str, segs: list[tuple[date, date, str, str, bool]]
+) -> list[dict[str, Any]]:
+    """
+    One preview table row per parsed Nokia approved line (segment), before tracker deduplication.
+    Day counts follow the same weekday rules as marking for multi-calendar-day ranges.
+    """
+    rows: list[dict[str, Any]] = []
+    for d0, d1, reason, label, half_hint in segs:
+        wd_in_span = len(_weekdays_in_range_inclusive(d0, d1))
+        if d0 == d1:
+            if d0.weekday() >= 5:
+                days_s = "0"
+            elif half_hint:
+                days_s = "0.5"
+            else:
+                days_s = "1"
+        else:
+            days_s = str(wd_in_span)
+        typ = PREVIEW_LEAVE_TYPE_LABEL.get(reason, str(label or reason))
+        typ = _nokia_eleavetool_type_display(typ, days_s)
+        rows.append(
+            {
+                "name": employee_name,
+                "days": days_s,
+                "type": typ,
+                "status": "Approved",
+                "dates_range": f"{d0.strftime('%d-%m-%Y')} → {d1.strftime('%d-%m-%Y')}",
+            }
+        )
+    return rows
+
+
+def _nokia_preview_rows_from_plans(employee_name: str, plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for p in plans:
+        rs: date = p["run_start"]
+        re: date = p["run_end"]
+        reason = str(p["reason"])
+        typ = PREVIEW_LEAVE_TYPE_LABEL.get(reason, str(p.get("label") or reason))
+        typ = _nokia_eleavetool_type_display(typ, p["days_label"])
+        rows.append(
+            {
+                "name": employee_name,
+                "days": p["days_label"],
+                "type": typ,
+                "status": "Approved",
+                "dates_range": f"{rs.strftime('%d-%m-%Y')} → {re.strftime('%d-%m-%Y')}",
+            }
+        )
+    return rows
+
+
+def _nokia_marked_summary_from_plan_row(employee_name: str, p: dict[str, Any]) -> dict[str, Any]:
+    rs: date = p["run_start"]
+    re: date = p["run_end"]
+    return {
+        "name": employee_name,
+        "days": p["days_label"],
+        "type": _nokia_eleavetool_type_display(str(p.get("label") or ""), p.get("days_label")),
+        "status": "Approved in tracker",
+        "period": f"{rs.isoformat()} — {re.isoformat()}",
+        "dates_range": f"{rs.strftime('%d-%m-%Y')} → {re.strftime('%d-%m-%Y')}",
+        "_sort_start": rs.isoformat(),
+    }
+
+
+def _nokia_mark_approved_leaves(
+    app: Flask,
+    employee_name: str,
+    year: int,
+    month: int,
+    text: str,
+    *,
+    precomputed_segments: list[tuple[date, date, str, str, bool]] | None = None,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """
+    For Nokia segments, only **Monday–Friday** are written to the tracker (Saturday/Sunday are always
+    omitted), including single-day weekend lines from the paste (no row is created for those days).
+    Rows are tagged so the monthly grid shows green "A".
+    Days that already have tracker leave get the same marker appended to overlapping rows so the
+    calendar shows green "A" without duplicating days.
+    When ``precomputed_segments`` is set (same paste + employee as the last successful
+    **Show Approved Leaves** in this session), inserts follow that plan so they match the preview table.
+    Otherwise segments are parsed from ``text``. year/month are kept for the route signature.
+    """
+    if precomputed_segments is None:
+        filtered = "\n".join(L for L in (text or "").splitlines() if "approved" in L.lower())
+        if not filtered.strip():
+            return [], 0, (
+                'No lines containing "Approved" were found. Copy the approved rows from Nokia eLeave '
+                "(one employee at a time), then try again."
+            )
+        segs = _nokia_segment_tuples_from_filtered_approved_lines(filtered.strip())
+        if not segs:
+            return [], 0, (
+                "No leave rows with recognizable dates were found in the pasted text. "
+                "Use lines that include Approved (or Leave entry) and dates like 15-05-2026."
+            )
+    else:
+        segs = precomputed_segments
+        if not segs:
+            return [], 0, (
+                "No approved leave rows to apply. Click Show Approved Leaves first, "
+                "then Mark Approved leave in Leave tracker."
+            )
+
+    all_cover = _nokia_all_cover_weekdays_from_segs(segs)
+
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    ip = client_ip()
+    conn = get_db(app)
+    marked: list[dict[str, Any]] = []
+
+    try:
+        for seg in segs:
+            plans_part = _nokia_plan_inserts_for_segments(conn, employee_name, [seg])
+            for p in plans_part:
+                conn.execute(
+                    """
+                    INSERT INTO leave_requests
+                    (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+                    VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+                    """,
+                    (
+                        employee_name,
+                        str(p["reason"]),
+                        NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER,
+                        p["run_start"].isoformat(),
+                        p["run_end"].isoformat(),
+                        str(p["dur"]),
+                        created,
+                        ip,
+                    ),
+                )
+                marked.append(_nokia_marked_summary_from_plan_row(employee_name, p))
+        tagged_existing = _nokia_tag_tracker_leave_description_marker_for_days(conn, employee_name, all_cover)
+        conn.commit()
+    except Exception as ex:  # noqa: BLE001
+        conn.rollback()
+        conn.close()
+        return [], 0, str(ex)
+    conn.close()
+    marked.sort(key=lambda r: (r.get("_sort_start") or "", str(r.get("period") or "")))
+    for r in marked:
+        r.pop("_sort_start", None)
+    return marked, tagged_existing, None
+
+
+def _nokia_audit_tracker_approved_leave_rows(
+    app: Flask,
+    employee_name: str,
+    year: int,
+    month: int,
+) -> list[dict[str, Any]]:
+    """Approved leave_requests overlapping [year, month] for one roster employee (manager view)."""
+    first = date(year, month, 1)
+    _, ld = monthrange(year, month)
+    last = date(year, month, ld)
+    start_iso = first.isoformat()
+    end_iso = last.isoformat()
+    reason_labels = dict(LEAVE_REASONS)
+    conn = get_db(app)
+    rows = list(
+        conn.execute(
+            """
+            SELECT employee_name, reason, start_date, end_date, duration_type, status
+            FROM leave_requests
+            WHERE employee_name = ?
+              AND status = 'approved'
+              AND start_date <= ? AND end_date >= ?
+            ORDER BY start_date ASC, id ASC
+            """,
+            (employee_name, end_iso, start_iso),
+        )
+    )
+    conn.close()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        sd = date.fromisoformat(str(r["start_date"])[:10])
+        ed = date.fromisoformat(str(r["end_date"])[:10])
+        span = (ed - sd).days + 1
+        dur = str(r["duration_type"] or "")
+        if dur in ("half_am", "half_pm"):
+            days_s = "0.5"
+        elif dur == "multi" or span > 1:
+            days_s = str(span)
+        else:
+            days_s = "1"
+        out.append(
+            {
+                "name": r["employee_name"],
+                "from_date": str(r["start_date"])[:10],
+                "to_date": str(r["end_date"])[:10],
+                "type": reason_labels.get(str(r["reason"]), str(r["reason"])),
+                "days": days_s,
+                "status": "Approved",
+            }
+        )
+    return out
+
+
+def _dsm_audit_days_token_is_half(days_val: Any) -> bool:
+    t = str(days_val or "").strip().replace(",", ".")
+    if not t:
+        return False
+    try:
+        return abs(float(t) - 0.5) < 1e-9
+    except (ValueError, TypeError):
+        return False
+
+
+def _nokia_audit_dsm_row_sort_key(r: dict[str, Any]) -> tuple[str, date, date]:
+    pr = _parse_nokia_audit_dd_mm_range(str(r.get("dates_range") or ""))
+    nm = str(r.get("name") or "")
+    if not pr:
+        return (nm, date.max, date.max)
+    return (nm, pr[0], pr[1])
+
+
+def _merge_contiguous_nokia_audit_dsm_leave_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Merge consecutive DSM audit rows when the tracker stored adjacent single-day (or abutting)
+    ranges for the same person, status, and grid type — so Nokia **Compare** sees one DSM span
+    matching one Nokia line instead of two fragments (e.g. 26–26 + 27–27 → 26–27).
+    Half-day rows are not merged with neighbours.
+    """
+    if not rows or len(rows) < 2:
+        return list(rows or [])
+    expanded: list[tuple[tuple[date, date], dict[str, Any]]] = []
+    unparsed: list[dict[str, Any]] = []
+    for r in rows:
+        pr = _parse_nokia_audit_dd_mm_range(str(r.get("dates_range") or ""))
+        if not pr:
+            unparsed.append(dict(r))
+            continue
+        sd, ed = pr
+        if ed < sd:
+            sd, ed = ed, sd
+        expanded.append(((sd, ed), dict(r)))
+    expanded.sort(key=lambda it: (str(it[1].get("name") or ""), it[0][0], it[0][1]))
+    merged: list[dict[str, Any]] = []
+    idx = 0
+    while idx < len(expanded):
+        (bsd, bed), base = expanded[idx]
+        last_end = bed
+        j = idx
+        while j + 1 < len(expanded):
+            (nsd, ned), nxt = expanded[j + 1]
+            same = (
+                str(base.get("name") or "") == str(nxt.get("name") or "")
+                and str(base.get("status") or "") == str(nxt.get("status") or "")
+                and str(base.get("type") or "") == str(nxt.get("type") or "")
+            )
+            contiguous = last_end + timedelta(days=1) == nsd
+            halves = _dsm_audit_days_token_is_half(base.get("days")) or _dsm_audit_days_token_is_half(nxt.get("days"))
+            if not (same and contiguous and not halves):
+                break
+            last_end = ned
+            j += 1
+        csd, ced = bsd, last_end
+        if csd == ced:
+            days_s = (
+                str(base.get("days")).strip()
+                if _dsm_audit_days_token_is_half(base.get("days"))
+                else "1"
+            )
+        else:
+            days_s = str(len(_weekdays_in_range_inclusive(csd, ced)))
+        merged.append(
+            {
+                "name": base.get("name"),
+                "days": days_s,
+                "type": base.get("type"),
+                "status": base.get("status"),
+                "dates_range": f"{csd.strftime('%d-%m-%Y')} → {ced.strftime('%d-%m-%Y')}",
+            }
+        )
+        idx = j + 1
+    merged.extend(unparsed)
+    merged.sort(key=_nokia_audit_dsm_row_sort_key)
+    return merged
+
+
+def _nokia_audit_dsm_leave_rows(
+    app: Flask,
+    employee_name: str,
+    year: int,
+) -> list[dict[str, Any]]:
+    """
+    Pending + approved ``leave_requests`` overlapping the **calendar year** ``year`` (1 Jan–31 Dec),
+    for the DSM / Leave tracker view. **Type** uses the same codes as the month grid
+    (``leave_cell_code``: PL/UL/SL/LL/CO, half-day ½, Nokia A).
+    """
+    year_start = date(year, 1, 1).isoformat()
+    year_end = date(year, 12, 31).isoformat()
+    conn = get_db(app)
+    rows = list(
+        conn.execute(
+            """
+            SELECT employee_name, reason, description, start_date, end_date, duration_type, status
+            FROM leave_requests
+            WHERE employee_name = ?
+              AND status IN ('pending', 'approved')
+              AND start_date <= ? AND end_date >= ?
+            ORDER BY start_date ASC, id ASC
+            """,
+            (employee_name, year_end, year_start),
+        )
+    )
+    conn.close()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        sd = date.fromisoformat(str(r["start_date"])[:10])
+        ed = date.fromisoformat(str(r["end_date"])[:10])
+        dur = str(r["duration_type"] or "")
+        reason = str(r["reason"] or "")
+        status = str(r["status"] or "")
+        desc = str(r["description"] or "")
+
+        if dur in ("half_am", "half_pm"):
+            days_s = "0.5"
+        elif sd == ed:
+            days_s = "1"
+        else:
+            days_s = str(len(_weekdays_in_range_inclusive(sd, ed)))
+
+        type_cell = leave_cell_code(reason, dur, status, desc)
+        if status == "pending":
+            status_label = "Pending"
+        elif status == "approved":
+            status_label = "Approved"
+        else:
+            status_label = status.replace("_", " ").strip().title() or "—"
+
+        out.append(
+            {
+                "name": r["employee_name"],
+                "days": days_s,
+                "type": type_cell,
+                "status": status_label,
+                "dates_range": f"{sd.strftime('%d-%m-%Y')} → {ed.strftime('%d-%m-%Y')}",
+            }
+        )
+    return _merge_contiguous_nokia_audit_dsm_leave_rows(out)
+
+
+def _nokia_paste_approved_preview_rows(
+    _app: Flask,
+    text: str,
+    employee_name: str,
+) -> tuple[list[dict[str, Any]], str | None, list[tuple[date, date, str, str, bool]] | None]:
+    """
+    Build one preview table row per parsed Nokia **approved** line (all types), including lines whose
+    calendar days overlap others — the table lists every Nokia row; **Mark Approved** still skips
+    days already on the tracker when inserting.
+    Returns ``(rows, error, segments)``; ``segments`` is set on success for the next Mark action
+    when paste text and employee are unchanged. ``_app`` is unused but kept for a stable call signature.
+    """
+    filtered = "\n".join(L for L in (text or "").splitlines() if "approved" in L.lower())
+    if not filtered.strip():
+        return [], "Paste Nokia eLeave text (approved rows), then click Show Approved Leaves.", None
+
+    segs = _nokia_segment_tuples_from_filtered_approved_lines(filtered.strip())
+    if not segs:
+        return [], (
+            "No leave rows with recognizable dates were found in the pasted text. "
+            "Use lines that include Approved (or Leave entry) and dates like 15-05-2026."
+        ), None
+
+    # Chronological order (not lexicographic on dd-mm-yyyy strings).
+    segs.sort(key=lambda t: (t[0], t[1]))
+    rows = _nokia_preview_rows_from_segments(employee_name, segs)
+    return rows, None, segs
+
+
+def _sum_nokia_audit_day_column(rows: list[dict[str, Any]]) -> float:
+    """Sum numeric 'days' cells from Nokia preview / marked summary rows (handles '1', '0.5', '3')."""
+    total = 0.0
+    for r in rows or []:
+        raw = r.get("days")
+        try:
+            total += float(str(raw).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+def _parse_nokia_audit_dd_mm_range(dates_range: str) -> tuple[date, date] | None:
+    """
+    Parse an inclusive date range from a Nokia / DSM table cell.
+
+    Accepts ``dd-mm-yyyy → dd-mm-yyyy`` (Unicode arrow), ``dd-mm-yyyy -> dd-mm-yyyy``,
+    slashes, and any text where the **first** and **last** ``dd-mm-yyyy`` / ``dd/mm/yyyy``
+    tokens define the span (single-day cells often repeat the same date twice).
+    """
+    s = (dates_range or "").strip()
+    if not s:
+        return None
+    pat = re.compile(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b")
+
+    def _one(m: re.Match[str]) -> date | None:
+        for fmt in ("%d-%m-%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(m.group(0), fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    matches = list(pat.finditer(s))
+    if not matches:
+        return None
+    if len(matches) == 1:
+        d0 = _one(matches[0])
+        return (d0, d0) if d0 else None
+    d_lo = _one(matches[0])
+    d_hi = _one(matches[-1])
+    if not d_lo or not d_hi:
+        return None
+    if d_hi < d_lo:
+        d_lo, d_hi = d_hi, d_lo
+    return d_lo, d_hi
+
+
+def _nokia_audit_row_days_cell(val: Any) -> float:
+    if val in (None, "", "—"):
+        return 0.0
+    try:
+        return float(str(val).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _nokia_audit_type_key_for_dedupe(type_s: str) -> str:
+    """Normalize eLeave / planned leave labels so duplicate rows still match after display renames."""
+    t = (type_s or "").strip()
+    if t in ("A", "A1/2", "Annual leave", "PL — Planned leave"):
+        return "__pl__"
+    return t.casefold()
+
+
+def _nokia_audit_dedupe_elv_rows_for_compare(nokia_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Nokia paste sometimes repeats the same approved line (same calendar span, day count, and type).
+
+    Each duplicate would otherwise be paired greedily against the same DSM leave, leaving later
+    copies with empty DSM columns while the tracker still has a single row — confusing in Compare.
+    Keep the first occurrence in paste order and drop identical follow-ups.
+    """
+    seen: set[tuple[Any, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for r in nokia_rows or []:
+        pr = _parse_nokia_audit_dd_mm_range(str(r.get("dates_range") or ""))
+        days_s = str(r.get("days") or "").strip()
+        type_s = str(r.get("type") or "").strip()
+        norm_type = _nokia_audit_type_key_for_dedupe(type_s)
+        if pr:
+            key = (pr[0], pr[1], days_s, norm_type)
+        else:
+            key = (str(r.get("dates_range") or "").strip(), days_s, norm_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _calendar_overlap_days(a0: date, a1: date, b0: date, b1: date) -> int:
+    lo = max(a0, b0)
+    hi = min(a1, b1)
+    if lo > hi:
+        return 0
+    return (hi - lo).days + 1
+
+
+def _nokia_audit_session_safe_row_dicts(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for r in rows or []:
+        out.append({str(k): "" if v is None else str(v) for k, v in r.items()})
+    return out
+
+
+def _compare_row_from_pair(nokia: dict[str, Any] | None, dsm: dict[str, Any] | None) -> dict[str, Any]:
+    src = nokia or dsm or {}
+    return {
+        "name": str(src.get("name") or "").strip() or "—",
+        "days_elv": (nokia or {}).get("days") if nokia else "—",
+        "days_dsm": (dsm or {}).get("days") if dsm else "—",
+        "type_elv": (
+            _nokia_eleavetool_type_display(str((nokia or {}).get("type") or ""), (nokia or {}).get("days"))
+            if nokia
+            else "—"
+        ),
+        "type_dsm": (dsm or {}).get("type") if dsm else "—",
+        "dates_elv": (nokia or {}).get("dates_range") if nokia else "—",
+        "dates_dsm": (dsm or {}).get("dates_range") if dsm else "—",
+    }
+
+
+def _nokia_audit_build_compare_rows(
+    nokia_rows: list[dict[str, Any]],
+    dsm_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Merge Nokia **Show Approved** preview rows with **Show DSM** tracker rows by overlapping
+    calendar date ranges.
+
+    Identical Nokia preview rows (same parsed dates, day count, and type) are deduplicated first
+    so one tracker row is not “consumed” only by the first copy, leaving duplicates with blank DSM.
+
+    Each remaining Nokia row takes the best-overlapping **unused** DSM row (prefer exact span,
+    then closest day count, then stable order).
+    """
+    nokia_rows = _nokia_audit_dedupe_elv_rows_for_compare(list(nokia_rows or []))
+    out: list[dict[str, Any]] = []
+    used_dsm: set[int] = set()
+    for nr in nokia_rows or []:
+        pr = _parse_nokia_audit_dd_mm_range(str(nr.get("dates_range") or ""))
+        if not pr:
+            out.append(_compare_row_from_pair(nr, None))
+            continue
+        n0, n1 = pr
+        best_j: int | None = None
+        best_key: tuple[int, int, float, int] | None = None
+        nd = _nokia_audit_row_days_cell(nr.get("days"))
+        for j, dr in enumerate(dsm_rows or []):
+            if j in used_dsm:
+                continue
+            prd = _parse_nokia_audit_dd_mm_range(str(dr.get("dates_range") or ""))
+            if not prd:
+                continue
+            ov = _calendar_overlap_days(n0, n1, prd[0], prd[1])
+            if ov <= 0:
+                continue
+            exact = 1 if (n0, n1) == (prd[0], prd[1]) else 0
+            dd = _nokia_audit_row_days_cell(dr.get("days"))
+            cand: tuple[int, int, float, int] = (
+                -ov,
+                -exact,
+                abs(nd - dd),
+                j,
+            )
+            if best_key is None or cand < best_key:
+                best_key = cand
+                best_j = j
+        if best_j is not None:
+            used_dsm.add(best_j)
+            out.append(_compare_row_from_pair(nr, dsm_rows[best_j]))
+        else:
+            out.append(_compare_row_from_pair(nr, None))
+    for j, dr in enumerate(dsm_rows or []):
+        if j not in used_dsm:
+            out.append(_compare_row_from_pair(None, dr))
+
+    def _sort_key(row: dict[str, Any]) -> tuple[date, str]:
+        pr = _parse_nokia_audit_dd_mm_range(str(row.get("dates_elv") or ""))
+        if not pr:
+            pr = _parse_nokia_audit_dd_mm_range(str(row.get("dates_dsm") or ""))
+        if not pr:
+            return date.max, ""
+        return pr[0], str(row.get("name") or "")
+
+    out.sort(key=_sort_key)
+    out = _merge_compare_rows_contiguous_elv_shared_dsm(out)
+    return out
+
+
+def _merge_compare_rows_contiguous_elv_shared_dsm(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    After pairing, merge adjacent compare rows when the first row holds the DSM span and the next
+    row has **no** DSM column (already paired to the same leave in the tracker) but **contiguous**
+    eTool dates that extend the first row's eTool span **within** that DSM range — one visual row
+    instead of a fragment + orphan (e.g. eTool 23–23 + 24–25 with DSM 23–25 on the first row only).
+    """
+    if len(rows) < 2:
+        return list(rows or [])
+
+    def _dsm_cell_empty(v: Any) -> bool:
+        s = str(v or "").strip()
+        return not s or s in ("—", "-")
+
+    def _same_dsm_or_nxt_empty(cur_dsm: Any, nxt_dsm: Any) -> bool:
+        if _dsm_cell_empty(nxt_dsm):
+            return True
+        a = _parse_nokia_audit_dd_mm_range(str(cur_dsm or ""))
+        b = _parse_nokia_audit_dd_mm_range(str(nxt_dsm or ""))
+        return bool(a and b and a == b)
+
+    out: list[dict[str, Any]] = []
+    i = 0
+    nlen = len(rows)
+    while i < nlen:
+        cur = dict(rows[i])
+        j = i + 1
+        while j < nlen:
+            nxt = rows[j]
+            if str(cur.get("name") or "") != str(nxt.get("name") or ""):
+                break
+            pr_d_cur = _parse_nokia_audit_dd_mm_range(str(cur.get("dates_dsm") or ""))
+            if not pr_d_cur or _dsm_cell_empty(cur.get("dates_dsm")):
+                break
+            if not _same_dsm_or_nxt_empty(cur.get("dates_dsm"), nxt.get("dates_dsm")):
+                break
+            pe_c = _parse_nokia_audit_dd_mm_range(str(cur.get("dates_elv") or ""))
+            pe_n = _parse_nokia_audit_dd_mm_range(str(nxt.get("dates_elv") or ""))
+            if not pe_c or not pe_n:
+                break
+            c0, c1 = pe_c
+            n0, n1 = pe_n
+            if c1 < c0:
+                c0, c1 = c1, c0
+            if n1 < n0:
+                n0, n1 = n1, n0
+            if c1 + timedelta(days=1) != n0:
+                break
+            if str(cur.get("type_elv") or "") != str(nxt.get("type_elv") or ""):
+                break
+            if not _dsm_cell_empty(nxt.get("dates_dsm")):
+                if str(cur.get("type_dsm") or "") != str(nxt.get("type_dsm") or ""):
+                    break
+            d0, d1 = pr_d_cur
+            m0, m1 = min(c0, n0), max(c1, n1)
+            if m0 < d0 or m1 > d1:
+                break
+            cur["dates_elv"] = f"{m0.strftime('%d-%m-%Y')} → {m1.strftime('%d-%m-%Y')}"
+            if m0 == m1:
+                cur["days_elv"] = "1"
+            else:
+                cur["days_elv"] = str(len(_weekdays_in_range_inclusive(m0, m1)))
+            t1 = str(cur.get("type_elv") or "")
+            t2 = str(nxt.get("type_elv") or "")
+            if t1 in ("A", "A1/2") and t2 in ("A", "A1/2"):
+                cur["type_elv"] = _nokia_eleavetool_type_display("Annual leave", cur["days_elv"])
+            j += 1
+        out.append(cur)
+        i = j
+    return out
+
+
+def _nokia_audit_compare_rows_from_session(employee_name: str, year: int) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """
+    If the session holds a successful **Show Approved Leaves** preview and **Show DSM Leaves** load
+    for ``employee_name`` and calendar ``year``, return merged compare rows. Otherwise return
+    ``(None, error_message)``.
+    """
+    ap = session.get(NOKIA_AUDIT_SESSION_LAST_APPROVED_PREVIEW)
+    dp = session.get(NOKIA_AUDIT_SESSION_LAST_DSM)
+    ap_ok = (
+        isinstance(ap, dict)
+        and str(ap.get("employee_name") or "").strip() == employee_name
+        and isinstance(ap.get("rows"), list)
+    )
+    dp_ok = (
+        isinstance(dp, dict)
+        and str(dp.get("employee_name") or "").strip() == employee_name
+        and int(dp.get("year") or -1) == int(year)
+        and isinstance(dp.get("rows"), list)
+    )
+    if not ap_ok:
+        return None, (
+            "Run Show Approved Leaves successfully first for this employee "
+            "(so the eLeave tool preview is saved), then Show DSM Leaves for this calendar year, "
+            "then Compare."
+        )
+    if not dp_ok:
+        return None, (
+            f"Run Show DSM Leaves first for calendar year {year} with this employee selected, "
+            "then Compare."
+        )
+    nokia_list = list(ap.get("rows") or [])
+    dsm_list = list(dp.get("rows") or [])
+    return _nokia_audit_build_compare_rows(nokia_list, dsm_list), None
+
+
+def _sum_nokia_audit_compare_days(rows: list[dict[str, Any]], key: str) -> float:
+    total = 0.0
+    for r in rows or []:
+        raw = r.get(key)
+        if raw in (None, "", "—"):
+            continue
+        try:
+            total += float(str(raw).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+def build_nokia_compare_xlsx_bytes(
+    rows: list[dict[str, Any]],
+    *,
+    employee_name: str,
+    year: int,
+) -> tuple[bytes | None, str | None]:
+    """Build a one-sheet .xlsx matching the Compare table (eLeave vs DSM)."""
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return None, "Excel export requires openpyxl (install dependencies)."
+
+    headers = (
+        "NAME",
+        "No. of Days (eTool)",
+        "No. of Days (DSM)",
+        "eLeavetool Type",
+        "Type of leave DSM",
+        "Leave dates (eTool)",
+        "Leave dates (DSM)",
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Compare"
+    ws.cell(row=1, column=1, value="Compare — eLeave tool vs DSM")
+    ws.cell(row=2, column=1, value="Employee")
+    ws.cell(row=2, column=2, value=employee_name)
+    ws.cell(row=2, column=3, value="Calendar year")
+    ws.cell(row=2, column=4, value=int(year))
+    start_row = 4
+    for c, h in enumerate(headers, start=1):
+        ws.cell(row=start_row, column=c, value=h)
+    r = start_row + 1
+    for row in rows or []:
+        ws.cell(row=r, column=1, value=row.get("name"))
+        ws.cell(row=r, column=2, value=row.get("days_elv"))
+        ws.cell(row=r, column=3, value=row.get("days_dsm"))
+        ws.cell(row=r, column=4, value=row.get("type_elv"))
+        ws.cell(row=r, column=5, value=row.get("type_dsm"))
+        ws.cell(row=r, column=6, value=row.get("dates_elv"))
+        ws.cell(row=r, column=7, value=row.get("dates_dsm"))
+        r += 1
+    ws.cell(row=r, column=1, value="TOTAL")
+    ws.cell(row=r, column=2, value=_sum_nokia_audit_compare_days(rows, "days_elv"))
+    ws.cell(row=r, column=3, value=_sum_nokia_audit_compare_days(rows, "days_dsm"))
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), None
+
+
+def _nokia_tsv_last_nonempty_cell(line: str) -> str | None:
+    """Last non-empty tab-separated cell (Nokia / eLeave TSV exports often put the employee there)."""
+    if "\t" not in (line or ""):
+        return None
+    cells = [c.strip() for c in line.split("\t")]
+    for c in reversed(cells):
+        if c:
+            return " ".join(c.split())
+    return None
+
+
+def _nokia_roster_cell_exact_match(cell: str, roster: Sequence[str]) -> str | None:
+    """If ``cell`` normalizes to a roster display name, return that roster string; else None."""
+    if not (cell or "").strip():
+        return None
+    cf = " ".join(cell.split()).casefold()
+    for n in roster:
+        nn = " ".join((n or "").split()).strip()
+        if nn and nn.casefold() == cf:
+            return n
+    return None
+
+
+def _nokia_paste_has_nokia_approved_leave_date_line(text: str) -> bool:
+    """True if pasted text has at least one line that looks like Nokia approved leave (status + date)."""
+    date_pat = re.compile(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b")
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or "approved" not in s.lower():
+            continue
+        if date_pat.search(s):
+            return True
+    return False
+
+
+def _nokia_paste_trailing_roster_name_hints(text: str, roster: Sequence[str]) -> set[str]:
+    """
+    From lines that look like Nokia approved leave (contains 'approved' and a DD-MM-YYYY date),
+    detect roster names: prefer the **last TSV column** when the line uses tabs (eLeave copy/paste),
+    else fall back to the longest roster name matching a **line suffix** (free-text Nokia rows).
+    """
+    roster_sorted = sorted((n.strip() for n in roster if (n or "").strip()), key=len, reverse=True)
+    date_pat = re.compile(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b")
+    hints: set[str] = set()
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or "approved" not in s.lower():
+            continue
+        if not date_pat.search(s):
+            continue
+        last_cell = _nokia_tsv_last_nonempty_cell(s)
+        if last_cell is not None:
+            hit = _nokia_roster_cell_exact_match(last_cell, roster)
+            if hit is not None:
+                hints.add(hit)
+                continue
+        tail = s.rstrip(" \t.,;:")
+        low_tail = tail.casefold()
+        for name in roster_sorted:
+            n = name.strip()
+            if low_tail.endswith(n.casefold()):
+                hints.add(n)
+                break
+    return hints
+
+
+def _nokia_paste_employee_must_match_selected_or_error(
+    selected: str,
+    text: str,
+    roster: Sequence[str],
+    *,
+    require_roster_name_in_paste: bool = False,
+) -> str | None:
+    """
+    If pasted Nokia lines clearly name one or more roster employees (TSV last column or suffix
+    heuristic), ensure they match the dropdown selection. Returns an error message to show, or None
+    when OK / not verifiable.
+
+    When ``require_roster_name_in_paste`` is True (Show Approved, Show DSM Leaves, and Mark approved actions),
+    any pasted line that looks like Nokia approved leave with a date must also yield a detectable roster name;
+    otherwise the user must fix the copy so the employee can be verified against the dropdown.
+    """
+    sel = " ".join((selected or "").split()).strip()
+    if not sel:
+        return None
+    hints = _nokia_paste_trailing_roster_name_hints(text, roster)
+    if require_roster_name_in_paste and _nokia_paste_has_nokia_approved_leave_date_line(text) and not hints:
+        return (
+            "Could not find a roster employee name in the pasted Nokia approved rows. "
+            "Each line should end with the same name as Employee (roster name), or use "
+            "tab-separated eLeave copy with that employee in the last column, then try again."
+        )
+    if not hints:
+        return None
+    distinct = {" ".join(h.split()) for h in hints}
+    sel_cf = sel.casefold()
+    if len(distinct) > 1:
+        names_s = ", ".join(sorted(distinct))
+        return (
+            f"Pasted text contains more than one employee name ({names_s}). "
+            "Select one person in Employee (roster name), paste only their Nokia rows "
+            "(each line should end with that employee name), then try again."
+        )
+    only = next(iter(distinct))
+    if only.casefold() != sel_cf:
+        return (
+            f"Employee name in the pasted Nokia text ({only}) does not match "
+            f"Employee (roster name) ({sel}). Copy rows for {sel} from Nokia "
+            "(lines should end with that name), then try again."
+        )
+    return None
+
+
 def _try_winget_install_tesseract_windows(max_wait_s: int = 600) -> bool:
     """Best-effort silent install of Tesseract via winget (Windows only)."""
     try:
@@ -851,8 +2234,17 @@ def app_leave_days_by_employee_month(
     for emp in roster_t:
         for dom in range(1, last_day + 1):
             d = date(year, month, dom)
+            d_iso = d.isoformat()
             overlapping = _overlapping_leaves_for_day(by_emp[emp], d, day_dec)
-            if overlapping:
+            if not overlapping:
+                continue
+            pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
+            pool = pending_only or overlapping
+            row = max(pool, key=_leave_row_display_tiebreak)
+            eff = _effective_leave_status(row, d_iso, day_dec)
+            if eff not in ("pending", "approved"):
+                continue
+            if _leave_reason_counts_toward_day_units(row["reason"]):
                 out[emp].add(dom)
     return out
 
@@ -903,7 +2295,7 @@ def _leave_tracker_day_rows_for_range(
                 continue
             pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
             pool = pending_only or overlapping
-            row = max(pool, key=lambda r: int(r["id"]))
+            row = max(pool, key=_leave_row_display_tiebreak)
             eff = _effective_leave_status(row, d_iso, day_dec)
             if eff not in ("pending", "approved"):
                 continue
@@ -912,7 +2304,10 @@ def _leave_tracker_day_rows_for_range(
                 unit = 0.5
             else:
                 unit = 1.0
-            totals[emp] += unit
+            if _leave_reason_counts_toward_day_units(row["reason"]):
+                totals[emp] += unit
+            else:
+                unit = 0.0
             detail.append(
                 {
                     "employee_name": emp,
@@ -976,6 +2371,8 @@ def compare_nokia_vs_app(
 
 
 def client_ip() -> str:
+    if not has_request_context():
+        return ""
     xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
     if xff:
         return xff[:200]
@@ -1036,35 +2433,30 @@ def send_portal_otp_smtp(app: Flask, to_addr: str, code: str) -> None:
         smtp.send_message(msg)
 
 
-def leave_cell_code(reason: str, duration_type: str, status: str) -> str:
-    """Leave tracker cell: PL/UL/SL/LL with optional ½ for half-day."""
+def leave_cell_code(reason: str, duration_type: str, status: str, description: str = "") -> str:
+    """Leave tracker cell: PL/UL/SL/LL/CO with optional ½ for half-day; Nokia-audit rows show A."""
+    if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in (description or ""):
+        half = duration_type in ("half_am", "half_pm")
+        suf = "\u00bd" if half else ""
+        return "A" + suf
     half = duration_type in ("half_am", "half_pm")
     suf = "\u00bd" if half else ""
-    letter = {"pl": "PL", "ul": "UL", "sl": "SL", "ll": "LL"}.get(reason, "UL")
+    letter = {"pl": "PL", "ul": "UL", "sl": "SL", "ll": "LL", "compoff": "CO"}.get(reason, "UL")
     return letter + suf
 
 
-def cell_css_class(reason: str, status: str) -> str:
+def cell_css_class(reason: str, status: str, description: str = "") -> str:
+    if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in (description or ""):
+        base = "cell-nokia-approved"
+        return f"{base} cell-pending" if status == "pending" else base
     base = {
         "pl": "cell-pl",
         "ul": "cell-ul",
         "sl": "cell-sl",
         "ll": "cell-ll",
+        "compoff": "cell-compoff",
     }.get(reason, "cell-ul")
     return f"{base} cell-pending" if status == "pending" else base
-
-
-def _db_path(app: Flask) -> Path:
-    return Path(app.config["DB_PATH"])
-
-
-def get_db(app: Flask) -> sqlite3.Connection:
-    p = _db_path(app)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
 
 
 def _seed_default_team_if_empty(conn: sqlite3.Connection) -> None:
@@ -1528,6 +2920,18 @@ def init_db(app: Flask) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_team_roster_team ON team_roster(team_id);
 
+        CREATE TABLE IF NOT EXISTS leave_tracker_eleaves (
+            team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            employee_name TEXT NOT NULL,
+            days REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (team_id, year, month, employee_name)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_leave_tracker_eleaves_tm ON leave_tracker_eleaves(team_id, year, month);
+
         CREATE TABLE IF NOT EXISTS scrum_sprint (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -1623,8 +3027,9 @@ def init_db(app: Flask) -> None:
         ("other", "ul"),
     ):
         conn.execute("UPDATE leave_requests SET reason = ? WHERE reason = ?", (new, old))
+    conn.execute("UPDATE leave_requests SET reason = 'compoff' WHERE lower(trim(reason)) = 'wfh'")
     conn.execute(
-        "UPDATE leave_requests SET reason = 'ul' WHERE reason NOT IN ('pl', 'ul', 'sl', 'll')"
+        "UPDATE leave_requests SET reason = 'ul' WHERE reason NOT IN ('pl', 'ul', 'sl', 'll', 'compoff')"
     )
     cols_scrum = {row[1] for row in conn.execute("PRAGMA table_info(scrum_daily_task)")}
     if "sprint_id" not in cols_scrum:
@@ -1681,6 +3086,7 @@ def init_db(app: Flask) -> None:
         )
     _migrate_employee_portal_v1(conn)
     _migrate_scrum_sprint_item_area_v1(conn)
+    _migrate_scrum_sprint_item_attachment_v1(conn)
     _seed_default_team_if_empty(conn)
     _seed_portal_demo_scrum_items_if_requested(conn)
     _migrate_scrum_team_task_kinds(conn)
@@ -1788,11 +3194,28 @@ def _roster_table_rows_to_pairs(header: list[str], data_rows: list[list[str]]) -
     return pairs
 
 
+def _sqlite_db_snapshot_copy(db_path: Path, label: str) -> Path | None:
+    """Copy the SQLite file beside the live DB (e.g. before roster import). Returns path or None."""
+    db_path = db_path.resolve()
+    if not db_path.is_file():
+        return None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = db_path.parent / f"{db_path.stem}.{label}_{ts}{db_path.suffix}"
+    try:
+        shutil.copy2(db_path, dest)
+        return dest
+    except OSError:
+        logging.getLogger(__name__).warning("DB snapshot failed: %s → %s", db_path, dest, exc_info=True)
+        return None
+
+
 def ingest_team_roster_pairs(app: Flask, pairs: list[tuple[str, str]]) -> tuple[int, int, list[str]]:
     """Replace roster rows for each team present in pairs (teams are created if missing)."""
     warnings: list[str] = []
     if not pairs:
         raise ValueError("No member rows found below the header.")
+
+    _sqlite_db_snapshot_copy(Path(app.config["DB_PATH"]), "pre_roster_upload")
 
     by_team: dict[str, list[str]] = {}
     for team, emp in pairs:
@@ -1952,6 +3375,28 @@ def _migrate_scrum_sprint_item_area_v1(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO app_migrations (id) VALUES ('scrum_sprint_item_area_v1')")
 
 
+def _migrate_scrum_sprint_item_attachment_v1(conn: sqlite3.Connection) -> None:
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("scrum_sprint_item_attachment_v1",)).fetchone():
+        return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scrum_sprint_item_attachment (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES scrum_sprint_item(id) ON DELETE CASCADE,
+            rel_path TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrum_item_att_item ON scrum_sprint_item_attachment(item_id, id)"
+    )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('scrum_sprint_item_attachment_v1')")
+
+
 def _migrate_employee_portal_v1(conn: sqlite3.Connection) -> None:
     if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("employee_portal_v1",)).fetchone():
         return
@@ -2061,6 +3506,15 @@ def _daterange_inclusive(a: date, b: date):
         d += timedelta(days=1)
 
 
+def _weekdays_in_range_inclusive(a: date, b: date) -> list[date]:
+    """Monday–Friday dates in [a, b] inclusive (Saturday/Sunday omitted)."""
+    out: list[date] = []
+    for d in _daterange_inclusive(a, b):
+        if d.weekday() < 5:
+            out.append(d)
+    return out
+
+
 def _load_meet_leave_day_map(app: Flask, start_iso: str, end_iso: str) -> dict[tuple[int, str], str]:
     conn = get_db(app)
     rows = conn.execute(
@@ -2134,6 +3588,11 @@ def _maybe_promote_leave_after_meet_days(app: Flask, leave_id: int) -> None:
     conn.close()
 
 
+def _purge_meet_leave_day_rows_for_leave(conn: sqlite3.Connection, leave_id: int) -> None:
+    """Drop DSM per-day rows for this request so rejected/withdrawn leave cannot affect any calendar or capacity logic."""
+    conn.execute("DELETE FROM meet_leave_day WHERE leave_id = ?", (int(leave_id),))
+
+
 def _meet_validate_leave_in_window(
     app: Flask,
     leave_id_raw: str | None,
@@ -2176,7 +3635,59 @@ def _meet_validate_leave_in_window(
     return row, anchor, None
 
 
-def build_month_context(app: Flask, year: int, month: int, roster: Sequence[str] | None = None) -> dict:
+def _dashboard_validate_leave_for_month(
+    app: Flask,
+    leave_id_raw: str | None,
+    work_date: str | None,
+    year: int,
+    month: int,
+    roster: Sequence[str],
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Validate leave_id + work_date for dashboard month grid (same row checks as meet, date must fall in that month)."""
+    roster_t = tuple(roster)
+    if not leave_id_raw or not work_date:
+        return None, "bad_input"
+    try:
+        leave_id = int(str(leave_id_raw).strip())
+    except ValueError:
+        return None, "bad_input"
+    try:
+        wd = date.fromisoformat(work_date.strip()[:10])
+    except ValueError:
+        return None, "bad_date"
+    if not (1 <= month <= 12):
+        return None, "bad_month"
+    first = date(year, month, 1)
+    _, last_day = monthrange(year, month)
+    last = date(year, month, last_day)
+    if not (first <= wd <= last):
+        return None, "out_of_month"
+    conn = get_db(app)
+    row = conn.execute("SELECT * FROM leave_requests WHERE id = ?", (leave_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None, "not_found"
+    if row["employee_name"] not in roster_t:
+        return None, "bad_emp"
+    if row["status"] not in ("pending", "approved"):
+        return None, "bad_status"
+    try:
+        sd = date.fromisoformat(row["start_date"])
+        ed = date.fromisoformat(row["end_date"])
+    except ValueError:
+        return None, "bad_leave_dates"
+    if not (sd <= wd <= ed):
+        return None, "day_not_in_leave"
+    return row, None
+
+
+def build_month_context(
+    app: Flask,
+    year: int,
+    month: int,
+    roster: Sequence[str] | None = None,
+) -> dict:
+    """Month leave grid: per-row ``eleave_days`` = Nokia-approved day-units (same rules as green A cells)."""
     roster_t = tuple(roster) if roster is not None else EMPLOYEES
     first = date(year, month, 1)
     _, last_day = monthrange(year, month)
@@ -2224,34 +3735,223 @@ def build_month_context(app: Flask, year: int, month: int, roster: Sequence[str]
     grid_rows: list[dict] = []
     for emp in roster_t:
         cells: list[dict | None] = []
+        leave_days_total = 0.0
+        nokia_a_day_units = 0.0
         for dm in days_meta:
             d = dm["date"]
+            d_iso = d.isoformat()
             overlapping = _overlapping_leaves_for_day(by_emp[emp], d, day_dec)
             cell: dict | None = None
             if overlapping:
-                d_iso = d.isoformat()
                 pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
                 pool = pending_only or overlapping
-                row = max(pool, key=lambda r: int(r["id"]))
+                row = max(pool, key=_leave_row_display_tiebreak)
                 eff = _effective_leave_status(row, d_iso, day_dec)
-                code = leave_cell_code(row["reason"], row["duration_type"], eff)
+                desc = str(row["description"] or "")
+                if eff in ("pending", "approved"):
+                    dur = (row["duration_type"] or "full").strip()
+                    day_unit = 0.5 if dur in ("half_am", "half_pm") else 1.0
+                    if _leave_reason_counts_toward_day_units(row["reason"]):
+                        leave_days_total += day_unit
+                    if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in desc:
+                        nokia_a_day_units += day_unit
+                code = leave_cell_code(row["reason"], row["duration_type"], eff, desc)
                 rlab = reason_l.get(row["reason"], row["reason"])
                 dlab = dur_l.get(row["duration_type"], row["duration_type"])
-                title = f"{rlab} · {dlab} · {eff}"
-                css = cell_css_class(row["reason"], eff)
-                cell = {"code": code, "title": title, "css": css, "status": eff}
+                title = f"{rlab} · {dlab} · {eff} · single-click: approve day · double-click: remove day"
+                css = cell_css_class(row["reason"], eff, desc)
+                cell = {
+                    "code": code,
+                    "title": title,
+                    "css": css,
+                    "status": eff,
+                    "leave_id": int(row["id"]),
+                    "work_date": d_iso,
+                }
             cells.append(cell)
-        grid_rows.append({"employee": emp, "cells": cells})
+        el_days = round(nokia_a_day_units, 2)
+        tot_r = round(leave_days_total, 2)
+        gap_days = round(el_days - tot_r, 2)
+        grid_rows.append(
+            {
+                "employee": emp,
+                "leave_days_total": tot_r,
+                "eleave_days": round(el_days, 2),
+                "gap_days": gap_days,
+                "cells": cells,
+            }
+        )
 
     return {
         "year": year,
         "month": month,
         "month_label": first.strftime("%B %Y"),
+        "month_name": first.strftime("%B"),
         "days": days_meta,
         "grid_rows": grid_rows,
         "month_start": month_start_iso,
         "month_end": month_end_iso,
     }
+
+
+def build_leave_tracker_month_xlsx_bytes(month_ctx: dict[str, Any]) -> tuple[bytes | None, str | None]:
+    """
+    Build .xlsx for the manager month leave grid (month name column, Total, eLeaveCount, GAP, then day codes).
+    Returns (bytes, None) on success or (None, error_message) if openpyxl is missing.
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return None, "Excel export requires openpyxl (install dependencies)."
+
+    days: list[dict[str, Any]] = list(month_ctx.get("days") or [])
+    grid_rows: list[dict[str, Any]] = list(month_ctx.get("grid_rows") or [])
+    month_label = str(month_ctx.get("month_label") or "Leave tracker").strip()
+    month_name = str(month_ctx.get("month_name") or month_label.split()[0] or "Month").strip()
+    sheet_title = month_label[:31] if month_label else "Leave tracker"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+
+    hdr_fill = PatternFill("solid", fgColor="1E293B")
+    hdr_fill_sat = PatternFill("solid", fgColor="4338CA")
+    hdr_fill_sun = PatternFill("solid", fgColor="6D28D9")
+    hdr_fill_wknd = PatternFill("solid", fgColor="3730A3")
+    body_fill_sat = PatternFill("solid", fgColor="E0E7FF")
+    body_fill_sun = PatternFill("solid", fgColor="EDE9FE")
+    hdr_font = Font(color="F8FAFC", bold=True, size=10)
+    thin = Side(style="thin", color="94A3B8")
+    grid_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center")
+
+    ws.merge_cells("A1:A2")
+    a1 = ws.cell(row=1, column=1, value="#")
+    a1.fill = hdr_fill
+    a1.font = hdr_font
+    a1.alignment = center
+    a1.border = grid_border
+
+    ws.merge_cells("B1:B2")
+    b1 = ws.cell(row=1, column=2, value=month_name)
+    b1.fill = hdr_fill
+    b1.font = hdr_font
+    b1.alignment = center
+    b1.border = grid_border
+
+    ws.merge_cells("C1:C2")
+    c1 = ws.cell(row=1, column=3, value="Total")
+    c1.fill = hdr_fill
+    c1.font = hdr_font
+    c1.alignment = center
+    c1.border = grid_border
+
+    ws.merge_cells("D1:D2")
+    d1 = ws.cell(row=1, column=4, value="eLeaveCount")
+    d1.fill = hdr_fill
+    d1.font = hdr_font
+    d1.alignment = center
+    d1.border = grid_border
+
+    ws.merge_cells("E1:E2")
+    e1 = ws.cell(row=1, column=5, value="GAP")
+    e1.fill = hdr_fill
+    e1.font = hdr_font
+    e1.alignment = center
+    e1.border = grid_border
+
+    day0 = 6
+    for i, dm in enumerate(days):
+        col = day0 + i
+        wd_label = str(dm.get("weekday") or "").strip()
+        wd_l = wd_label.casefold()
+        wknd = bool(dm.get("is_weekend"))
+        if wd_l == "sat":
+            hdr_fill_day = hdr_fill_sat
+        elif wd_l == "sun":
+            hdr_fill_day = hdr_fill_sun
+        else:
+            hdr_fill_day = hdr_fill_wknd if wknd else hdr_fill
+        h1 = ws.cell(row=1, column=col, value=wd_label)
+        h1.fill = hdr_fill_day
+        h1.font = hdr_font
+        h1.alignment = center
+        h1.border = grid_border
+        h2 = ws.cell(row=2, column=col, value=dm.get("day"))
+        h2.fill = hdr_fill_day
+        h2.font = hdr_font
+        h2.alignment = center
+        h2.border = grid_border
+
+    body_font = Font(size=10)
+    r = 3
+    for idx, grow in enumerate(grid_rows, start=1):
+        n0 = ws.cell(row=r, column=1, value=idx)
+        n0.font = body_font
+        n0.alignment = center
+        n0.border = grid_border
+        n1 = ws.cell(row=r, column=2, value=str(grow.get("employee") or ""))
+        n1.font = body_font
+        n1.border = grid_border
+        n1.alignment = Alignment(vertical="center")
+        tot = grow.get("leave_days_total", 0)
+        try:
+            tot_v: int | float = float(tot) if tot is not None else 0.0
+        except (TypeError, ValueError):
+            tot_v = 0.0
+        n2 = ws.cell(row=r, column=3, value=tot_v)
+        n2.font = body_font
+        n2.alignment = center
+        n2.border = grid_border
+        try:
+            el_v = float(grow.get("eleave_days") or 0)
+        except (TypeError, ValueError):
+            el_v = 0.0
+        try:
+            gap_v = float(grow.get("gap_days") or 0)
+        except (TypeError, ValueError):
+            gap_v = 0.0
+        n3 = ws.cell(row=r, column=4, value=el_v)
+        n3.font = body_font
+        n3.alignment = center
+        n3.border = grid_border
+        n4 = ws.cell(row=r, column=5, value=gap_v)
+        n4.font = Font(size=10, color="FCA5A5") if gap_v < -0.0001 else body_font
+        n4.alignment = center
+        n4.border = grid_border
+        cells = list(grow.get("cells") or [])
+        for j, cell in enumerate(cells):
+            col = day0 + j
+            v = ""
+            if cell:
+                v = str(cell.get("code") or "")
+            c = ws.cell(row=r, column=col, value=v)
+            c.font = body_font
+            c.alignment = center
+            c.border = grid_border
+            if j < len(days):
+                dmj = days[j]
+                wdj = str(dmj.get("weekday") or "").strip().casefold()
+                if wdj == "sat":
+                    c.fill = body_fill_sat
+                elif wdj == "sun":
+                    c.fill = body_fill_sun
+        r += 1
+
+    ws.column_dimensions["A"].width = 4
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 8
+    ws.column_dimensions["D"].width = 10
+    ws.column_dimensions["E"].width = 8
+    for i in range(len(days)):
+        col_letter = get_column_letter(day0 + i)
+        ws.column_dimensions[col_letter].width = 5.5
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), None
 
 
 def build_sprint_leave_tracker_context(
@@ -2264,8 +3964,8 @@ def build_sprint_leave_tracker_context(
     """
     Leave-tracker style grid for a sprint date window: each roster member × each day,
     same leave / meet-day rules as the monthly worksheet and sticky-board capacity strip.
-    Returns (days_meta, grid_rows) where grid_rows items are {employee, cells} and each
-    cell is None or {code, title, status, css} (code = PL/UL/SL/LL… for Excel / HTML).
+    Returns (days_meta, grid_rows) where grid_rows items are {employee, leave_days_total, cells} and each
+    cell is None or {code, title, status, css} (code = PL/UL/SL/LL/CO… for Excel / HTML).
     """
     roster_t = tuple(roster)
     if not roster_t:
@@ -2311,24 +4011,34 @@ def build_sprint_leave_tracker_context(
     grid_rows: list[dict] = []
     for emp in roster_t:
         cells: list[dict | None] = []
+        leave_days_total = 0.0
         for dm in days_meta:
             d = dm["date"]
+            d_iso = d.isoformat()
             overlapping = _overlapping_leaves_for_day(by_emp[emp], d, day_dec)
             cell: dict | None = None
             if overlapping:
-                d_iso = d.isoformat()
                 pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
                 pool = pending_only or overlapping
-                row = max(pool, key=lambda r: int(r["id"]))
+                row = max(pool, key=_leave_row_display_tiebreak)
                 eff = _effective_leave_status(row, d_iso, day_dec)
-                code = leave_cell_code(row["reason"], row["duration_type"], eff)
+                if eff in ("pending", "approved") and _leave_reason_counts_toward_day_units(row["reason"]):
+                    dur = (row["duration_type"] or "full").strip()
+                    if dur in ("half_am", "half_pm"):
+                        leave_days_total += 0.5
+                    else:
+                        leave_days_total += 1.0
+                desc = str(row["description"] or "")
+                code = leave_cell_code(row["reason"], row["duration_type"], eff, desc)
                 rlab = reason_l.get(row["reason"], row["reason"])
                 dlab = dur_l.get(row["duration_type"], row["duration_type"])
                 title = f"{rlab} · {dlab} · {eff}"
-                css = cell_css_class(row["reason"], eff)
+                css = cell_css_class(row["reason"], eff, desc)
                 cell = {"code": code, "title": title, "status": eff, "css": css}
             cells.append(cell)
-        grid_rows.append({"employee": emp, "cells": cells})
+        grid_rows.append(
+            {"employee": emp, "leave_days_total": round(leave_days_total, 2), "cells": cells}
+        )
     return days_meta, grid_rows
 
 
@@ -2381,6 +4091,16 @@ def build_kanban_leave_worksheet_context(
             (int(sprint_id), assignee, start_iso, end_iso),
         )
     )
+    burnt_total_row = conn.execute(
+        """
+        SELECT COALESCE(SUM(a.committed_hours), 0) AS s
+        FROM scrum_item_activity a
+        INNER JOIN scrum_sprint_item i ON i.id = a.item_id
+        WHERE i.sprint_id = ? AND i.assignee = ?
+        """,
+        (int(sprint_id), assignee),
+    ).fetchone()
+    total_burnt_hours = float(burnt_total_row["s"] or 0.0)
     conn.close()
     hours_by_iso: dict[str, float] = {}
     for r in hours_rows:
@@ -2421,15 +4141,20 @@ def build_kanban_leave_worksheet_context(
         if overlapping:
             pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
             pool = pending_only or overlapping
-            row = max(pool, key=lambda r: int(r["id"]))
+            row = max(pool, key=_leave_row_display_tiebreak)
             eff = _effective_leave_status(row, d_iso, day_dec)
-            code = leave_cell_code(row["reason"], row["duration_type"], eff)
+            desc = str(row["description"] or "")
+            code = leave_cell_code(row["reason"], row["duration_type"], eff, desc)
             rlab = reason_l.get(row["reason"], row["reason"])
             dlab = dur_l.get(row["duration_type"], row["duration_type"])
             title = f"{rlab} · {dlab} · {eff}"
-            css = cell_css_class(row["reason"], eff)
+            css = cell_css_class(row["reason"], eff, desc)
             cell = {"code": code, "title": title, "css": css, "status": eff}
-            if base > 0 and eff in ("pending", "approved"):
+            if (
+                base > 0
+                and eff in ("pending", "approved")
+                and _leave_reason_counts_toward_day_units(row["reason"])
+            ):
                 dur = (row["duration_type"] or "full").strip()
                 if dur in ("half_am", "half_pm"):
                     debit = min(base, SCRUM_KANBAN_WEEKDAY_HOURS / 2.0)
@@ -2442,12 +4167,13 @@ def build_kanban_leave_worksheet_context(
         hours_logged.append(f"{h_day:.1f}h")
 
     stretch = assigned > available_sum + SCRUM_HOUR_EPS
-    scale_max = max(assigned, available_sum, SCRUM_HOUR_EPS)
+    scale_max = max(assigned, available_sum, total_burnt_hours, SCRUM_HOUR_EPS)
     pct_available_bar = round(100.0 * available_sum / scale_max, 1) if scale_max > 0 else 0.0
     pct_assigned_within = round(100.0 * min(assigned, available_sum) / scale_max, 1) if scale_max > 0 else 0.0
     pct_assigned_stretch = (
         round(100.0 * max(0.0, assigned - available_sum) / scale_max, 1) if scale_max > 0 else 0.0
     )
+    pct_burnt_bar = round(100.0 * total_burnt_hours / scale_max, 1) if scale_max > 0 else 0.0
 
     return {
         "kb_leave_days": days_meta,
@@ -2459,11 +4185,13 @@ def build_kanban_leave_worksheet_context(
         "kb_capacity_leave_hours": round(leave_debit_total, 1),
         "kb_capacity_available_hours": round(available_sum, 1),
         "kb_capacity_assigned_hours": round(assigned, 1),
+        "kb_capacity_burnt_hours": round(total_burnt_hours, 1),
         "kb_capacity_stretch": stretch,
         "kb_capacity_scale_max": round(scale_max, 1),
         "kb_capacity_pct_available_bar": pct_available_bar,
         "kb_capacity_pct_assigned_within_bar": pct_assigned_within,
         "kb_capacity_pct_assigned_stretch_bar": pct_assigned_stretch,
+        "kb_capacity_pct_burnt_bar": pct_burnt_bar,
     }
 
 
@@ -2496,9 +4224,13 @@ def _available_hours_for_assignee_sprint_window(app: Flask, assignee: str, sd: d
         if overlapping:
             pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
             pool = pending_only or overlapping
-            row = max(pool, key=lambda r: int(r["id"]))
+            row = max(pool, key=_leave_row_display_tiebreak)
             eff = _effective_leave_status(row, d_iso, day_dec)
-            if base > 0 and eff in ("pending", "approved"):
+            if (
+                base > 0
+                and eff in ("pending", "approved")
+                and _leave_reason_counts_toward_day_units(row["reason"])
+            ):
                 dur = (row["duration_type"] or "full").strip()
                 if dur in ("half_am", "half_pm"):
                     debit = min(base, SCRUM_KANBAN_WEEKDAY_HOURS / 2.0)
@@ -2511,6 +4243,48 @@ def _available_hours_for_assignee_sprint_window(app: Flask, assignee: str, sd: d
 def compute_team_sprint_capacity_leave_hours(app: Flask, roster: Sequence[str], sd: date, ed: date) -> float:
     """Total leave-adjusted capacity (h) for all roster names across sprint dates (weekends 0; leave days 0 or half)."""
     return sum(_available_hours_for_assignee_sprint_window(app, emp, sd, ed) for emp in roster)
+
+
+def compute_team_sprint_gross_weekday_capacity_hours(roster: Sequence[str], sd: date, ed: date) -> float:
+    """Mon–Fri gross hours (8h × roster × sprint weekdays) before leave debits; basis for HPPM % columns when absences are included."""
+    roster_t = tuple((r or "").strip() for r in roster if (r or "").strip())
+    if not roster_t:
+        return 0.0
+    gross = 0.0
+    for _e in roster_t:
+        for d in _daterange_inclusive(sd, ed):
+            if d.weekday() < 5:
+                gross += float(SCRUM_KANBAN_WEEKDAY_HOURS)
+    return gross
+
+
+def compute_team_sprint_leave_debit_hours(app: Flask, roster: Sequence[str], sd: date, ed: date) -> float:
+    """Weekday hours lost to pending/approved leave for the roster in the sprint window (gross Mon–Fri − capacity)."""
+    roster_t = tuple((r or "").strip() for r in roster if (r or "").strip())
+    if not roster_t:
+        return 0.0
+    gross = compute_team_sprint_gross_weekday_capacity_hours(roster_t, sd, ed)
+    cap = compute_team_sprint_capacity_leave_hours(app, roster_t, sd, ed)
+    return max(0.0, gross - cap)
+
+
+def compute_team_sprint_leave_absence_hours_hppm(app: Flask, roster: Sequence[str], sd: date, ed: date) -> float:
+    """
+    HPPM “Absences” row: total leave across roster in the sprint window as weekday day-units × 8h
+    (full day = 1 → 8h, half day = 0.5 → 4h). Uses the same leave rows / meet-day rules as the leave tracker;
+    weekend dates are excluded so totals align with Mon–Fri capacity.
+    """
+    detail, _totals = _leave_tracker_day_rows_for_range(app, roster, sd, ed)
+    units = 0.0
+    for r in detail:
+        try:
+            d = date.fromisoformat(str(r["leave_date"])[:10])
+        except ValueError:
+            continue
+        if d.weekday() >= 5:
+            continue
+        units += float(r.get("day_units") or 0.0)
+    return round(units * float(SCRUM_KANBAN_WEEKDAY_HOURS), 4)
 
 
 def _parse_meet_anchor(raw: str | None) -> date:
@@ -2592,13 +4366,14 @@ def build_meet_context(app: Flask, anchor: date, roster: Sequence[str] | None = 
             if overlapping:
                 pending_only = [r for r in overlapping if _is_effectively_pending(r, d_iso, day_dec)]
                 pool = pending_only or overlapping
-                row = max(pool, key=lambda r: int(r["id"]))
+                row = max(pool, key=_leave_row_display_tiebreak)
                 eff = _effective_leave_status(row, d_iso, day_dec)
-                code = leave_cell_code(row["reason"], row["duration_type"], eff)
+                desc = str(row["description"] or "")
+                code = leave_cell_code(row["reason"], row["duration_type"], eff, desc)
                 rlab = reason_l.get(row["reason"], row["reason"])
                 dlab = dur_l.get(row["duration_type"], row["duration_type"])
                 title = f"{rlab} · {dlab} · {eff}"
-                css = cell_css_class(row["reason"], eff)
+                css = cell_css_class(row["reason"], eff, desc)
                 cell.update(
                     {
                         "has_leave": True,
@@ -2723,6 +4498,87 @@ def _sprint_row_is_closed(row: sqlite3.Row | None) -> bool:
 def _sprint_is_closed_by_id(conn: sqlite3.Connection, sprint_id: int) -> bool:
     r = conn.execute("SELECT is_closed FROM scrum_sprint WHERE id = ?", (int(sprint_id),)).fetchone()
     return _sprint_row_is_closed(r)
+
+
+def _sprint_row_past_end(row: sqlite3.Row | None) -> bool:
+    """True after the sprint's inclusive ``end_date`` has fully elapsed in the configured sprint-close timezone."""
+    if row is None or "end_date" not in row.keys():
+        return False
+    return _sprint_inclusive_calendar_window_ended(str(row["end_date"] or ""))
+
+
+def _maybe_auto_close_scrum_sprint(conn: sqlite3.Connection, sprint_id: int) -> None:
+    """Set ``is_closed`` when the sprint window has ended so the sprint is stored as a closed snapshot."""
+    r = conn.execute(
+        "SELECT COALESCE(is_closed, 0) AS c, end_date FROM scrum_sprint WHERE id = ?",
+        (int(sprint_id),),
+    ).fetchone()
+    if not r or int(r["c"] or 0) != 0:
+        return
+    if not _sprint_inclusive_calendar_window_ended(str(r["end_date"] or "")):
+        return
+    ts = _utc_stamp()
+    conn.execute(
+        "UPDATE scrum_sprint SET is_closed = 1, updated_at = ? WHERE id = ? AND COALESCE(is_closed, 0) = 0",
+        (ts, int(sprint_id)),
+    )
+
+
+def _sprint_board_frozen_reason_for_row(row: sqlite3.Row | None) -> str | None:
+    """``sprint_closed`` (manual) takes precedence over ``sprint_ended`` (past ``end_date``)."""
+    if row is None:
+        return None
+    if _sprint_row_is_closed(row):
+        return "sprint_closed"
+    if _sprint_row_past_end(row):
+        return "sprint_ended"
+    return None
+
+
+def _sprint_board_frozen_reason(conn: sqlite3.Connection, sprint_id: int) -> str | None:
+    _maybe_auto_close_scrum_sprint(conn, int(sprint_id))
+    r = conn.execute(
+        "SELECT is_closed, end_date FROM scrum_sprint WHERE id = ?", (int(sprint_id),)
+    ).fetchone()
+    return _sprint_board_frozen_reason_for_row(r)
+
+
+def _sprint_board_frozen_flash_for_reason(reason: str | None) -> str | None:
+    if reason == "sprint_closed":
+        return SCRUM_SPRINT_READONLY_FLASH
+    if reason == "sprint_ended":
+        return SCRUM_SPRINT_AFTER_END_FLASH
+    return None
+
+
+def _sprint_team_page_template_flags(conn: sqlite3.Connection, team_id: int, sprint_id: int) -> dict[str, Any]:
+    """UI flags for sprint team / kanban / HPPM (board read-only when closed or past end)."""
+    freeze = _sprint_board_frozen_reason(conn, int(sprint_id))
+    sprint = conn.execute(
+        "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), int(team_id))
+    ).fetchone()
+    if sprint is None:
+        return {
+            "sprint_board_readonly": False,
+            "sprint_manually_closed": False,
+            "sprint_status_label": "OPEN",
+            "sprint_freeze_mode": None,
+        }
+    freeze = _sprint_board_frozen_reason_for_row(sprint)
+    closed = _sprint_row_is_closed(sprint)
+    past = _sprint_row_past_end(sprint)
+    if closed:
+        label = "CLOSED"
+    elif past:
+        label = "ENDED"
+    else:
+        label = "OPEN"
+    return {
+        "sprint_board_readonly": freeze is not None,
+        "sprint_manually_closed": closed,
+        "sprint_status_label": label,
+        "sprint_freeze_mode": freeze,
+    }
 
 
 def _sprint_name_exists_for_team(conn: sqlite3.Connection, team_id: int, name: str) -> bool:
@@ -2922,7 +4778,9 @@ def _carry_forward_do_doing_to_new_sprint(
     ts: str,
 ) -> int:
     """Copy Do and Doing stickies from the latest prior sprint (ends before new_start) into this sprint's backlog.
-    New estimate = original estimate minus total committed hours logged on that sticky (floored at 0).
+
+    Each copy is a new sticky row: **estimate_hours** matches the source sticky; **Burnt** starts at 0 because
+    ``scrum_item_activity`` rows are not copied (only the prior sprint item had the old burn history).
     """
     prev = conn.execute(
         """
@@ -2957,14 +4815,8 @@ def _carry_forward_do_doing_to_new_sprint(
         last_so[emp] = last_so.get(emp, -1) + 1
         so = last_so[emp]
         title = (r["title"] or "").strip()
-        old_iid = int(r["id"])
-        log_row = conn.execute(
-            "SELECT COALESCE(SUM(committed_hours), 0) AS h FROM scrum_item_activity WHERE item_id = ?",
-            (old_iid,),
-        ).fetchone()
-        logged = float(log_row["h"] or 0)
         raw_est = float(r["estimate_hours"] or 0)
-        est = max(0.0, round(raw_est - logged, 2))
+        est = max(0.0, round(raw_est, 2))
         notes = (r["notes"] or "").strip()[:2000]
         dod = (r["dod"] or "").strip()[:4000]
         tkind = (r["task_kind"] or "").strip() or "task"
@@ -3058,7 +4910,7 @@ def build_sprint_burndown_chart_context(
         ids,
     ):
         d = _activity_calendar_day(str(r["ts"] or ""))
-        if d:
+        if d and d <= ed:
             first_done[int(r["item_id"])] = d
 
     acts: dict[int, list[tuple[date, float]]] = {i: [] for i in ids}
@@ -3073,6 +4925,8 @@ def build_sprint_burndown_chart_context(
         iid = int(r["item_id"])
         d = _activity_calendar_day(str(r["created_at"] or ""))
         if d is None:
+            continue
+        if d > ed:
             continue
         h = float(r["committed_hours"] or 0)
         if abs(h) <= SCRUM_HOUR_EPS:
@@ -3095,8 +4949,14 @@ def build_sprint_burndown_chart_context(
             est = float(it["estimate_hours"] or 0)
             col = _normalize_kanban_column(it["kanban_column"] if it["kanban_column"] else None)
             fd = first_done.get(iid)
+            if fd is not None and fd > ed:
+                fd = ed
             if fd is None and col == "done":
-                fd = _activity_calendar_day(str(it["updated_at"] or "")) or ed
+                upd = _activity_calendar_day(str(it["updated_at"] or ""))
+                if upd is not None:
+                    fd = min(upd, ed)
+                else:
+                    fd = ed
             if fd is not None and d >= fd:
                 continue
             burnt = cum_burnt_through(iid, d)
@@ -3221,20 +5081,44 @@ def build_sprint_burndown_chart_context(
 
 
 def build_sprint_task_kind_stack_chart_context(
-    conn: sqlite3.Connection, team_id: int, sprint_id: int
+    conn: sqlite3.Connection,
+    team_id: int,
+    sprint_id: int,
+    *,
+    horizontal: bool = False,
+    chart_palette: str = "default",
+    absence_burnt_hours: float | None = None,
+    match_svg_height: int | None = None,
 ) -> dict:
     """
-    Vertical stacked bars per task type: burnt within estimate, burnt beyond estimate, remaining estimate.
-    Same default SVG size as the sprint burndown chart for a matched pair in the UI.
+    Stacked bars per task type: burnt within estimate, burnt beyond estimate, remaining estimate.
+    Default is vertical columns (sprint team hero). With ``horizontal=True``, rows are types and
+    the hours scale runs left-to-right (HPPM view only).
+    ``chart_palette="hppm"`` uses a distinct color set (violet / orange / teal).
+    When ``horizontal`` and ``absence_burnt_hours`` is set, a final **Absence** row is drawn using
+    the same sprint leave hours as the HPPM summary / leave tracker (est = burnt so it reads as
+    burnt ≤ est.). ``match_svg_height`` (e.g. area-stack SVG height) stretches the horizontal chart
+    to align with the adjacent HPPM graph.
     """
-    W, H = 520, 228
+    pal = (chart_palette or "default").strip().lower()
+    if horizontal:
+        W, H = (640, 252) if pal == "hppm" else (720, 248)
+    else:
+        W, H = (520, 228)
     empty: dict = {
         "kind_stack_has_chart": False,
         "kind_stack_message": "No sticky estimates by type yet.",
+        "kind_stack_horizontal": horizontal,
         "kind_stack_svg_w": W,
         "kind_stack_svg_h": H,
         "kind_stack_y_ticks": [],
+        "kind_stack_x_ticks": [],
         "kind_stack_y_max": 0.0,
+        "kind_stack_x_max": 0.0,
+        "kind_stack_chart_x0": 0.0,
+        "kind_stack_chart_y0": 0.0,
+        "kind_stack_chart_y1": 0.0,
+        "kind_stack_x_axis_y": 0.0,
         "kind_stack_bars": [],
         "kind_stack_axis_label": "Hours (by task type)",
         "kind_stack_total_est": 0.0,
@@ -3280,17 +5164,213 @@ def build_sprint_task_kind_stack_chart_context(
             kind_com[code] += float(r["h"] or 0)
 
     ordered = SPRINT_TEAM_KIND_STACK_ORDER
-    any_h = any(
+    any_tasks = any(
         kind_est[c] > SCRUM_HOUR_EPS or kind_com[c] > SCRUM_HOUR_EPS for c in ordered
     )
-    if not any_h:
+    absence_h_raw = (
+        max(0.0, float(absence_burnt_hours))
+        if horizontal and absence_burnt_hours is not None
+        else 0.0
+    )
+    add_absence_row = bool(horizontal and absence_burnt_hours is not None and absence_h_raw > SCRUM_HOUR_EPS)
+    if not any_tasks and not add_absence_row:
         return empty
 
     tot_est = sum(kind_est[c] for c in ordered)
     tot_burnt = sum(kind_com[c] for c in ordered)
-    y_max = max(max(kind_est[c], kind_com[c]) for c in ordered)
-    y_max = max(y_max, 1.0) * 1.08
+    h_max = max(max(kind_est[c], kind_com[c]) for c in ordered)
+    if add_absence_row:
+        h_max = max(h_max, absence_h_raw)
+    h_max = max(h_max, 1.0) * 1.08
+    f_burnt, f_over, f_rem = _stack_segment_fills(pal)
 
+    if horizontal:
+        pad_lbl = 56.0
+        pad_r, pad_t, pad_b = 12.0, 18.0, 36.0
+        nbar = len(ordered) + (1 if add_absence_row else 0)
+        if match_svg_height and pal == "hppm":
+            try:
+                mh = int(match_svg_height)
+            except (TypeError, ValueError):
+                mh = 0
+            if mh >= 200:
+                H = mh
+        plot_w = W - pad_lbl - pad_r
+        row_gap = max(5.0, (H - pad_t - pad_b) * 0.03)
+        plot_h = H - pad_t - pad_b
+        bar_h = (plot_h - row_gap * (nbar - 1)) / nbar if nbar else plot_h
+        chart_x0 = pad_lbl
+        chart_y0 = pad_t
+        chart_y1 = pad_t + nbar * bar_h + (nbar - 1) * row_gap
+
+        def width_for(hrs: float) -> float:
+            return max(0.0, hrs / h_max) * plot_w
+
+        x_tick_vals = [0.0, h_max * 0.25, h_max * 0.5, h_max * 0.75, h_max]
+        x_ticks_out: list[dict[str, float | str]] = []
+        for tv in x_tick_vals:
+            v = max(0.0, min(tv, h_max))
+            xx = chart_x0 + (v / h_max) * plot_w if h_max > 0 else chart_x0
+            x_ticks_out.append({"x": round(xx, 1), "label": f"{v:.0f}h" if v >= 10 else f"{v:.1f}h"})
+
+        bars_h: list[dict] = []
+        for i, code in enumerate(ordered):
+            est = float(kind_est.get(code, 0.0))
+            burnt = float(kind_com.get(code, 0.0))
+            bi = min(est, burnt)
+            over = max(0.0, burnt - est)
+            rem = max(0.0, est - burnt)
+            y_row = pad_t + i * (bar_h + row_gap)
+            meta = kind_meta.get(code, {"label": code.upper(), "color_hex": "#94a3b8"})
+            label = str(meta["label"])
+            short = label
+            if code == "process_tools":
+                short = "P&T"
+            elif len(label) > 10:
+                short = label[:9] + "…"
+
+            segs: list[dict[str, float | str]] = []
+            xc = chart_x0
+            w1 = width_for(bi)
+            if w1 > 0.08:
+                segs.append(
+                    {
+                        "x": round(xc, 1),
+                        "y": round(y_row, 1),
+                        "w": round(w1, 1),
+                        "h": round(bar_h, 1),
+                        "fill": f_burnt,
+                        "kind": "burnt",
+                    }
+                )
+                xc += w1
+            w2 = width_for(over)
+            if w2 > 0.08:
+                segs.append(
+                    {
+                        "x": round(xc, 1),
+                        "y": round(y_row, 1),
+                        "w": round(w2, 1),
+                        "h": round(bar_h, 1),
+                        "fill": f_over,
+                        "kind": "over",
+                    }
+                )
+                xc += w2
+            w3 = width_for(rem)
+            if w3 > 0.08:
+                segs.append(
+                    {
+                        "x": round(xc, 1),
+                        "y": round(y_row, 1),
+                        "w": round(w3, 1),
+                        "h": round(bar_h, 1),
+                        "fill": f_rem,
+                        "kind": "remaining",
+                    }
+                )
+
+            bars_h.append(
+                {
+                    "code": code,
+                    "label": label,
+                    "label_short": short,
+                    "row_label_x": 4.0,
+                    "row_label_y": round(y_row + bar_h / 2.0 + 3.5, 1),
+                    "est": round(est, 1),
+                    "burnt": round(burnt, 1),
+                    "title": f"{label}: {est:.1f}h estimated, {burnt:.1f}h burnt (this sprint)",
+                    "segments": segs,
+                }
+            )
+
+        if add_absence_row:
+            i = len(ordered)
+            est = absence_h_raw
+            burnt = absence_h_raw
+            bi = min(est, burnt)
+            over = max(0.0, burnt - est)
+            rem = max(0.0, est - burnt)
+            y_row = pad_t + i * (bar_h + row_gap)
+            label = "Absence (sprint leave)"
+            short = "Absence"
+            segs = []
+            xc = chart_x0
+            w1 = width_for(bi)
+            if w1 > 0.08:
+                segs.append(
+                    {
+                        "x": round(xc, 1),
+                        "y": round(y_row, 1),
+                        "w": round(w1, 1),
+                        "h": round(bar_h, 1),
+                        "fill": f_burnt,
+                        "kind": "burnt",
+                    }
+                )
+                xc += w1
+            w2 = width_for(over)
+            if w2 > 0.08:
+                segs.append(
+                    {
+                        "x": round(xc, 1),
+                        "y": round(y_row, 1),
+                        "w": round(w2, 1),
+                        "h": round(bar_h, 1),
+                        "fill": f_over,
+                        "kind": "over",
+                    }
+                )
+                xc += w2
+            w3 = width_for(rem)
+            if w3 > 0.08:
+                segs.append(
+                    {
+                        "x": round(xc, 1),
+                        "y": round(y_row, 1),
+                        "w": round(w3, 1),
+                        "h": round(bar_h, 1),
+                        "fill": f_rem,
+                        "kind": "remaining",
+                    }
+                )
+            bars_h.append(
+                {
+                    "code": "__absence__",
+                    "label": label,
+                    "label_short": short,
+                    "row_label_x": 4.0,
+                    "row_label_y": round(y_row + bar_h / 2.0 + 3.5, 1),
+                    "est": round(est, 1),
+                    "burnt": round(burnt, 1),
+                    "title": f"{label}: {est:.1f}h (same total as HPPM Absences / sprint leave tracker)",
+                    "segments": segs,
+                }
+            )
+
+        tot_burnt_out = tot_burnt + (absence_h_raw if add_absence_row else 0.0)
+        x_axis_y = round(chart_y1 + 14.0, 1)
+        return {
+            "kind_stack_has_chart": True,
+            "kind_stack_message": "",
+            "kind_stack_horizontal": True,
+            "kind_stack_svg_w": W,
+            "kind_stack_svg_h": H,
+            "kind_stack_y_ticks": [],
+            "kind_stack_x_ticks": x_ticks_out,
+            "kind_stack_y_max": 0.0,
+            "kind_stack_x_max": round(h_max, 1),
+            "kind_stack_chart_x0": round(chart_x0, 1),
+            "kind_stack_chart_y0": round(chart_y0, 1),
+            "kind_stack_chart_y1": round(chart_y1, 1),
+            "kind_stack_x_axis_y": x_axis_y,
+            "kind_stack_bars": bars_h,
+            "kind_stack_axis_label": "Hours (est. vs burnt by type)",
+            "kind_stack_total_est": round(tot_est, 1),
+            "kind_stack_total_burnt": round(tot_burnt_out, 1),
+        }
+
+    y_max = h_max
     pad_l, pad_r, pad_t, pad_b = 46, 12, 22, 34
     iw = W - pad_l - pad_r
     ih = H - pad_t - pad_b
@@ -3335,7 +5415,7 @@ def build_sprint_task_kind_stack_chart_context(
                     "y": round(yc - h1, 1),
                     "w": round(bar_w, 1),
                     "h": round(h1, 1),
-                    "fill": "#fb7185",
+                    "fill": f_burnt,
                     "kind": "burnt",
                 }
             )
@@ -3348,7 +5428,7 @@ def build_sprint_task_kind_stack_chart_context(
                     "y": round(yc - h2, 1),
                     "w": round(bar_w, 1),
                     "h": round(h2, 1),
-                    "fill": "#f59e0b",
+                    "fill": f_over,
                     "kind": "over",
                 }
             )
@@ -3361,7 +5441,7 @@ def build_sprint_task_kind_stack_chart_context(
                     "y": round(yc - h3, 1),
                     "w": round(bar_w, 1),
                     "h": round(h3, 1),
-                    "fill": "#38bdf8",
+                    "fill": f_rem,
                     "kind": "remaining",
                 }
             )
@@ -3384,14 +5464,459 @@ def build_sprint_task_kind_stack_chart_context(
     return {
         "kind_stack_has_chart": True,
         "kind_stack_message": "",
+        "kind_stack_horizontal": False,
         "kind_stack_svg_w": W,
         "kind_stack_svg_h": H,
         "kind_stack_y_ticks": y_ticks_out,
+        "kind_stack_x_ticks": [],
         "kind_stack_y_max": round(y_max, 1),
+        "kind_stack_x_max": 0.0,
+        "kind_stack_chart_x0": 0.0,
+        "kind_stack_chart_y0": 0.0,
+        "kind_stack_chart_y1": 0.0,
+        "kind_stack_x_axis_y": 0.0,
         "kind_stack_bars": bars,
         "kind_stack_axis_label": "Hours (est. vs burnt by type)",
         "kind_stack_total_est": round(tot_est, 1),
         "kind_stack_total_burnt": round(tot_burnt, 1),
+    }
+
+
+def build_sprint_task_area_stack_chart_context(
+    conn: sqlite3.Connection,
+    team_id: int,
+    sprint_id: int,
+    *,
+    assignee: str | None = None,
+    chart_palette: str = "default",
+) -> dict:
+    """
+    Horizontal stacked bars per task Area: each row is one area; segments show burnt ≤ est,
+    burnt over est, and remaining estimate left-to-right on a shared hours scale.
+    When ``assignee`` is set, only that person's stickies are included (for per-member boards).
+    Areas that differ only by letter case are merged into one bucket (display label picks longer text,
+    then a stable tie-break).
+    ``chart_palette="hppm"`` uses the same alternate segment colors as the HPPM type stack.
+    """
+    _default_area_stack_w, _default_area_stack_h = 920, 320
+    pal = (chart_palette or "default").strip().lower()
+    assignee_s = (assignee or "").strip()
+    empty_msg = (
+        "No area estimates for this assignee's stickies yet."
+        if assignee_s
+        else "No sticky estimates by area yet."
+    )
+    empty: dict = {
+        "area_stack_has_chart": False,
+        "area_stack_message": empty_msg,
+        "area_stack_svg_w": _default_area_stack_w,
+        "area_stack_svg_h": _default_area_stack_h,
+        "area_stack_y_ticks": [],
+        "area_stack_x_ticks": [],
+        "area_stack_chart_x0": 120.0,
+        "area_stack_chart_y0": 10.0,
+        "area_stack_chart_y1": 200.0,
+        "area_stack_x_tick_y": 298.0,
+        "area_stack_axis_title_y": 312.0,
+        "area_stack_pad_r": 16.0,
+        "area_stack_band_x": 116.0,
+        "area_stack_band_w": 800.0,
+        "area_stack_y_max": 0.0,
+        "area_stack_bars": [],
+        "area_stack_axis_label": "Hours (by task area)",
+        "area_stack_total_est": 0.0,
+        "area_stack_total_burnt": 0.0,
+    }
+
+    def _area_merge_key(raw: str | None) -> str:
+        t = (raw or "").strip()
+        if not t:
+            return SCRUM_AREA_STACK_NO_AREA_LABEL.casefold()
+        return t.casefold()
+
+    def _pick_area_display(a: str, b: str) -> str:
+        x, y = a.strip(), b.strip()
+        if len(x) > len(y):
+            return x
+        if len(y) > len(x):
+            return y
+        return min(x, y, key=lambda s: (s.casefold(), s))
+
+    est_sql = """
+        SELECT TRIM(COALESCE(i.area, '')) AS ar, SUM(i.estimate_hours) AS h
+        FROM scrum_sprint_item i
+        INNER JOIN scrum_sprint s ON s.id = i.sprint_id
+        WHERE i.sprint_id = ? AND s.team_id = ?
+    """
+    est_params: list[Any] = [int(sprint_id), int(team_id)]
+    if assignee_s:
+        est_sql += " AND i.assignee = ?"
+        est_params.append(assignee_s)
+    est_sql += "\n        GROUP BY TRIM(COALESCE(i.area, ''))"
+
+    est_by: dict[str, float] = {}
+    display_for: dict[str, str] = {}
+    for r in conn.execute(est_sql, est_params).fetchall():
+        raw = str(r["ar"]) if r["ar"] is not None else ""
+        mk = _area_merge_key(raw)
+        h = float(r["h"] or 0)
+        disp = raw.strip() or SCRUM_AREA_STACK_NO_AREA_LABEL
+        est_by[mk] = est_by.get(mk, 0.0) + h
+        if mk in display_for:
+            display_for[mk] = _pick_area_display(display_for[mk], disp)
+        else:
+            display_for[mk] = disp
+
+    burnt_sql = """
+        SELECT TRIM(COALESCE(i.area, '')) AS ar, SUM(a.committed_hours) AS h
+        FROM scrum_item_activity a
+        JOIN scrum_sprint_item i ON i.id = a.item_id
+        INNER JOIN scrum_sprint s ON s.id = i.sprint_id
+        WHERE i.sprint_id = ? AND s.team_id = ?
+    """
+    burnt_params: list[Any] = [int(sprint_id), int(team_id)]
+    if assignee_s:
+        burnt_sql += " AND i.assignee = ?"
+        burnt_params.append(assignee_s)
+    burnt_sql += "\n        GROUP BY TRIM(COALESCE(i.area, ''))"
+
+    burnt_by: dict[str, float] = {}
+    for r in conn.execute(burnt_sql, burnt_params).fetchall():
+        raw = str(r["ar"]) if r["ar"] is not None else ""
+        mk = _area_merge_key(raw)
+        h = float(r["h"] or 0)
+        disp = raw.strip() or SCRUM_AREA_STACK_NO_AREA_LABEL
+        burnt_by[mk] = burnt_by.get(mk, 0.0) + h
+        if mk in display_for:
+            display_for[mk] = _pick_area_display(display_for[mk], disp)
+        else:
+            display_for[mk] = disp
+
+    all_keys = sorted(set(est_by) | set(burnt_by), key=lambda k: k.casefold())
+    if not all_keys:
+        return empty
+
+    def score(k: str) -> float:
+        return max(est_by.get(k, 0.0), burnt_by.get(k, 0.0))
+
+    ranked = sorted(all_keys, key=lambda k: (-score(k), k.casefold()))
+    max_b = int(SCRUM_AREA_STACK_MAX_BUCKETS)
+    if len(ranked) > max_b:
+        head = ranked[: max_b - 1]
+        tail = ranked[max_b - 1 :]
+        other_key = "__other__"
+        est_o = sum(est_by.get(k, 0.0) for k in tail)
+        burnt_o = sum(burnt_by.get(k, 0.0) for k in tail)
+        ordered = head + [other_key]
+        est_by[other_key] = est_o
+        burnt_by[other_key] = burnt_o
+        label_for: dict[str, str] = {k: display_for.get(k, k) for k in head}
+        label_for[other_key] = SCRUM_AREA_STACK_OTHER_LABEL
+    else:
+        ordered = ranked
+        label_for = {k: display_for.get(k, k) for k in ordered}
+
+    any_h = any(
+        est_by.get(k, 0.0) > SCRUM_HOUR_EPS or burnt_by.get(k, 0.0) > SCRUM_HOUR_EPS for k in ordered
+    )
+    if not any_h:
+        return empty
+
+    tot_est = sum(est_by.get(k, 0.0) for k in ordered)
+    tot_burnt = sum(burnt_by.get(k, 0.0) for k in ordered)
+    h_max = max(max(est_by.get(k, 0.0), burnt_by.get(k, 0.0)) for k in ordered)
+    h_max = max(h_max, 1.0) * 1.08
+    f_burnt, f_over, f_rem = _stack_segment_fills(pal)
+
+    nbar = len(ordered)
+    pad_r = 16.0
+    pad_side = 6.0
+    pad_t = 10.0
+    pad_b = 36.0
+    row_gap = max(3.0, min(7.0, 52.0 / max(nbar, 1)))
+    row_h_min = 20.0
+    plot_h_needed = nbar * row_h_min + max(0, nbar - 1) * row_gap
+    H = int(max(_default_area_stack_h, math.ceil(pad_t + pad_b + plot_h_needed)))
+    H = min(H, 720)
+
+    max_raw_label = max(len(label_for.get(k, k)) for k in ordered)
+    label_col_w = min(240.0, max(104.0, min(max_raw_label * 6.8, 280.0)))
+    plot_x0 = pad_side + label_col_w
+    min_plot_w = 400.0
+    W = int(max(_default_area_stack_w, math.ceil(plot_x0 + min_plot_w + pad_r)))
+    W = min(W, 5200)
+    plot_w = W - plot_x0 - pad_r
+    plot_y0 = pad_t
+    plot_y1 = H - pad_b
+    plot_h_total = plot_y1 - plot_y0
+    row_h = (plot_h_total - (nbar - 1) * row_gap) / nbar if nbar > 0 else plot_h_total
+    bar_h = max(7.0, min(16.0, row_h * 0.58))
+
+    def width_for(hrs: float) -> float:
+        return max(0.0, hrs / h_max) * plot_w
+
+    x_tick_vals = [0.0, h_max * 0.25, h_max * 0.5, h_max * 0.75, h_max]
+    x_ticks_out: list[dict[str, float | str]] = []
+    for tv in x_tick_vals:
+        v = max(0.0, min(tv, h_max))
+        xv = plot_x0 + v / h_max * plot_w
+        x_ticks_out.append({"x": round(xv, 1), "label": f"{v:.0f}h" if v >= 10 else f"{v:.1f}h"})
+
+    max_label_chars = max(10, min(48, int((label_col_w - 10) / 6.2)))
+
+    x_tick_y = H - 22.0
+    axis_title_y = H - 6.0
+
+    bars: list[dict] = []
+    for i, key in enumerate(ordered):
+        est = float(est_by.get(key, 0.0))
+        burnt = float(burnt_by.get(key, 0.0))
+        bi = min(est, burnt)
+        over = max(0.0, burnt - est)
+        rem = max(0.0, est - burnt)
+        row_top = pad_t + i * (row_h + row_gap)
+        y_mid = row_top + row_h / 2.0
+        bar_y = y_mid - bar_h / 2.0
+        full_label = label_for.get(key, key)
+        label = full_label
+        if len(label) > max_label_chars:
+            label = label[: max_label_chars - 1] + "…"
+
+        segs: list[dict[str, float | str]] = []
+        xc = plot_x0
+        w1 = width_for(bi)
+        if w1 > 0.08:
+            segs.append(
+                {
+                    "x": round(xc, 1),
+                    "y": round(bar_y, 1),
+                    "w": round(w1, 1),
+                    "h": round(bar_h, 1),
+                    "fill": f_burnt,
+                    "kind": "burnt",
+                }
+            )
+            xc += w1
+        w2 = width_for(over)
+        if w2 > 0.08:
+            segs.append(
+                {
+                    "x": round(xc, 1),
+                    "y": round(bar_y, 1),
+                    "w": round(w2, 1),
+                    "h": round(bar_h, 1),
+                    "fill": f_over,
+                    "kind": "over",
+                }
+            )
+            xc += w2
+        w3 = width_for(rem)
+        if w3 > 0.08:
+            segs.append(
+                {
+                    "x": round(xc, 1),
+                    "y": round(bar_y, 1),
+                    "w": round(w3, 1),
+                    "h": round(bar_h, 1),
+                    "fill": f_rem,
+                    "kind": "remaining",
+                }
+            )
+
+        bars.append(
+            {
+                "code": key,
+                "label": label,
+                "label_short": label,
+                "label_x": round(plot_x0 - 8.0, 1),
+                "label_y": round(y_mid + 4.0, 1),
+                "row_y0": round(row_top, 1),
+                "row_y1": round(row_top + row_h, 1),
+                "row_idx": i,
+                "est": round(est, 1),
+                "burnt": round(burnt, 1),
+                "title": f"{full_label}: {est:.1f}h estimated, {burnt:.1f}h burnt (this sprint)",
+                "segments": segs,
+            }
+        )
+
+    return {
+        "area_stack_has_chart": True,
+        "area_stack_message": "",
+        "area_stack_svg_w": W,
+        "area_stack_svg_h": H,
+        "area_stack_pad_r": pad_r,
+        "area_stack_band_x": round(plot_x0 - 4.0, 1),
+        "area_stack_band_w": round(W - pad_r - (plot_x0 - 4.0), 1),
+        "area_stack_chart_x0": round(plot_x0, 1),
+        "area_stack_chart_y0": round(plot_y0, 1),
+        "area_stack_chart_y1": round(plot_y1, 1),
+        "area_stack_x_tick_y": round(x_tick_y, 1),
+        "area_stack_axis_title_y": round(axis_title_y, 1),
+        "area_stack_x_ticks": x_ticks_out,
+        "area_stack_y_max": round(h_max, 1),
+        "area_stack_bars": bars,
+        "area_stack_axis_label": "Hours (est. vs burnt by area)",
+        "area_stack_total_est": round(tot_est, 1),
+        "area_stack_total_burnt": round(tot_burnt, 1),
+    }
+
+
+def build_hppm_sprint_page_extra_context(
+    conn: sqlite3.Connection,
+    app: Flask,
+    *,
+    team_id: int,
+    sprint_id: int,
+    roster: Sequence[str],
+    sprint_start: str,
+    sprint_end: str,
+) -> dict[str, Any]:
+    """Pool name, HPPM summary by work type (estimates, burnt, absences; % columns = share of table totals), and per-sticky rows."""
+    team_row = conn.execute("SELECT name FROM teams WHERE id = ?", (int(team_id),)).fetchone()
+    pool_name = str(team_row["name"] or "") if team_row else ""
+    try:
+        sd = date.fromisoformat(str(sprint_start)[:10])
+        ed = date.fromisoformat(str(sprint_end)[:10])
+    except ValueError:
+        sd = ed = date.today()
+    if sd > ed:
+        sd, ed = ed, sd
+    team_cap_net = float(compute_team_sprint_capacity_leave_hours(app, roster, sd, ed))
+    team_cap_gross = float(compute_team_sprint_gross_weekday_capacity_hours(roster, sd, ed))
+    absence_h = round(compute_team_sprint_leave_absence_hours_hppm(app, roster, sd, ed), 4)
+
+    def pct_of_column_total(part: float, whole: float) -> float | None:
+        if whole <= SCRUM_HOUR_EPS:
+            return None
+        return round(100.0 * float(part) / whole, 2)
+
+    def pct_burnt_vs_estimate(burnt: float, estimate: float) -> float | None:
+        """100 × burnt ÷ estimate; None if estimate ~0 but burnt > 0."""
+        est = float(estimate)
+        br = float(burnt)
+        if est <= SCRUM_HOUR_EPS:
+            if br <= SCRUM_HOUR_EPS:
+                return 0.0
+            return None
+        return round(100.0 * br / est, 2)
+
+    est_by: dict[str, float] = {c: 0.0 for c in SCRUM_TASK_KIND_CODES}
+    burnt_by: dict[str, float] = {c: 0.0 for c in SCRUM_TASK_KIND_CODES}
+    _ensure_team_task_kinds(conn, team_id)
+    for r in conn.execute(
+        """
+        SELECT task_kind, SUM(estimate_hours) AS h
+        FROM scrum_sprint_item
+        WHERE sprint_id = ?
+        GROUP BY task_kind
+        """,
+        (int(sprint_id),),
+    ):
+        code = _resolve_task_kind_code(conn, team_id, str(r["task_kind"] or ""))
+        if code in est_by:
+            est_by[code] += float(r["h"] or 0)
+    for r in conn.execute(
+        """
+        SELECT i.task_kind, SUM(a.committed_hours) AS h
+        FROM scrum_item_activity a
+        JOIN scrum_sprint_item i ON i.id = a.item_id
+        WHERE i.sprint_id = ?
+        GROUP BY i.task_kind
+        """,
+        (int(sprint_id),),
+    ):
+        code = _resolve_task_kind_code(conn, team_id, str(r["task_kind"] or ""))
+        if code in burnt_by:
+            burnt_by[code] += float(r["h"] or 0)
+
+    summary_rows: list[dict[str, Any]] = []
+    total_est_summary = 0.0
+    total_burnt_summary = 0.0
+    for code, label in SCRUM_HPPM_SUMMARY_ROWS:
+        if code is None:
+            ah = float(absence_h)
+            total_burnt_summary += ah
+            total_est_summary += ah
+            summary_rows.append(
+                {
+                    "work_type": label,
+                    "estimate_hours": ah,
+                    "burnt_hours": ah,
+                    "is_absence": True,
+                }
+            )
+        else:
+            eh = float(est_by.get(code, 0.0))
+            bh = float(burnt_by.get(code, 0.0))
+            total_est_summary += eh
+            total_burnt_summary += bh
+            summary_rows.append(
+                {
+                    "work_type": label,
+                    "estimate_hours": eh,
+                    "burnt_hours": bh,
+                    "is_absence": False,
+                }
+            )
+
+    te = total_est_summary
+    tb = total_burnt_summary
+    for row in summary_rows:
+        eh = float(row["estimate_hours"])
+        bh = float(row["burnt_hours"])
+        row["pct_capacity_estimate"] = pct_of_column_total(eh, te)
+        row["pct_capacity_burnt"] = pct_burnt_vs_estimate(bh, eh)
+
+    summary_totals: dict[str, Any] = {
+        "estimate_hours": round(te, 4),
+        "burnt_hours": round(tb, 4),
+        "pct_capacity_estimate": 100.0 if te > SCRUM_HOUR_EPS else None,
+        "pct_capacity_burnt": pct_burnt_vs_estimate(tb, te),
+    }
+
+    task_rows: list[dict[str, Any]] = []
+    for r in conn.execute(
+        """
+        SELECT i.title, i.assignee, i.task_kind, i.estimate_hours,
+               TRIM(COALESCE(i.area, '')) AS area,
+               COALESCE(k.label, i.task_kind) AS kind_label,
+               COALESCE(
+                 (SELECT SUM(committed_hours) FROM scrum_item_activity WHERE item_id = i.id),
+                 0
+               ) AS total_burnt_hours
+        FROM scrum_sprint_item i
+        LEFT JOIN scrum_team_task_kind k ON k.team_id = ? AND k.code = i.task_kind
+        WHERE i.sprint_id = ?
+        ORDER BY i.assignee COLLATE NOCASE, i.sort_order, i.id
+        """,
+        (int(team_id), int(sprint_id)),
+    ):
+        rk = _resolve_task_kind_code(conn, team_id, str(r["task_kind"] or ""))
+        ar_raw = str(r["area"] if r["area"] is not None else "").strip()
+        eh = float(r["estimate_hours"] or 0)
+        bh = float(r["total_burnt_hours"] or 0)
+        task_rows.append(
+            {
+                "pool_name": pool_name,
+                "work_type": SCRUM_HPPM_LABEL_BY_CODE.get(rk, str(r["kind_label"] or rk)),
+                "area_type": ar_raw if ar_raw else SCRUM_AREA_STACK_NO_AREA_LABEL,
+                "title": str(r["title"] or ""),
+                "assignee": str(r["assignee"] or ""),
+                "estimate_hours": eh,
+                "burnt_hours": bh,
+                "burnt_pct": pct_burnt_vs_estimate(bh, eh),
+            }
+        )
+
+    return {
+        "hppm_pool_name": pool_name,
+        "hppm_summary_rows": summary_rows,
+        "hppm_summary_totals": summary_totals,
+        "hppm_task_rows": task_rows,
+        "hppm_absence_hours": absence_h,
+        "hppm_team_capacity_gross_hours": round(team_cap_gross, 2) if team_cap_gross > SCRUM_HOUR_EPS else None,
+        "hppm_team_capacity_net_hours": round(team_cap_net, 2) if team_cap_net > SCRUM_HOUR_EPS else None,
     }
 
 
@@ -3411,10 +5936,11 @@ def build_sprint_export_xlsx_bytes(
     manager_roster: Sequence[str] | None = None,
 ) -> tuple[bytes | None, str]:
     """
-    Build a multi-sheet .xlsx: Summary (metrics A:B; leave tracker column D; planned capacity %;
-    free capacity hours; member goals; task kinds), PNG snapshot tab, SprintStatus (stickies +
-    day-wise hours like FB2610), Activity log (one row per sticky, day-wise activity), Daily tasks
-    Details (per-member metrics with team + day columns; compact sticky rows; daily task rows),
+    Build a multi-sheet .xlsx: Summary (metrics A:B; leave tracker column D; planned capacity % =
+    (sum estimates + Sprint leaves) ÷ sprint capacity; free capacity hours; member goals; task kinds),
+    PNG snapshot tab, SprintStatus (stickies +
+    day-wise hours like FB2610), HPPM (summary by work type + all stickies, same as HPPM web view),
+    Daily tasks Details (per-member metrics with team + day columns; compact sticky rows; daily task rows),
     and Appriciation (one row per appreciation; columns C, D, G, H only — author, comment, title, assignee).
     On failure returns (None, flash_message). On success returns (bytes, download_filename).
     """
@@ -3673,6 +6199,16 @@ def build_sprint_export_xlsx_bytes(
     except Exception:
         png_sprint_snapshot = None
 
+    sprint_leaves_h = 0.0
+    if app is not None and roster_xlsx:
+        try:
+            sprint_leaves_h = float(
+                compute_team_sprint_leave_absence_hours_hppm(app, roster_xlsx, sd_date_export, ed_date_export)
+            )
+        except Exception:
+            sprint_leaves_h = 0.0
+    sprint_leaves_h = max(0.0, round(sprint_leaves_h, 4))
+
     wb = Workbook()
     hdr_fill = PatternFill("solid", fgColor="0F172A")
     hdr_font = Font(color="F8FAFC", bold=True, size=11)
@@ -3740,14 +6276,26 @@ def build_sprint_export_xlsx_bytes(
         ("Open / not-done stickies", str(open_n)),
         ("Sum of estimates (h)", f"{tot_est:.2f}"),
         ("Sum of Burnt hours (h)", f"{tot_burnt:.2f}"),
+        ("Sprint leaves (h)", f"{sprint_leaves_h:.2f}"),
     ]
     if total_sprint_capacity_h is not None and float(total_sprint_capacity_h) > SCRUM_HOUR_EPS:
         capv = float(total_sprint_capacity_h)
-        pairs.append(("Planned capacity (sum estimates ÷ sprint capacity, %)", f"{100.0 * tot_est / capv:.1f}%"))
-        pairs.append(("Free sprint capacity (sprint capacity − sum estimates, h)", f"{capv - tot_est:.2f}"))
+        planned_use_h = tot_est + sprint_leaves_h
+        pairs.append(
+            (
+                "Planned capacity ((sum estimates + Sprint leaves) ÷ sprint capacity, %)",
+                f"{100.0 * planned_use_h / capv:.1f}%",
+            )
+        )
+        pairs.append(
+            (
+                "Free sprint capacity (sprint capacity − sum estimates − Sprint leaves, h)",
+                f"{capv - planned_use_h:.2f}",
+            )
+        )
     else:
-        pairs.append(("Planned capacity (sum estimates ÷ sprint capacity, %)", "—"))
-        pairs.append(("Free sprint capacity (sprint capacity − sum estimates, h)", "—"))
+        pairs.append(("Planned capacity ((sum estimates + Sprint leaves) ÷ sprint capacity, %)", "—"))
+        pairs.append(("Free sprint capacity (sprint capacity − sum estimates − Sprint leaves, h)", "—"))
     for col_name, n in sorted(col_counts.items()):
         pairs.append((f"Stickies in column: {col_name}", str(n)))
     while 4 + len(pairs) - 1 > 22 and len(pairs) > 8:
@@ -3990,7 +6538,7 @@ def build_sprint_export_xlsx_bytes(
             reserved = {
                 "Summary",
                 "SprintStatus",
-                "Activity log",
+                "HPPM",
                 "Daily tasks Details",
                 "Appriciation",
                 "_chart_data",
@@ -4068,36 +6616,142 @@ def build_sprint_export_xlsx_bytes(
     autofit(ws1)
     apply_data_grid(ws1, 1, max(1, len(items) + 1), nstatcols)
 
-    # --- Activity log (one row per sticky; day-wise hours + comment text) ---
-    ws2 = wb.create_sheet("Activity log")
-    act_base_headers = ["TEAM", "Sticky ID", "Sticky title", "Owner"]
-    act_headers = act_base_headers + [d.isoformat() for d in sprint_calendar_dates]
-    nactcols = len(act_headers)
-    for j, h in enumerate(act_headers, start=1):
-        ws2.cell(row=1, column=j, value=h)
-    style_header_row(ws2, 1, nactcols)
-    for ri, it in enumerate(items, start=2):
-        iid = int(it["id"])
-        row0 = [
-            team_name,
-            iid,
-            str(it["title"] or ""),
-            str(it["assignee"] or ""),
-        ]
-        for j, val in enumerate(row0, start=1):
-            cell = ws2.cell(row=ri, column=j, value=val)
-            cell.alignment = wrap
-        for j, d in enumerate(sprint_calendar_dates, start=len(row0) + 1):
-            hv = float(item_day_hours.get(iid, {}).get(d, 0.0))
-            ccell = ws2.cell(row=ri, column=j, value=round(hv, 2) if hv > SCRUM_HOUR_EPS else None)
-            if hv > SCRUM_HOUR_EPS:
-                ccell.number_format = "0.00"
-            snips = list(item_day_snips.get(iid, {}).get(d, []))
-            if snips:
-                ccell.comment = Comment("\n".join(snips)[:999], "scrum")
-    ws2.freeze_panes = "A2"
-    autofit(ws2)
-    apply_data_grid(ws2, 1, max(1, len(items) + 1), nactcols)
+    # --- HPPM (same summary + sticky table as /scrum/sprint/<id>/hppm) ---
+    ws_hppm = wb.create_sheet("HPPM")
+    rh = 1
+    ws_hppm.merge_cells(start_row=rh, start_column=1, end_row=rh, end_column=8)
+    h_title = ws_hppm.cell(row=rh, column=1, value=f"HPPM view — {str(sprint['name'])} · {sd_s} → {ed_s}")
+    h_title.font = title_font
+    h_title.fill = title_fill
+    h_title.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    rh += 2
+    if app is not None and roster_xlsx:
+        try:
+            hppm_ctx = build_hppm_sprint_page_extra_context(
+                conn,
+                app,
+                team_id=int(team_id),
+                sprint_id=int(sprint_id),
+                roster=roster_xlsx,
+                sprint_start=sd_s,
+                sprint_end=ed_s,
+            )
+            gh = hppm_ctx.get("hppm_team_capacity_gross_hours")
+            nh = hppm_ctx.get("hppm_team_capacity_net_hours")
+            cap_bits: list[str] = []
+            if gh is not None:
+                cap_bits.append(f"Gross team capacity (before leave): {float(gh):.1f} h")
+            if nh is not None:
+                cap_bits.append(f"Net team capacity (after leave): {float(nh):.1f} h")
+            if cap_bits:
+                ccap = ws_hppm.cell(row=rh, column=1, value=" · ".join(cap_bits))
+                ccap.font = subtitle_font
+                ccap.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                rh += 1
+            cnote = ws_hppm.cell(
+                row=rh,
+                column=1,
+                value="% Team Sprint Estimate = row estimate ÷ total estimate in this table (Total = 100%). "
+                "% Team Burnt = 100 × burnt ÷ estimate per row (Total row = total burnt ÷ total estimate × 100).",
+            )
+            cnote.font = subtitle_font
+            cnote.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            rh += 2
+
+            sum_hdr = (
+                "Pool name",
+                "Work type",
+                "Estimate sprint (h)",
+                "% Team Sprint Estimate",
+                f"Burnt (h) — {str(sprint['name'])}",
+                "% Team Burnt",
+            )
+            sum_hdr_row = rh
+            for jc, lab in enumerate(sum_hdr, start=1):
+                ws_hppm.cell(row=sum_hdr_row, column=jc, value=lab)
+            style_header_row(ws_hppm, sum_hdr_row, len(sum_hdr))
+            rh = sum_hdr_row + 1
+            pool_h = str(hppm_ctx.get("hppm_pool_name") or team_name or "")
+            for srow in hppm_ctx.get("hppm_summary_rows") or []:
+                pe = srow.get("pct_capacity_estimate")
+                pb = srow.get("pct_capacity_burnt")
+                ws_hppm.cell(row=rh, column=1, value=pool_h).alignment = wrap
+                ws_hppm.cell(row=rh, column=2, value=str(srow.get("work_type") or "")).alignment = wrap
+                c_est = ws_hppm.cell(row=rh, column=3, value=float(srow.get("estimate_hours") or 0.0))
+                c_est.number_format = "0.0000"
+                c_est.alignment = top
+                ws_hppm.cell(row=rh, column=4, value=f"{float(pe):.2f}%" if pe is not None else "—").alignment = top
+                c_br = ws_hppm.cell(row=rh, column=5, value=float(srow.get("burnt_hours") or 0.0))
+                c_br.number_format = "0.0000"
+                c_br.alignment = top
+                ws_hppm.cell(row=rh, column=6, value=f"{float(pb):.2f}%" if pb is not None else "—").alignment = top
+                rh += 1
+            tot = hppm_ctx.get("hppm_summary_totals") or {}
+            pte = tot.get("pct_capacity_estimate")
+            ptb = tot.get("pct_capacity_burnt")
+            ws_hppm.cell(row=rh, column=1, value="Total").font = sub_font
+            ws_hppm.cell(row=rh, column=2, value="").font = sub_font
+            c_te = ws_hppm.cell(row=rh, column=3, value=float(tot.get("estimate_hours") or 0.0))
+            c_te.number_format = "0.0000"
+            c_te.font = sub_font
+            ws_hppm.cell(row=rh, column=4, value=f"{float(pte):.2f}%" if pte is not None else "—").font = sub_font
+            c_tb = ws_hppm.cell(row=rh, column=5, value=float(tot.get("burnt_hours") or 0.0))
+            c_tb.number_format = "0.0000"
+            c_tb.font = sub_font
+            ws_hppm.cell(row=rh, column=6, value=f"{float(ptb):.2f}%" if ptb is not None else "—").font = sub_font
+            last_sum = rh
+            rh += 1
+            apply_data_grid(ws_hppm, sum_hdr_row, last_sum, len(sum_hdr))
+
+            rh += 2
+            ws_hppm.cell(row=rh, column=1, value="All stickies (HPPM work type & burnt)").font = sub_font
+            rh += 1
+            stk_hdr = (
+                "Pool name",
+                "Work type",
+                "Area type",
+                "Title",
+                "Assignee",
+                "Est. (h)",
+                "Burnt (h)",
+                "Burnt %",
+            )
+            stk_hdr_row = rh
+            for jc, lab in enumerate(stk_hdr, start=1):
+                ws_hppm.cell(row=stk_hdr_row, column=jc, value=lab)
+            style_header_row(ws_hppm, stk_hdr_row, len(stk_hdr))
+            rh = stk_hdr_row + 1
+            task_rows_h = hppm_ctx.get("hppm_task_rows") or []
+            if not task_rows_h:
+                ws_hppm.cell(row=rh, column=1, value="(No stickies in this sprint.)").alignment = wrap
+                last_stk = rh
+                rh += 1
+            else:
+                for tr in task_rows_h:
+                    bp = tr.get("burnt_pct")
+                    ws_hppm.cell(row=rh, column=1, value=str(tr.get("pool_name") or "")).alignment = wrap
+                    ws_hppm.cell(row=rh, column=2, value=str(tr.get("work_type") or "")).alignment = wrap
+                    ws_hppm.cell(row=rh, column=3, value=str(tr.get("area_type") or "")).alignment = wrap
+                    ws_hppm.cell(row=rh, column=4, value=str(tr.get("title") or "")).alignment = wrap
+                    ws_hppm.cell(row=rh, column=5, value=str(tr.get("assignee") or "")).alignment = wrap
+                    ce = ws_hppm.cell(row=rh, column=6, value=float(tr.get("estimate_hours") or 0.0))
+                    ce.number_format = "0.00"
+                    cb = ws_hppm.cell(row=rh, column=7, value=float(tr.get("burnt_hours") or 0.0))
+                    cb.number_format = "0.0000"
+                    ws_hppm.cell(
+                        row=rh,
+                        column=8,
+                        value=f"{float(bp):.2f}%" if bp is not None else "—",
+                    ).alignment = top
+                    rh += 1
+                last_stk = rh - 1
+            apply_data_grid(ws_hppm, stk_hdr_row, max(stk_hdr_row, last_stk), len(stk_hdr))
+            ws_hppm.freeze_panes = f"A{sum_hdr_row + 1}"
+            autofit(ws_hppm)
+        except Exception:
+            ws_hppm.cell(row=5, column=1, value="HPPM sheet could not be generated (export error).")
+    else:
+        ws_hppm.cell(row=3, column=1, value="HPPM sheet skipped (app or roster not available in this export).")
 
     # --- Daily tasks Details: sprint team view per member + all stickies + scrum_daily_task rows ---
     def _xlsx_pct_disp(v: float | None) -> str:
@@ -4177,7 +6831,7 @@ def build_sprint_export_xlsx_bytes(
             int(cnt.get("done", 0)),
             float(m["est_total_hours"]),
             float(m["committed_total_hours"]),
-            "; ".join(m.get("doing_preview") or []),
+            "; ".join(str(x) for x in (m.get("doing_preview") or [])),
         ] + day_vals
         for jc, val in enumerate(row_mv, start=1):
             cell = ws3.cell(row=rz, column=jc, value=val)
@@ -4768,8 +7422,8 @@ def _sprint_team_overview_rows(
                 col = "done"
             counts[col] = counts.get(col, 0) + 1
         done_n = counts["done"]
-        doing_titles = [
-            t[0]
+        doing_preview = [
+            str(t[0] or "").strip()
             for t in conn.execute(
                 """
                 SELECT title FROM scrum_sprint_item
@@ -4895,7 +7549,7 @@ def _sprint_team_overview_rows(
                 "name": emp,
                 "counts": counts,
                 "done_total": done_n,
-                "doing_preview": doing_titles,
+                "doing_preview": doing_preview,
                 "last_notes": notes,
                 "est_total_hours": round(est_total, 2),
                 "committed_total_hours": round(committed_total, 2),
@@ -4928,6 +7582,393 @@ def _sprint_team_overview_rows(
             }
         )
     return out
+
+
+def _sprint_team_detail_one_liner(
+    members: list[dict],
+    sprint_name: str,
+    sprint_team_capacity_hours: float | None,
+) -> str:
+    """Single-line sprint summary for the team overview detailed page."""
+    n_stick = sum(int(m.get("task_count") or 0) for m in members)
+    tot_est = sum(float(m.get("est_total_hours") or 0) for m in members)
+    tot_log = sum(float(m.get("committed_total_hours") or 0) for m in members)
+    pend = sum(len(m.get("pending_portal") or []) for m in members)
+    parts = [
+        f"«{sprint_name}»",
+        f"{n_stick} stickies",
+        f"team est {tot_est:.1f}h",
+        f"logged {tot_log:.1f}h",
+    ]
+    if sprint_team_capacity_hours is not None:
+        parts.append(f"Sprint cap {float(sprint_team_capacity_hours):.1f}h (net weekdays after leave)")
+    if pend:
+        parts.append(f"{pend} portal change(s) pending")
+    return " · ".join(parts)
+
+
+def _sprint_team_overview_detailed_rows(
+    app: Flask, conn: sqlite3.Connection, team_id: int, sprint_id: int, roster: Sequence[str]
+) -> list[dict]:
+    """Like ``_sprint_team_overview_rows`` plus per-sticky full activity log and burn metrics."""
+    base = _sprint_team_overview_rows(app, conn, team_id, sprint_id, roster)
+    for m in base:
+        buckets = _load_kanban_cards(conn, sprint_id, m["name"], team_id)
+        for col in SCRUM_KANBAN_COLUMNS:
+            _enrich_kanban_burn_cards(conn, buckets[col])
+        all_ids = [int(c["id"]) for col in SCRUM_KANBAN_COLUMNS for c in buckets[col]]
+        act_map = _fetch_kanban_item_activity_log_map(conn, all_ids) if all_ids else {}
+        stickies: list[dict] = []
+        for col in SCRUM_KANBAN_COLUMNS:
+            for c in buckets[col]:
+                iid = int(c["id"])
+                row = dict(c)
+                row["kanban_column"] = col
+                row["kanban_column_label"] = _kanban_column_public_label(col)
+                acts = list(act_map.get(iid, []))
+                # Stand-ups are listed under "In progress updates"; omit duplicate doing→doing from full log.
+                if row.get("standup_updates"):
+                    acts = [a for a in acts if not (a.get("from_column") == "doing" and a.get("to_column") == "doing")]
+                row["activity_log"] = acts
+                stickies.append(row)
+        m["stickies"] = stickies
+    return base
+
+
+def _scrum_attachment_root_dir(app: Flask) -> Path:
+    root = Path(app.config["DB_PATH"]).resolve().parent / "scrum_item_attachments"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _attachment_allowed_suffix(original_name: str) -> str | None:
+    base = (original_name or "").strip().replace("\\", "/")
+    if not base or ".." in base:
+        return None
+    low = base.lower()
+    for suf in sorted(SCRUM_ITEM_ATTACHMENT_SUFFIXES, key=len, reverse=True):
+        if low.endswith(suf):
+            return suf
+    return None
+
+
+def _fetch_item_attachments_map(conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not item_ids:
+        return {}
+    ids = sorted({int(i) for i in item_ids})
+    ph = ",".join("?" * len(ids))
+    out: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+    for r in conn.execute(
+        f"""
+        SELECT id, item_id, original_filename, size_bytes, created_at, rel_path
+        FROM scrum_sprint_item_attachment
+        WHERE item_id IN ({ph})
+        ORDER BY id ASC
+        """,
+        ids,
+    ):
+        iid = int(r["item_id"])
+        if iid not in out:
+            continue
+        out[iid].append(
+            {
+                "id": int(r["id"]),
+                "original_filename": (str(r["original_filename"] or "")).strip()[:200],
+                "size_bytes": int(r["size_bytes"] or 0),
+                "created_at": str(r["created_at"] or ""),
+                "rel_path": (str(r["rel_path"] or "")).strip(),
+            }
+        )
+    return out
+
+
+def _scrum_attachment_auth_row(conn: sqlite3.Connection, attachment_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT a.id AS aid, a.item_id, a.rel_path, a.original_filename, a.content_type, a.size_bytes, a.created_at,
+               i.assignee, i.sprint_id, s.team_id AS team_id
+        FROM scrum_sprint_item_attachment a
+        JOIN scrum_sprint_item i ON i.id = a.item_id
+        JOIN scrum_sprint s ON s.id = i.sprint_id
+        WHERE a.id = ?
+        """,
+        (int(attachment_id),),
+    ).fetchone()
+
+
+def _scrum_attachment_build_preview_html(path: Path, original_fn: str) -> str | None:
+    """
+    Build a small self-contained HTML document for iframe preview (first worksheet of Excel
+    workbooks, or CSV as a simple table). Returns None if the format is unsupported or read fails.
+    """
+    import csv
+    import html as html_mod
+
+    low = (original_fn or "").lower()
+    title = html_mod.escape((Path(original_fn).name or "preview")[:160])
+    css = (
+        "body{margin:0;padding:0.5rem;font:12px/1.35 system-ui,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;}"
+        ".meta{margin:0 0 0.5rem;font-size:0.75rem;color:#94a3b8;}"
+        ".wrap{overflow:auto;max-height:calc(100vh - 2rem);}"
+        "table{border-collapse:collapse;width:100%;}"
+        "td{border:1px solid #334155;padding:4px 6px;vertical-align:top;white-space:nowrap;max-width:18rem;"
+        "overflow:hidden;text-overflow:ellipsis;}"
+    )
+    head = (
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/><title>"
+        + title
+        + "</title><style>"
+        + css
+        + "</style></head><body>"
+    )
+    tail = "</body></html>"
+
+    def _td(val: object) -> str:
+        s = "" if val is None else str(val)
+        return "<td>" + html_mod.escape(s[:8000]) + "</td>"
+
+    if low.endswith(".csv"):
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        text = raw.decode("utf-8-sig", errors="replace")
+        rows = []
+        try:
+            for i, row in enumerate(csv.reader(text.splitlines())):
+                if i >= 500:
+                    break
+                rows.append(row[:45])
+        except csv.Error:
+            return None
+        if not rows:
+            return head + "<p>(empty file)</p>" + tail
+        out = [head, "<div class=\"wrap\"><table>"]
+        for row in rows:
+            out.append("<tr>")
+            for j in range(max(len(row), 1)):
+                out.append(_td(row[j] if j < len(row) else ""))
+            out.append("</tr>")
+        out.append("</table></div>")
+        return "".join(out) + tail
+
+    if low.endswith((".xlsx", ".xlsm", ".xltx")):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return None
+        wb = None
+        try:
+            wb = load_workbook(filename=str(path), read_only=True, data_only=True)
+            if not wb.sheetnames:
+                return head + "<p>(empty workbook)</p>" + tail
+            ws = wb[wb.sheetnames[0]]
+            meta = html_mod.escape(str(ws.title)[:120])
+            parts: list[str] = [head, '<p class="meta">Sheet: ' + meta + '</p><div class="wrap"><table>']
+            for row in ws.iter_rows(min_row=1, max_row=220, max_col=40, values_only=True):
+                parts.append("<tr>")
+                for v in row:
+                    parts.append(_td(v))
+                parts.append("</tr>")
+            parts.append("</table></div>")
+            return "".join(parts) + tail
+        except Exception:
+            return None
+        finally:
+            if wb is not None:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
+
+    return None
+
+
+def _scrum_attachment_upload_core(
+    app: Flask,
+    conn: sqlite3.Connection,
+    *,
+    team_id: int,
+    sprint_id: int,
+    item_id: int,
+    roster_gate: str | None,
+    fobj,
+) -> tuple[bool, str, str]:
+    """
+    Validate and store one uploaded attachment. ``roster_gate`` when set must equal the sticky assignee (portal).
+    Returns ``(success, flash_message, assignee_for_redirect)``. Commits on success; rolls back on failure after disk cleanup attempt.
+    """
+    if not _sprint_row_for_team(conn, sprint_id, team_id):
+        return False, "Invalid sprint.", ""
+    fr = _sprint_board_frozen_reason(conn, sprint_id)
+    if fr:
+        msg = _sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only."
+        return False, msg, ""
+    row = conn.execute(
+        "SELECT assignee FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+        (item_id, sprint_id),
+    ).fetchone()
+    if not row:
+        return False, "Item not found.", ""
+    assignee = (str(row["assignee"] or "")).strip()
+    if roster_gate is not None and assignee != roster_gate.strip():
+        return False, "You can only add files to stickies assigned to you.", assignee
+    if not fobj or not (fobj.filename or "").strip():
+        return False, "Choose a file to upload.", assignee
+    orig = (fobj.filename or "").strip()
+    suf = _attachment_allowed_suffix(orig)
+    if not suf:
+        return (
+            False,
+            "File type not allowed. Use a common document or image extension "
+            f"({', '.join(sorted(SCRUM_ITEM_ATTACHMENT_SUFFIXES)[:8])}…).",
+            assignee,
+        )
+    n_att = int(
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM scrum_sprint_item_attachment WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()["c"]
+    )
+    if n_att >= SCRUM_ITEM_ATTACHMENTS_MAX_PER_STICKY:
+        return False, f"Maximum {SCRUM_ITEM_ATTACHMENTS_MAX_PER_STICKY} attachments per sticky.", assignee
+    blob = fobj.read(SCRUM_ITEM_ATTACHMENT_MAX_BYTES + 1)
+    if len(blob) > SCRUM_ITEM_ATTACHMENT_MAX_BYTES:
+        return False, f"File too large (max {SCRUM_ITEM_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB).", assignee
+    ct = (fobj.mimetype or "application/octet-stream").strip()[:200] or "application/octet-stream"
+    safe_tail = secure_filename(orig) or "file"
+    if len(safe_tail) > 120:
+        safe_tail = safe_tail[:120]
+    disk_name = f"{secrets.token_hex(16)}{suf}"
+    rel_path = f"{team_id}/{item_id}/{disk_name}"
+    dest_dir = _scrum_attachment_root_dir(app) / str(team_id) / str(item_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / disk_name
+    try:
+        dest_path.write_bytes(blob)
+    except OSError as ex:
+        return False, f"Could not save file: {ex}", assignee
+    ts = _utc_stamp()
+    disp_name = orig[:200]
+    try:
+        conn.execute(
+            """
+            INSERT INTO scrum_sprint_item_attachment (item_id, rel_path, original_filename, content_type, size_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (item_id, rel_path, disp_name, ct, len(blob), ts),
+        )
+        conn.execute(
+            "UPDATE scrum_sprint_item SET updated_at = ? WHERE id = ? AND sprint_id = ?",
+            (ts, item_id, sprint_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        try:
+            dest_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False, "Could not record attachment.", assignee
+    return True, "Attachment added.", assignee
+
+
+def _scrum_attachment_upload_file_objects_from_request() -> list:
+    """Non-empty uploaded file objects from ``files`` (multi-select) or legacy single ``file``."""
+    found: list = []
+    for f in request.files.getlist("files"):
+        if f and (getattr(f, "filename", None) or "").strip():
+            found.append(f)
+    if not found:
+        f = request.files.get("file")
+        if f and (f.filename or "").strip():
+            found.append(f)
+    return found
+
+
+def _scrum_attachment_upload_run_batch(
+    app: Flask,
+    conn: sqlite3.Connection,
+    *,
+    team_id: int,
+    sprint_id: int,
+    item_id: int,
+    roster_gate: str | None,
+) -> tuple[str, str, str]:
+    """
+    Upload every file in the current request for one sticky.
+    Returns ``(flash_category, flash_message, assignee_for_redirect)``.
+    """
+    files = _scrum_attachment_upload_file_objects_from_request()
+    if not files:
+        return "error", "Choose at least one file to upload.", ""
+    n_ok = 0
+    assignee_out = ""
+    first_err: str | None = None
+    for fobj in files:
+        ok, msg, asg = _scrum_attachment_upload_core(
+            app, conn, team_id=team_id, sprint_id=sprint_id, item_id=item_id, roster_gate=roster_gate, fobj=fobj
+        )
+        if asg:
+            assignee_out = asg
+        if ok:
+            n_ok += 1
+        elif first_err is None:
+            first_err = msg
+    n = len(files)
+    if n_ok == n:
+        if n == 1:
+            return "success", "Attachment added.", assignee_out
+        return "success", f"Added {n_ok} attachments.", assignee_out
+    if n_ok:
+        tail = (" " + first_err) if first_err else ""
+        return "success", f"Added {n_ok} of {n} files.{tail}", assignee_out
+    return "error", first_err or "Upload failed.", assignee_out
+
+
+def _scrum_attachment_delete_core(
+    app: Flask,
+    conn: sqlite3.Connection,
+    *,
+    team_id: int,
+    sprint_id: int,
+    attachment_id: int,
+    roster_gate: str | None,
+) -> tuple[bool, str, str]:
+    """``roster_gate`` when set must match the sticky assignee. Returns (success, message, assignee). Commits on success."""
+    if not _sprint_row_for_team(conn, sprint_id, team_id):
+        return False, "Invalid sprint.", ""
+    fr = _sprint_board_frozen_reason(conn, sprint_id)
+    if fr:
+        msg = _sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only."
+        return False, msg, ""
+    ar = _scrum_attachment_auth_row(conn, int(attachment_id))
+    if not ar or int(ar["team_id"]) != team_id or int(ar["sprint_id"]) != int(sprint_id):
+        return False, "Attachment not found.", ""
+    assignee = (str(ar["assignee"] or "")).strip()
+    if roster_gate is not None and assignee != roster_gate.strip():
+        return False, "You can only remove files from your own stickies.", assignee
+    rel = (str(ar["rel_path"]) or "").strip().replace("\\", "/")
+    if ".." in rel or rel.startswith("/"):
+        return False, "Invalid attachment path.", assignee
+    root = _scrum_attachment_root_dir(app)
+    path = root / rel
+    try:
+        conn.execute("DELETE FROM scrum_sprint_item_attachment WHERE id = ?", (int(attachment_id),))
+        ts = _utc_stamp()
+        conn.execute(
+            "UPDATE scrum_sprint_item SET updated_at = ? WHERE id = ? AND sprint_id = ?",
+            (ts, int(ar["item_id"]), sprint_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        return False, "Could not remove attachment.", assignee
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True, "Attachment removed.", assignee
 
 
 def _load_kanban_cards(conn: sqlite3.Connection, sprint_id: int, assignee: str, team_id: int) -> dict[str, list[dict]]:
@@ -4967,6 +8008,7 @@ def _load_kanban_cards(conn: sqlite3.Connection, sprint_id: int, assignee: str, 
                 "title": (r["title"] or "").strip(),
                 "estimate_hours": float(r["estimate_hours"] or 0),
                 "notes": (r["notes"] or "").strip(),
+                "workflow_status": _normalize_scrum_status(str(r["status"] or "")),
                 "dod": (r["dod"] or "").strip() if "dod" in r.keys() else "",
                 "done_artifacts": da_list,
                 "done_artifacts_lines": _done_artifacts_to_lines(da_list),
@@ -4980,8 +8022,23 @@ def _load_kanban_cards(conn: sqlite3.Connection, sprint_id: int, assignee: str, 
                 "column": col,
             }
         )
-    _enrich_doing_kanban_cards(conn, buckets["doing"])
+    all_item_ids = [int(c["id"]) for col in SCRUM_KANBAN_COLUMNS for c in buckets[col]]
+    stand_map = _fetch_kanban_standup_updates_map(conn, all_item_ids)
+    for col in SCRUM_KANBAN_COLUMNS:
+        for c in buckets[col]:
+            c["standup_updates"] = stand_map.get(int(c["id"]), [])
+    if buckets["done"]:
+        done_ids = [int(c["id"]) for c in buckets["done"]]
+        act_map = _fetch_kanban_item_activity_log_map(conn, done_ids)
+        for c in buckets["done"]:
+            c["activity_log"] = act_map.get(int(c["id"]), [])
+    _enrich_kanban_burn_cards(conn, buckets["doing"])
+    _enrich_kanban_burn_cards(conn, buckets["done"])
     _enrich_kanban_appreciation(conn, buckets)
+    att_map = _fetch_item_attachments_map(conn, all_item_ids)
+    for col in SCRUM_KANBAN_COLUMNS:
+        for c in buckets[col]:
+            c["attachments"] = att_map.get(int(c["id"]), [])
     return buckets
 
 
@@ -5073,18 +8130,12 @@ def _strip_appended_standup_lines_from_notes(notes: str) -> str:
     return "\n".join(kept).strip()
 
 
-def _enrich_doing_kanban_cards(conn: sqlite3.Connection, doing_cards: list[dict]) -> None:
-    if not doing_cards:
-        return
-    ids = [int(c["id"]) for c in doing_cards]
+def _fetch_kanban_standup_updates_map(conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict]]:
+    """In-progress stand-up rows (doing→doing) keyed by item id."""
+    if not item_ids:
+        return {}
+    ids = sorted({int(i) for i in item_ids})
     ph = ",".join("?" * len(ids))
-    sums = {
-        int(r["item_id"]): float(r["h"] or 0)
-        for r in conn.execute(
-            f"SELECT item_id, COALESCE(SUM(committed_hours), 0) AS h FROM scrum_item_activity WHERE item_id IN ({ph}) GROUP BY item_id",
-            ids,
-        )
-    }
     standups: dict[int, list[dict]] = {i: [] for i in ids}
     for r in conn.execute(
         f"""
@@ -5107,30 +8158,154 @@ def _enrich_doing_kanban_cards(conn: sqlite3.Connection, doing_cards: list[dict]
                 "created_at_display": _format_activity_ts(str(r["created_at"] or "")),
             }
         )
-    for c in doing_cards:
-        iid = int(c["id"])
-        est = float(c.get("estimate_hours") or 0)
-        committed = float(sums.get(iid, 0.0))
-        mx = max(est, committed, 0.01)
-        stretch = max(0.0, committed - est)
-        pct_est = round(100.0 * est / mx, 2)
-        reg = min(committed, est)
-        pct_committed_regular = round(100.0 * reg / mx, 2)
-        pct_stretch = round(100.0 * stretch / mx, 2)
-        burn_pct: float | None
-        if est > SCRUM_HOUR_EPS:
-            burn_pct = round(100.0 * committed / est, 1)
+    return standups
+
+
+def _fetch_kanban_item_activity_log_map(conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict]]:
+    """Chronological board activity (column moves + stand-ups) for Done history."""
+    if not item_ids:
+        return {}
+    ids = sorted({int(i) for i in item_ids})
+    ph = ",".join("?" * len(ids))
+    by_item: dict[int, list[dict]] = {i: [] for i in ids}
+    for r in conn.execute(
+        f"""
+        SELECT id, item_id, body, committed_hours, from_column, to_column, created_at
+        FROM scrum_item_activity
+        WHERE item_id IN ({ph})
+        ORDER BY created_at ASC, id ASC
+        """,
+        ids,
+    ):
+        iid = int(r["item_id"])
+        if iid not in by_item:
+            continue
+        fc = _normalize_kanban_column(str(r["from_column"] or ""))
+        tc = _normalize_kanban_column(str(r["to_column"] or ""))
+        if fc == "doing" and tc == "doing":
+            kind_label = "Stand-up"
         else:
-            burn_pct = None
-        c["committed_logged_hours"] = round(committed, 2)
-        c["burn_pct"] = burn_pct
-        c["effort_scale_max"] = round(mx, 2)
-        c["pct_est_bar"] = pct_est
-        c["pct_committed_regular_bar"] = pct_committed_regular
-        c["pct_stretch_bar"] = pct_stretch
-        c["stretch_load_hours"] = round(stretch, 2)
-        c["standup_updates"] = standups.get(iid, [])
-        c["notes_display"] = _strip_appended_standup_lines_from_notes(str(c.get("notes") or ""))
+            kind_label = "Move"
+        ch_raw = r["committed_hours"]
+        try:
+            chf = float(ch_raw) if ch_raw is not None else None
+        except (TypeError, ValueError):
+            chf = None
+        by_item[iid].append(
+            {
+                "id": int(r["id"]),
+                "body": (str(r["body"] or "")).strip(),
+                "committed_hours": chf,
+                "from_column": fc,
+                "to_column": tc,
+                "from_label": _kanban_column_public_label(fc),
+                "to_label": _kanban_column_public_label(tc),
+                "created_at": str(r["created_at"] or ""),
+                "created_at_display": _format_activity_ts(str(r["created_at"] or "")),
+                "kind_label": kind_label,
+            }
+        )
+    return by_item
+
+
+def _kanban_burn_metrics(estimate_hours: float, committed_sum: float) -> dict[str, Any]:
+    """Shared est vs logged burn math for sticky cards and activity-update API JSON."""
+    est = float(estimate_hours or 0)
+    committed = float(committed_sum or 0)
+    mx = max(est, committed, 0.01)
+    stretch = max(0.0, committed - est)
+    pct_est = round(100.0 * est / mx, 2)
+    reg = min(committed, est)
+    pct_committed_regular = round(100.0 * reg / mx, 2)
+    pct_stretch = round(100.0 * stretch / mx, 2)
+    burn_pct: float | None
+    if est > SCRUM_HOUR_EPS:
+        burn_pct = round(100.0 * committed / est, 1)
+    else:
+        burn_pct = None
+    return {
+        "estimate_hours": round(est, 2),
+        "committed_logged_hours": round(committed, 2),
+        "burn_pct": burn_pct,
+        "effort_scale_max": round(mx, 2),
+        "pct_est_bar": pct_est,
+        "pct_committed_regular_bar": pct_committed_regular,
+        "pct_stretch_bar": pct_stretch,
+        "stretch_load_hours": round(stretch, 2),
+    }
+
+
+def _kanban_single_item_burn_payload(conn: sqlite3.Connection, item_id: int) -> dict[str, Any] | None:
+    """Recompute task burn totals from DB (sum of scrum_item_activity.committed_hours for this sticky)."""
+    row = conn.execute(
+        "SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?",
+        (int(item_id),),
+    ).fetchone()
+    if not row:
+        return None
+    est = float(row["estimate_hours"] or 0)
+    srow = conn.execute(
+        "SELECT COALESCE(SUM(committed_hours), 0) AS h FROM scrum_item_activity WHERE item_id = ?",
+        (int(item_id),),
+    ).fetchone()
+    committed = float(srow["h"] or 0)
+    return _kanban_burn_metrics(est, committed)
+
+
+def _enrich_kanban_burn_cards(conn: sqlite3.Connection, kanban_cards: list[dict]) -> None:
+    """Task burn %, logged vs estimate, and bar widths (Doing + Done sticky cards)."""
+    if not kanban_cards:
+        return
+    ids = [int(c["id"]) for c in kanban_cards]
+    ph = ",".join("?" * len(ids))
+    sums = {
+        int(r["item_id"]): float(r["h"] or 0)
+        for r in conn.execute(
+            f"SELECT item_id, COALESCE(SUM(committed_hours), 0) AS h FROM scrum_item_activity WHERE item_id IN ({ph}) GROUP BY item_id",
+            ids,
+        )
+    }
+    for card in kanban_cards:
+        iid = int(card["id"])
+        est = float(card.get("estimate_hours") or 0)
+        committed = float(sums.get(iid, 0.0))
+        m = _kanban_burn_metrics(est, committed)
+        for k, v in m.items():
+            card[k] = v
+        card["notes_display"] = _strip_appended_standup_lines_from_notes(str(card.get("notes") or ""))
+
+
+def _scrum_distinct_area_suggestions(conn: sqlite3.Connection, team_id: int, q: str, limit: int = 25) -> list[str]:
+    """Distinct non-empty Area strings for this team, filtered by substring (case-insensitive)."""
+    raw = (q or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]
+    if not raw:
+        return []
+    needle = raw.casefold()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT TRIM(i.area) AS a
+        FROM scrum_sprint_item i
+        INNER JOIN scrum_sprint s ON s.id = i.sprint_id
+        WHERE s.team_id = ?
+          AND LENGTH(TRIM(COALESCE(i.area, ''))) > 0
+          AND instr(lower(trim(i.area)), ?) > 0
+        ORDER BY TRIM(i.area) COLLATE NOCASE ASC
+        LIMIT ?
+        """,
+        (int(team_id), needle, int(limit)),
+    ).fetchall()
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        t = (str(r["a"]) if r["a"] is not None else "").strip()
+        if not t:
+            continue
+        k = t.casefold()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t)
+    return out
 
 
 def _item_belongs_to_sprint_team(
@@ -5158,9 +8333,11 @@ SCRUM_PORTAL_PROPOSAL_ACTIONS: frozenset[str] = frozenset(
     {
         "item_move",
         "item_note",
+        "item_activity_update",
         "item_add",
         "item_update_do",
         "item_update_done",
+        "item_update_doing_estimate",
         "item_delete",
         "portal_checklist",
     }
@@ -5203,8 +8380,13 @@ def _insert_scrum_portal_proposal(
             ts,
         ),
     )
-    
-    # Auto-approve logic: give employees full access
+    # Optional: skip manager review (not default). Tests and normal deployments expect pending proposals.
+    if (os.environ.get("TEAM_TRACKER_PORTAL_AUTO_APPROVE", "") or "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
     proposal_id = cursor.lastrowid
     prop = conn.execute("SELECT * FROM scrum_portal_proposal WHERE id = ?", (proposal_id,)).fetchone()
     if prop:
@@ -5212,7 +8394,7 @@ def _insert_scrum_portal_proposal(
         if ok:
             conn.execute(
                 "UPDATE scrum_portal_proposal SET status = 'approved', resolved_at = ?, resolution_note = 'Auto-approved for employee full access' WHERE id = ?",
-                (_utc_stamp(), proposal_id)
+                (_utc_stamp(), proposal_id),
             )
 
 
@@ -5252,6 +8434,8 @@ def _portal_proposal_summary_line(action: str, payload: dict, item_title: str | 
         return f"Edit plan (Do) for «{t}»"
     if action == "item_update_done":
         return f"Edit Done details for «{t}»"
+    if action == "item_update_doing_estimate":
+        return f"Adjust In progress estimate for «{t}»"
     if action == "item_delete":
         return f"Delete «{t}»"
     if action == "portal_checklist":
@@ -5274,6 +8458,7 @@ def _pending_portal_proposals_grouped_for_sprint(
         "item_add": "New sticky",
         "item_update_do": "Edit plan (Do)",
         "item_update_done": "Edit Done",
+        "item_update_doing_estimate": "Adjust estimate (In progress)",
         "item_delete": "Delete sticky",
         "portal_checklist": "Status & DoD",
     }
@@ -5374,6 +8559,13 @@ def _pending_portal_proposals_grouped_for_sprint(
                 card["estimate_hint"] = f"{est:g}h estimate"
         if action in ("item_update_do", "item_update_done"):
             card["note_preview"] = (payload.get("notes") or "").strip()[:120]
+        if action == "item_update_doing_estimate":
+            try:
+                est = float(payload.get("estimate_hours", 0) or 0)
+            except (TypeError, ValueError):
+                est = 0.0
+            if est > SCRUM_HOUR_EPS:
+                card["estimate_hint"] = f"{est:g}h plan estimate"
         raw_item = r["item_id"]
         item_id_int = int(raw_item) if raw_item is not None else None
         if item_id_int is not None:
@@ -5424,8 +8616,9 @@ def _apply_scrum_portal_proposal_core(
         return False, "bad_action"
     sprint_id = int(proposal["sprint_id"])
     team_id = int(proposal["team_id"])
-    if _sprint_is_closed_by_id(conn, sprint_id):
-        return False, "sprint_closed"
+    fr = _sprint_board_frozen_reason(conn, sprint_id)
+    if fr:
+        return False, fr
     proposer = (proposal["proposer_roster_name"] or "").strip()
     try:
         payload = json.loads(proposal["payload_json"] or "{}")
@@ -5638,15 +8831,40 @@ def _apply_scrum_portal_proposal_core(
         )
         return True, None
 
+    if action == "item_update_doing_estimate":
+        if item_id is None:
+            return False, "missing_item"
+        row = conn.execute(
+            "SELECT assignee, kanban_column FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            (item_id, sprint_id),
+        ).fetchone()
+        if not row or (row["assignee"] or "").strip() != proposer:
+            return False, "forbidden"
+        if _normalize_kanban_column(row["kanban_column"] if "kanban_column" in row.keys() else None) != "doing":
+            return False, "wrong_column"
+        est = _parse_hours_field(str(payload.get("estimate_hours", "0")))
+        if est <= SCRUM_HOUR_EPS:
+            return False, "estimate_required"
+        conn.execute(
+            """
+            UPDATE scrum_sprint_item SET estimate_hours = ?, updated_at = ?
+            WHERE id = ? AND sprint_id = ?
+            """,
+            (est, ts, item_id, sprint_id),
+        )
+        return True, None
+
     if action == "item_delete":
         if item_id is None:
             return False, "missing_item"
         ar = conn.execute(
-            "SELECT assignee FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            "SELECT assignee, kanban_column FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
             (item_id, sprint_id),
         ).fetchone()
         if not ar or (ar["assignee"] or "").strip() != proposer:
             return False, "forbidden"
+        if _normalize_kanban_column(ar["kanban_column"] if "kanban_column" in ar.keys() else None) != "do":
+            return False, "remove only while the sticky is in Do"
         conn.execute("DELETE FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?", (item_id, sprint_id))
         return True, None
 
@@ -5690,105 +8908,15 @@ def _csrf_api_ok(app: Flask) -> bool:
         return False
 
 
-def _fill_empty_env_from_dotenv_file(path: Path) -> None:
-    """Apply selected .env values when the process env has missing or blank entries (employee auth only).
-
-    Does not touch keys like MANAGER_DASHBOARD_PASSWORD so tests can force an empty password with monkeypatch.
-    """
-    if not path.is_file():
-        return
-    fill_keys = frozenset(
-        {
-            "MICROSOFT_OAUTH_CLIENT_ID",
-            "MICROSOFT_OAUTH_CLIENT_SECRET",
-            "MICROSOFT_OAUTH_TENANT_ID",
-            "PORTAL_OTP_SMTP_HOST",
-            "PORTAL_OTP_SMTP_PORT",
-            "PORTAL_OTP_SMTP_USER",
-            "PORTAL_OTP_SMTP_PASSWORD",
-            "PORTAL_OTP_FROM",
-            "PORTAL_OTP_FROM_NAME",
-            "PORTAL_OTP_USE_TLS",
-            "PORTAL_OTP_TTL_MINUTES",
-            "PORTAL_OTP_DEV_CONSOLE",
-            "TEAM_TRACKER_PRODUCTION",
-        }
-    )
-    for k, v in (dotenv_values(path) or {}).items():
-        if not k or k not in fill_keys or v is None:
-            continue
-        s = str(v).strip()
-        if not s:
-            continue
-        cur = os.environ.get(k)
-        if cur is None or (isinstance(cur, str) and cur.strip() == ""):
-            os.environ[k] = s
-
-
 def create_app() -> Flask:
-    _app_root = Path(__file__).resolve().parent
-    load_dotenv(_app_root / ".env", override=False)
-    load_dotenv(override=False)
-    _fill_empty_env_from_dotenv_file(_app_root / ".env")
+    load_application_environment()
 
     app = Flask(__name__)
-    app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY") or "dev-only-change-with-FLASK_SECRET_KEY"
-    app.config["DB_PATH"] = os.environ.get("TEAM_TRACKER_DB_PATH", str(DB_DEFAULT))
-    # Default "team" when unset (local use). Set MANAGER_DASHBOARD_PASSWORD in .env for production.
-    _mgr_env = os.environ.get("MANAGER_DASHBOARD_PASSWORD")
-    app.config["MANAGER_DASHBOARD_PASSWORD"] = ("team" if _mgr_env is None else _mgr_env).strip()
-    app.config["PRIMARY_OWNER_MANAGER_EMAIL"] = (os.environ.get("PRIMARY_OWNER_MANAGER_EMAIL") or "").strip()
-    app.config["LPO_SM_DASHBOARD_PASSWORD"] = (os.environ.get("LPO_SM_DASHBOARD_PASSWORD") or "").strip()
-    app.config["WTF_CSRF_ENABLED"] = os.environ.get("WTF_CSRF_ENABLED", "true").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    ms_id = (os.environ.get("MICROSOFT_OAUTH_CLIENT_ID") or "").strip()
-    app.config["MICROSOFT_OAUTH_CLIENT_ID"] = ms_id
-    app.config["MICROSOFT_OAUTH_CLIENT_SECRET"] = (os.environ.get("MICROSOFT_OAUTH_CLIENT_SECRET") or "").strip()
-    app.config["MICROSOFT_OAUTH_TENANT_ID"] = (
-        (os.environ.get("MICROSOFT_OAUTH_TENANT_ID") or "organizations").strip() or "organizations"
-    )
-
-    app.config["PORTAL_OTP_SMTP_HOST"] = (os.environ.get("PORTAL_OTP_SMTP_HOST") or "").strip()
-    app.config["PORTAL_OTP_SMTP_PORT"] = int((os.environ.get("PORTAL_OTP_SMTP_PORT") or "587").strip() or "587")
-    app.config["PORTAL_OTP_SMTP_USER"] = (os.environ.get("PORTAL_OTP_SMTP_USER") or "").strip()
-    app.config["PORTAL_OTP_SMTP_PASSWORD"] = (os.environ.get("PORTAL_OTP_SMTP_PASSWORD") or "").strip()
-    app.config["PORTAL_OTP_FROM"] = (os.environ.get("PORTAL_OTP_FROM") or "").strip()
-    app.config["PORTAL_OTP_FROM_NAME"] = (os.environ.get("PORTAL_OTP_FROM_NAME") or "TEAM MANAGEMENT PORTAL").strip()
-    app.config["PORTAL_OTP_USE_TLS"] = os.environ.get("PORTAL_OTP_USE_TLS", "true").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    app.config["PORTAL_OTP_TTL_MINUTES"] = int((os.environ.get("PORTAL_OTP_TTL_MINUTES") or "15").strip() or "15")
-    _production = os.environ.get("TEAM_TRACKER_PRODUCTION", "").strip().lower() in ("1", "true", "yes")
-    _smtp_ready_env = bool(
-        (app.config.get("PORTAL_OTP_SMTP_HOST") or "").strip()
-        and (app.config.get("PORTAL_OTP_FROM") or "").strip()
-    )
-    _raw_dev_console = (os.environ.get("PORTAL_OTP_DEV_CONSOLE") or "").strip().lower()
-    if _raw_dev_console in ("0", "false", "no", "off"):
-        app.config["PORTAL_OTP_DEV_CONSOLE"] = False
-    elif _raw_dev_console in ("1", "true", "yes"):
-        app.config["PORTAL_OTP_DEV_CONSOLE"] = True
-    else:
-        app.config["PORTAL_OTP_DEV_CONSOLE"] = not _production and not ms_id and not _smtp_ready_env
-    if (
-        app.config["PORTAL_OTP_DEV_CONSOLE"]
-        and _raw_dev_console == ""
-        and not _production
-        and not ms_id
-        and not _smtp_ready_env
-    ):
-        _log.warning(
-            "Employee email OTP dev console is auto-enabled (no Microsoft OAuth, no SMTP, TEAM_TRACKER_PRODUCTION unset). "
-            "Set TEAM_TRACKER_PRODUCTION=1 and configure MICROSOFT_OAUTH_* or PORTAL_OTP_SMTP_* before production; "
-            "or set PORTAL_OTP_DEV_CONSOLE=0 to hide employee sign-in until configured."
-        )
+    apply_flask_config_from_environ(app)
+    ms_id = (app.config.get("MICROSOFT_OAUTH_CLIENT_ID") or "").strip()
 
     CSRFProtect(app)
+    register_blueprints(app)
 
     oauth_ms = None
     if ms_id:
@@ -6285,11 +9413,17 @@ def create_app() -> Flask:
             conn.close()
             flash("That work item was not found or is not assigned to you.", "error")
             return redirect(url_for("portal_my_sprint_kanban"))
+        sprint_id = int(row["sprint_id"])
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
+            conn.close()
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
+            return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         pl = {"kanban_column": col, "item_status": st, "portal_dod_json": dod_json}
         _insert_scrum_portal_proposal(
             conn,
             int(row["team_id"]),
-            int(row["sprint_id"]),
+            sprint_id,
             int(item_id),
             "portal_checklist",
             pu["roster_name"],
@@ -6323,8 +9457,18 @@ def create_app() -> Flask:
             conn.close()
             flash("Sprint not found.", "error")
             return redirect(url_for("portal_my_sprint_kanban"))
+        _maybe_auto_close_scrum_sprint(conn, int(sprint_id))
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
         cards_by_col = _load_kanban_cards(conn, int(sprint_id), roster_name, team_id)
         task_kinds_rows = _list_team_task_kinds(conn, team_id)
+        tf = _sprint_team_page_template_flags(conn, team_id, int(sprint_id))
+        conn.commit()
         conn.close()
         kb_leave_ctx = build_kanban_leave_worksheet_context(
             app,
@@ -6349,15 +9493,163 @@ def create_app() -> Flask:
                 "item_note": url_for("portal_scrum_api_item_note"),
                 "item_activity_update": url_for("portal_scrum_api_activity_update"),
                 "item_add": url_for("portal_scrum_api_item_add"),
+                "area_suggest": url_for("portal_scrum_api_areas", sprint_id=int(sprint_id)),
             },
             kb_form_urls={
                 "item_update": url_for("portal_scrum_sprint_item_update"),
                 "item_delete": url_for("portal_scrum_sprint_item_delete"),
+                "attachment_upload": url_for("portal_scrum_item_attachment_upload"),
+                "attachment_delete": url_for("portal_scrum_item_attachment_delete"),
             },
             portal_kanban=True,
-            sprint_readonly=_sprint_row_is_closed(sprint),
+            sprint_readonly=tf["sprint_board_readonly"],
+            sprint_freeze_mode=tf["sprint_freeze_mode"],
             **kb_leave_ctx,
         )
+
+    @app.get("/portal/scrum/sprint/item/attachment/<int:attachment_id>/file")
+    def portal_scrum_item_attachment_download(attachment_id: int):
+        pu = _portal_session()
+        if not pu:
+            return redirect(url_for("home"))
+        roster_name = (pu.get("roster_name") or "").strip()
+        if not roster_name:
+            return Response("Forbidden.", status=403, mimetype="text/plain")
+        conn = get_db(app)
+        ar = _scrum_attachment_auth_row(conn, int(attachment_id))
+        conn.close()
+        if not ar or (str(ar["assignee"] or "").strip() != roster_name):
+            return Response("Not found.", status=404, mimetype="text/plain")
+        rel = (str(ar["rel_path"]) or "").strip().replace("\\", "/")
+        if ".." in rel or rel.startswith("/"):
+            return Response("Bad path.", status=400, mimetype="text/plain")
+        path = _scrum_attachment_root_dir(app) / rel
+        if not path.is_file():
+            return Response("File missing on server.", status=404, mimetype="text/plain")
+        return send_file(
+            path,
+            as_attachment=True,
+            download_name=str(ar["original_filename"] or "download").strip()[:200] or "download",
+            mimetype=str(ar["content_type"] or "application/octet-stream").strip()[:200]
+            or "application/octet-stream",
+        )
+
+    @app.get("/portal/scrum/sprint/item/attachment/<int:attachment_id>/preview-html")
+    def portal_scrum_item_attachment_preview_html(attachment_id: int):
+        pu = _portal_session()
+        if not pu:
+            return Response("Forbidden.", status=403, mimetype="text/plain")
+        roster_name = (pu.get("roster_name") or "").strip()
+        if not roster_name:
+            return Response("Forbidden.", status=403, mimetype="text/plain")
+        conn = get_db(app)
+        ar = _scrum_attachment_auth_row(conn, int(attachment_id))
+        conn.close()
+        if not ar or (str(ar["assignee"] or "").strip() != roster_name):
+            return Response("Not found.", status=404, mimetype="text/plain")
+        rel = (str(ar["rel_path"]) or "").strip().replace("\\", "/")
+        if ".." in rel or rel.startswith("/"):
+            return Response("Bad path.", status=400, mimetype="text/plain")
+        path = _scrum_attachment_root_dir(app) / rel
+        if not path.is_file():
+            return Response("File missing on server.", status=404, mimetype="text/plain")
+        low = (str(ar["original_filename"]) or "").lower()
+        if not (low.endswith((".xlsx", ".xlsm", ".xltx", ".csv"))):
+            return Response("Preview not available for this file type.", status=415, mimetype="text/plain")
+        doc = _scrum_attachment_build_preview_html(path, str(ar["original_filename"] or ""))
+        if not doc:
+            return Response("Could not build preview (install openpyxl for Excel files).", status=500, mimetype="text/plain")
+        return Response(doc, mimetype="text/html; charset=utf-8")
+
+    @app.post("/portal/scrum/sprint/item/attachment")
+    def portal_scrum_item_attachment_upload():
+        pu = _portal_session()
+        if not pu:
+            flash("Sign in required.", "error")
+            return redirect(url_for("home"))
+        if not _csrf_form_ok():
+            flash("Invalid security token. Try again.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
+        roster_name = (pu.get("roster_name") or "").strip()
+        item_id = _parse_optional_int(request.form.get("item_id"))
+        sprint_id = _parse_optional_int(request.form.get("sprint_id"))
+        if not item_id or not sprint_id or not roster_name:
+            flash("Missing backlog item.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None or not _sprint_row_for_team(conn, sprint_id, team_id):
+            conn.close()
+            flash("Invalid sprint.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
+        cat, msg, _assignee = _scrum_attachment_upload_run_batch(
+            app,
+            conn,
+            team_id=int(team_id),
+            sprint_id=sprint_id,
+            item_id=item_id,
+            roster_gate=roster_name,
+        )
+        conn.close()
+        flash(msg, cat)
+        return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+
+    @app.post("/portal/scrum/sprint/item/attachment/delete")
+    def portal_scrum_item_attachment_delete():
+        pu = _portal_session()
+        if not pu:
+            flash("Sign in required.", "error")
+            return redirect(url_for("home"))
+        if not _csrf_form_ok():
+            flash("Invalid security token. Try again.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
+        roster_name = (pu.get("roster_name") or "").strip()
+        aid = _parse_optional_int(request.form.get("attachment_id"))
+        sprint_id = _parse_optional_int(request.form.get("sprint_id"))
+        if not aid or not sprint_id or not roster_name:
+            flash("Missing attachment.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None or not _sprint_row_for_team(conn, sprint_id, team_id):
+            conn.close()
+            flash("Invalid sprint.", "error")
+            return redirect(url_for("portal_my_sprint_kanban"))
+        ok, msg, _assignee = _scrum_attachment_delete_core(
+            app,
+            conn,
+            team_id=int(team_id),
+            sprint_id=sprint_id,
+            attachment_id=int(aid),
+            roster_gate=roster_name,
+        )
+        conn.close()
+        flash(msg, "success" if ok else "error")
+        return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+
+    @app.get("/portal/sprint/<int:sprint_id>/api/areas")
+    def portal_scrum_api_areas(sprint_id: int):
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"matches": []}), 403
+        q = (request.args.get("q") or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]
+        if len(q) < 1:
+            return jsonify({"matches": []})
+        conn = get_db(app)
+        try:
+            team_id = _sprint_team_id(conn, sprint_id)
+            if team_id is None:
+                return jsonify({"matches": []}), 404
+            sprint = conn.execute(
+                "SELECT id FROM scrum_sprint WHERE id = ? AND team_id = ?",
+                (int(sprint_id), team_id),
+            ).fetchone()
+            if not sprint:
+                return jsonify({"matches": []}), 404
+            out = _scrum_distinct_area_suggestions(conn, team_id, q)
+        finally:
+            conn.close()
+        return jsonify({"matches": out})
 
     @app.post("/portal/scrum/api/item/move")
     def portal_scrum_api_item_move():
@@ -6379,9 +9671,10 @@ def create_app() -> Flask:
         if team_id is None or not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, roster_name):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         row = conn.execute(
             "SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (item_id,)
         ).fetchone()
@@ -6407,7 +9700,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_move", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": False})
+        return jsonify({"ok": True, "pending_approval": True})
 
     @app.post("/portal/scrum/api/item/note")
     def portal_scrum_api_item_note():
@@ -6431,9 +9724,10 @@ def create_app() -> Flask:
         if team_id is None or not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, roster_name):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         row = conn.execute(
             "SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (item_id,)
         ).fetchone()
@@ -6447,7 +9741,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_note", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": False})
+        return jsonify({"ok": True, "pending_approval": True})
 
     @app.post("/portal/scrum/api/item/activity_update")
     def portal_scrum_api_activity_update():
@@ -6470,15 +9764,16 @@ def create_app() -> Flask:
         if team_id is None or not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, roster_name):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         
         pl = {"activity_id": activity_id, "note": note_raw, "committed_hours": ch}
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_activity_update", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": False})
+        return jsonify({"ok": True, "pending_approval": True})
 
     @app.post("/portal/scrum/api/item/add")
     def portal_scrum_api_item_add():
@@ -6506,9 +9801,10 @@ def create_app() -> Flask:
         if team_id is None or not _sprint_row_for_team(conn, sprint_id, team_id):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         _ensure_team_task_kinds(conn, team_id)
         specified = "task_kind_code" in data
         v = data.get("task_kind_code") if specified else "ndy"
@@ -6527,7 +9823,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, None, "item_add", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": False})
+        return jsonify({"ok": True, "pending_approval": True})
 
     @app.post("/portal/scrum/sprint/item/update")
     def portal_scrum_sprint_item_update():
@@ -6550,9 +9846,10 @@ def create_app() -> Flask:
             conn.close()
             flash("Invalid sprint.", "error")
             return redirect(url_for("portal_my_sprint_kanban"))
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         row = conn.execute(
             "SELECT assignee, kanban_column, sticky_color_hex FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
@@ -6584,6 +9881,21 @@ def create_app() -> Flask:
             conn.commit()
             conn.close()
             flash("Changes saved.", "success")
+            return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+
+        if cur_col == "doing":
+            est = _parse_hours_field(request.form.get("estimate_hours"))
+            if est <= SCRUM_HOUR_EPS:
+                conn.close()
+                flash("Estimated hours must be greater than zero while this sticky is In progress.", "error")
+                return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+            pl = {"estimate_hours": est}
+            _insert_scrum_portal_proposal(
+                conn, team_id, sprint_id, item_id, "item_update_doing_estimate", roster_name, pl
+            )
+            conn.commit()
+            conn.close()
+            flash("Plan estimate change queued for manager approval.", "success")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
 
         if cur_col != "do":
@@ -6638,17 +9950,22 @@ def create_app() -> Flask:
             conn.close()
             flash("Invalid sprint.", "error")
             return redirect(url_for("portal_my_sprint_kanban"))
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         ar = conn.execute(
-            "SELECT assignee FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            "SELECT assignee, kanban_column FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
             (item_id, sprint_id),
         ).fetchone()
         if not ar or (ar["assignee"] or "").strip() != roster_name:
             conn.close()
             flash("Item not found.", "error")
+            return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+        if _normalize_kanban_column(ar["kanban_column"] if "kanban_column" in ar.keys() else None) != "do":
+            conn.close()
+            flash("Stickies can only be removed while they are in Do.", "error")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_delete", roster_name, {})
         conn.commit()
@@ -6756,10 +10073,6 @@ def create_app() -> Flask:
     @app.errorhandler(500)
     def server_error(_e):  # noqa: ANN001
         return render_template("errors/500.html"), 500
-
-    @app.route("/healthz")
-    def healthz():
-        return {"status": "ok"}, 200
 
     @app.route("/api/employees")
     def api_employees():
@@ -6901,12 +10214,18 @@ def create_app() -> Flask:
         reason_labels = dict(LEAVE_REASONS)
         duration_labels = dict(DURATION_CHOICES)
 
+        _rq = (request.args.get("records_q") or "").strip()
+        if len(_rq) > 120:
+            _rq = _rq[:120]
+
         return render_template(
             "dashboard.html",
             gate_only=False,
             pending=pending,
             all_leaves=all_leaves,
             employees=roster,
+            reasons=LEAVE_REASONS,
+            durations=DURATION_CHOICES,
             reason_labels=reason_labels,
             duration_labels=duration_labels,
             prev_y=prev_month.year,
@@ -6916,8 +10235,212 @@ def create_app() -> Flask:
             password_configured=pw_configured,
             dashboard_sprint_summaries=dashboard_sprint_summaries,
             today_iso=date.today().isoformat(),
+            all_records_filter_q=_rq,
             **ctx,
         )
+
+    @app.route("/dashboard/leave-tracker-month.xlsx")
+    def dashboard_leave_tracker_month_xlsx():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        today = date.today()
+        try:
+            year = int(request.args.get("year") or today.year)
+            month = int(request.args.get("month") or today.month)
+        except ValueError:
+            year, month = today.year, today.month
+        month = max(1, min(12, month))
+        roster: tuple[str, ...] = g.manager_roster
+        ctx = build_month_context(app, year, month, roster=roster)
+        data, err = build_leave_tracker_month_xlsx_bytes(ctx)
+        if err or not data:
+            flash(err or "Could not build Excel export.", "error")
+            return redirect(url_for("dashboard", year=year, month=month))
+        safe_team = re.sub(r"[^\w.\-]+", "_", (getattr(g, "manager_team_name", None) or "team").strip()) or "team"
+        fname = f"leave_tracker_{safe_team}_{year:04d}-{month:02d}.xlsx"
+        return Response(
+            data,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.post("/dashboard/api/leave-tracker-eleave")
+    def dashboard_api_leave_tracker_eleave():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 401
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        team_id = getattr(g, "manager_team_id", None)
+        if team_id is None:
+            return jsonify({"ok": False, "error": "team"}), 400
+        payload = request.get_json(silent=True) or {}
+        try:
+            y = int(payload.get("year"))
+            mo = int(payload.get("month"))
+            emp = str(payload.get("employee_name") or "").strip()
+            raw = payload.get("days")
+            if raw is None or str(raw).strip() == "":
+                days = 0.0
+            else:
+                days = float(raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+        if not (1 <= mo <= 12):
+            return jsonify({"ok": False, "error": "bad_month"}), 400
+        roster_t = tuple(g.manager_roster)
+        if emp not in roster_t:
+            return jsonify({"ok": False, "error": "roster"}), 400
+        conn = get_db(app)
+        if not conn.execute("SELECT 1 FROM teams WHERE id = ?", (int(team_id),)).fetchone():
+            conn.close()
+            return jsonify({"ok": False, "error": "team"}), 404
+        ts = _utc_stamp()
+        conn.execute(
+            """
+            INSERT INTO leave_tracker_eleaves (team_id, year, month, employee_name, days, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(team_id, year, month, employee_name) DO UPDATE SET
+                days = excluded.days,
+                updated_at = excluded.updated_at
+            """,
+            (int(team_id), y, mo, emp, days, ts),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "days": days})
+
+    @app.post("/dashboard/api/leave-tracker-meet-quick-leave")
+    def dashboard_api_leave_tracker_meet_quick_leave():
+        """Manager: add a single-day leave on the month worksheet (same persistence as DSM /meet quick-leave)."""
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_form_ok():
+            return jsonify({"ok": False, "error": "csrf"}), 400
+
+        emp = (request.form.get("employee_name") or "").strip()
+        work_date = (request.form.get("work_date") or "").strip()
+        reason = (request.form.get("reason") or "pl").strip()
+        duration_type = (request.form.get("duration_type") or "full").strip()
+        try:
+            y = int(request.form.get("year") or 0)
+            mo = int(request.form.get("month") or 0)
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+
+        if emp not in g.manager_roster or not work_date:
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+        if reason not in {c[0] for c in LEAVE_REASONS}:
+            return jsonify({"ok": False, "error": "reason"}), 400
+        if duration_type not in {c[0] for c in DURATION_CHOICES} or duration_type == "multi":
+            return jsonify({"ok": False, "error": "dur"}), 400
+        if not (1 <= mo <= 12) or y < 2000:
+            return jsonify({"ok": False, "error": "bad_month"}), 400
+        try:
+            wd = date.fromisoformat(work_date[:10])
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad_date"}), 400
+        first = date(y, mo, 1)
+        _, ld = monthrange(y, mo)
+        last = date(y, mo, ld)
+        if not (first <= wd <= last):
+            return jsonify({"ok": False, "error": "out_of_month"}), 400
+
+        created = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        ip = client_ip()
+        conn = get_db(app)
+        conn.execute(
+            """
+            INSERT INTO leave_requests
+            (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+            VALUES (?, ?, '', ?, ?, ?, 'approved', ?, ?)
+            """,
+            (emp, reason, work_date[:10], work_date[:10], duration_type, created, ip),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+
+    @app.post("/dashboard/api/leave-tracker-meet-approve-day")
+    def dashboard_api_leave_tracker_meet_approve_day():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_form_ok():
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        try:
+            y = int(request.form.get("year") or 0)
+            mo = int(request.form.get("month") or 0)
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+        row, err = _dashboard_validate_leave_for_month(
+            app,
+            request.form.get("leave_id"),
+            (request.form.get("work_date") or "").strip(),
+            y,
+            mo,
+            g.manager_roster,
+        )
+        if err or not row:
+            return jsonify({"ok": False, "error": err or "bad_input"}), 400
+
+        leave_id = int(row["id"])
+        work_date = (request.form.get("work_date") or "").strip()[:10]
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        conn = get_db(app)
+        conn.execute(
+            """
+            INSERT INTO meet_leave_day (leave_id, work_date, decision, updated_at)
+            VALUES (?, ?, 'approved', ?)
+            ON CONFLICT(leave_id, work_date) DO UPDATE SET
+                decision = excluded.decision,
+                updated_at = excluded.updated_at
+            """,
+            (leave_id, work_date, ts),
+        )
+        conn.commit()
+        conn.close()
+        _maybe_promote_leave_after_meet_days(app, leave_id)
+        return jsonify({"ok": True})
+
+    @app.post("/dashboard/api/leave-tracker-meet-remove-day")
+    def dashboard_api_leave_tracker_meet_remove_day():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_form_ok():
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        try:
+            y = int(request.form.get("year") or 0)
+            mo = int(request.form.get("month") or 0)
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+        row, err = _dashboard_validate_leave_for_month(
+            app,
+            request.form.get("leave_id"),
+            (request.form.get("work_date") or "").strip(),
+            y,
+            mo,
+            g.manager_roster,
+        )
+        if err or not row:
+            return jsonify({"ok": False, "error": err or "bad_input"}), 400
+
+        leave_id = int(row["id"])
+        work_date = (request.form.get("work_date") or "").strip()[:10]
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        conn = get_db(app)
+        conn.execute(
+            """
+            INSERT INTO meet_leave_day (leave_id, work_date, decision, updated_at)
+            VALUES (?, ?, 'removed', ?)
+            ON CONFLICT(leave_id, work_date) DO UPDATE SET
+                decision = excluded.decision,
+                updated_at = excluded.updated_at
+            """,
+            (leave_id, work_date, ts),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
 
     @app.route("/manager/audit.csv")
     def manager_audit_csv():
@@ -6981,6 +10504,10 @@ def create_app() -> Flask:
             flash("Not found.", "error")
             return redirect(url_for("dashboard"))
 
+        if row["employee_name"] not in g.manager_roster:
+            flash("That leave is not on your team roster.", "error")
+            return redirect(url_for("dashboard"))
+
         reason_labels = dict(LEAVE_REASONS)
         duration_labels = dict(DURATION_CHOICES)
 
@@ -7025,6 +10552,7 @@ def create_app() -> Flask:
                     form=request.form,
                     return_year=request.form.get("return_year") or "",
                     return_month=request.form.get("return_month") or "",
+                    return_records_q=(request.form.get("return_records_q") or "").strip()[:120],
                 )
 
             conn = get_db(app)
@@ -7037,14 +10565,19 @@ def create_app() -> Flask:
                 """,
                 (employee_name, reason, description, start_date, end_date, duration_type, status, leave_id),
             )
+            if status == "rejected":
+                _purge_meet_leave_day_rows_for_leave(conn, leave_id)
             conn.commit()
             conn.close()
             flash("Saved.", "success")
             try:
                 ry = int(request.form.get("return_year") or 0)
                 rm = int(request.form.get("return_month") or 0)
+                rq = (request.form.get("return_records_q") or "").strip()[:120]
                 if 1 <= rm <= 12 and ry > 2000:
-                    return redirect(url_for("dashboard", year=ry, month=rm))
+                    if rq:
+                        return redirect(url_for("dashboard", year=ry, month=rm, records_q=rq), code=303)
+                    return redirect(url_for("dashboard", year=ry, month=rm), code=303)
             except ValueError:
                 pass
             return redirect(url_for("dashboard"))
@@ -7060,6 +10593,7 @@ def create_app() -> Flask:
             form={k: row[k] for k in row.keys()},
             return_year=request.args.get("year") or "",
             return_month=request.args.get("month") or "",
+            return_records_q=(request.args.get("records_q") or "").strip()[:120],
         )
 
     @app.route("/meet")
@@ -7202,18 +10736,56 @@ def create_app() -> Flask:
                 (team_id,),
             )
         )
+        for sp in sprints:
+            _maybe_auto_close_scrum_sprint(conn, int(sp["id"]))
+        conn.commit()
+        sprints = list(
+            conn.execute(
+                """
+                SELECT id, name, start_date, end_date, goal, COALESCE(is_closed, 0) AS is_closed
+                FROM scrum_sprint
+                WHERE team_id = ?
+                ORDER BY end_date DESC, start_date DESC, id DESC
+                """,
+                (team_id,),
+            )
+        )
         portal_proposals_pending = _count_pending_scrum_portal_proposals(conn, team_id)
+        next_sd = _next_sprint_start_after_latest_end(conn, team_id)
+        next_suggested_sprint_name = None
+        if next_sd is not None:
+            prev_nm = conn.execute(
+                """
+                SELECT name FROM scrum_sprint
+                WHERE team_id = ?
+                ORDER BY end_date DESC, start_date DESC, id DESC
+                LIMIT 1
+                """,
+                (team_id,),
+            ).fetchone()
+            if prev_nm and (prev_nm["name"] or "").strip():
+                next_suggested_sprint_name = suggest_next_sprint_name_from_previous(str(prev_nm["name"]))
         conn.close()
         td = date.today()
         end_default = scrum_sprint_default_end_date(td)
         cap_preview = round(
             compute_team_sprint_capacity_leave_hours(app, g.manager_roster, td, end_default), 1
         )
+        next_iso = next_sd.isoformat() if next_sd else None
+        next_cap_preview = 0.0
+        if next_sd is not None:
+            next_ed = scrum_sprint_default_end_date(next_sd)
+            next_cap_preview = round(
+                compute_team_sprint_capacity_leave_hours(app, g.manager_roster, next_sd, next_ed), 1
+        )
         return render_template(
             "scrum_hub.html",
             sprints=sprints,
             today_iso=td.isoformat(),
             sprint_capacity_preview_hours=cap_preview,
+            next_sprint_start_iso=next_iso,
+            next_sprint_capacity_preview_hours=next_cap_preview,
+            next_suggested_sprint_name=next_suggested_sprint_name,
             portal_proposals_pending=portal_proposals_pending,
         )
 
@@ -7400,12 +10972,8 @@ def create_app() -> Flask:
             if not ok:
                 conn.rollback()
                 conn.close()
-                flash(
-                    SCRUM_SPRINT_READONLY_FLASH
-                    if err == "sprint_closed"
-                    else f"Could not apply change: {err}",
-                    "error",
-                )
+                msg = _sprint_board_frozen_flash_for_reason(err) if err in ("sprint_closed", "sprint_ended") else None
+                flash(msg or f"Could not apply change: {err}", "error")
                 return _redirect_after_portal_proposal(next_raw)
             conn.execute(
                 """
@@ -7440,6 +11008,14 @@ def create_app() -> Flask:
             conn.close()
             flash("Sprint not found.", "error")
             return redirect(url_for("scrum"))
+        _maybe_auto_close_scrum_sprint(conn, int(sprint_id))
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("scrum"))
         session["active_sprint_id"] = int(sprint_id)
         members = _sprint_team_overview_rows(app, conn, team_id, int(sprint_id), g.manager_roster)
         pending_by = _pending_portal_proposals_grouped_for_sprint(conn, team_id, int(sprint_id))
@@ -7450,18 +11026,29 @@ def create_app() -> Flask:
         )
         kind_stack_ctx = build_sprint_task_kind_stack_chart_context(conn, team_id, int(sprint_id))
         portal_proposals_pending = _count_pending_scrum_portal_proposals(conn, team_id, int(sprint_id))
+        sprint_team_capacity_hours: float | None = None
+        try:
+            sd_cap = date.fromisoformat(str(sprint["start_date"])[:10])
+            ed_cap = date.fromisoformat(str(sprint["end_date"])[:10])
+            sprint_team_capacity_hours = round(
+                compute_team_sprint_capacity_leave_hours(app, g.manager_roster, sd_cap, ed_cap), 1
+            )
+        except ValueError:
+            sprint_team_capacity_hours = None
+        if sprint_team_capacity_hours is not None and not _sprint_board_frozen_reason_for_row(sprint):
+            ts = _utc_stamp()
+            conn.execute(
+                """
+                UPDATE scrum_sprint
+                SET team_capacity_hours = ?, updated_at = ?
+                WHERE id = ? AND team_id = ?
+                """,
+                (float(sprint_team_capacity_hours), ts, int(sprint_id), team_id),
+            )
+            conn.commit()
+        tf = _sprint_team_page_template_flags(conn, team_id, int(sprint_id))
+        conn.commit()
         conn.close()
-        _tcap = sprint["team_capacity_hours"] if "team_capacity_hours" in sprint.keys() else None
-        sprint_team_capacity_hours = float(_tcap) if _tcap is not None else None
-        if sprint_team_capacity_hours is None:
-            try:
-                sd = date.fromisoformat(str(sprint["start_date"])[:10])
-                ed = date.fromisoformat(str(sprint["end_date"])[:10])
-                sprint_team_capacity_hours = round(
-                    compute_team_sprint_capacity_leave_hours(app, g.manager_roster, sd, ed), 1
-                )
-            except ValueError:
-                sprint_team_capacity_hours = None
         return render_template(
             "scrum_sprint_team.html",
             sprint_id=int(sprint_id),
@@ -7469,12 +11056,166 @@ def create_app() -> Flask:
             sprint_start=str(sprint["start_date"])[:10],
             sprint_end=str(sprint["end_date"])[:10],
             sprint_team_capacity_hours=sprint_team_capacity_hours,
-            sprint_readonly=_sprint_row_is_closed(sprint),
-            sprint_status_label="CLOSED" if _sprint_row_is_closed(sprint) else "OPEN",
+            sprint_board_readonly=tf["sprint_board_readonly"],
+            sprint_manually_closed=tf["sprint_manually_closed"],
+            sprint_status_label=tf["sprint_status_label"],
+            sprint_freeze_mode=tf["sprint_freeze_mode"],
             members=members,
             portal_proposals_pending=portal_proposals_pending,
             **bd_ctx,
             **kind_stack_ctx,
+        )
+
+    @app.route("/scrum/sprint/<int:sprint_id>/team-detailed", methods=["GET"])
+    def scrum_sprint_team_detailed(sprint_id: int):
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("scrum"))
+        _maybe_auto_close_scrum_sprint(conn, int(sprint_id))
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("scrum"))
+        session["active_sprint_id"] = int(sprint_id)
+        members = _sprint_team_overview_detailed_rows(app, conn, team_id, int(sprint_id), g.manager_roster)
+        pending_by = _pending_portal_proposals_grouped_for_sprint(conn, team_id, int(sprint_id))
+        for m in members:
+            m["pending_portal"] = pending_by.get(m["name"], [])
+        portal_proposals_pending = _count_pending_scrum_portal_proposals(conn, team_id, int(sprint_id))
+        roster_t = tuple(g.manager_roster)
+        member_filter = (request.args.get("member") or "").strip()
+        if member_filter and member_filter not in roster_t:
+            member_filter = ""
+        members_display = [m for m in members if (not member_filter or m.get("name") == member_filter)]
+        sprint_team_capacity_hours: float | None = None
+        try:
+            sd_cap = date.fromisoformat(str(sprint["start_date"])[:10])
+            ed_cap = date.fromisoformat(str(sprint["end_date"])[:10])
+            sprint_team_capacity_hours = round(
+                compute_team_sprint_capacity_leave_hours(app, g.manager_roster, sd_cap, ed_cap), 1
+            )
+        except ValueError:
+            sprint_team_capacity_hours = None
+        if sprint_team_capacity_hours is not None and not _sprint_board_frozen_reason_for_row(sprint):
+            ts = _utc_stamp()
+            conn.execute(
+                """
+                UPDATE scrum_sprint
+                SET team_capacity_hours = ?, updated_at = ?
+                WHERE id = ? AND team_id = ?
+                """,
+                (float(sprint_team_capacity_hours), ts, int(sprint_id), team_id),
+            )
+            conn.commit()
+        summary_one_liner = _sprint_team_detail_one_liner(
+            members_display, str(sprint["name"] or ""), sprint_team_capacity_hours
+        )
+        tf = _sprint_team_page_template_flags(conn, team_id, int(sprint_id))
+        conn.commit()
+        conn.close()
+        return render_template(
+            "scrum_sprint_team_detailed.html",
+            sprint_id=int(sprint_id),
+            sprint_name=sprint["name"],
+            sprint_start=str(sprint["start_date"])[:10],
+            sprint_end=str(sprint["end_date"])[:10],
+            sprint_team_capacity_hours=sprint_team_capacity_hours,
+            sprint_readonly=tf["sprint_board_readonly"],
+            members=members_display,
+            member_filter=member_filter,
+            team_detailed_roster_names=list(roster_t),
+            portal_proposals_pending=portal_proposals_pending,
+            summary_one_liner=summary_one_liner,
+            kb_form_urls={
+                "attachment_upload": url_for("scrum_sprint_item_attachment_upload"),
+                "attachment_delete": url_for("scrum_sprint_item_attachment_delete"),
+            },
+        )
+
+    @app.route("/scrum/hppm", methods=["GET"])
+    def scrum_hppm_entry():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        sid = session.get("active_sprint_id")
+        if not sid:
+            flash("Open a sprint from the hub first, then use HPPM view.", "error")
+            return redirect(url_for("scrum"))
+        return redirect(url_for("scrum_sprint_hppm_view", sprint_id=int(sid)))
+
+    @app.route("/scrum/sprint/<int:sprint_id>/hppm", methods=["GET"])
+    def scrum_sprint_hppm_view(sprint_id: int):
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("scrum"))
+        _maybe_auto_close_scrum_sprint(conn, int(sprint_id))
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("scrum"))
+        session["active_sprint_id"] = int(sprint_id)
+        hppm_ctx = build_hppm_sprint_page_extra_context(
+            conn,
+            app,
+            team_id=team_id,
+            sprint_id=int(sprint_id),
+            roster=g.manager_roster,
+            sprint_start=str(sprint["start_date"])[:10],
+            sprint_end=str(sprint["end_date"])[:10],
+        )
+        area_stack_ctx = build_sprint_task_area_stack_chart_context(conn, team_id, int(sprint_id), chart_palette="hppm")
+        match_kind_h = None
+        if area_stack_ctx.get("area_stack_has_chart"):
+            try:
+                match_kind_h = int(area_stack_ctx.get("area_stack_svg_h") or 0)
+            except (TypeError, ValueError):
+                match_kind_h = None
+        kind_stack_ctx = build_sprint_task_kind_stack_chart_context(
+            conn,
+            team_id,
+            int(sprint_id),
+            horizontal=True,
+            chart_palette="hppm",
+            match_svg_height=match_kind_h,
+        )
+        tf = _sprint_team_page_template_flags(conn, team_id, int(sprint_id))
+        conn.commit()
+        conn.close()
+        return render_template(
+            "scrum_sprint_hppm.html",
+            sprint_id=int(sprint_id),
+            sprint_name=sprint["name"],
+            sprint_start=str(sprint["start_date"])[:10],
+            sprint_end=str(sprint["end_date"])[:10],
+            sprint_readonly=tf["sprint_board_readonly"],
+            sprint_freeze_mode=tf["sprint_freeze_mode"],
+            **kind_stack_ctx,
+            **area_stack_ctx,
+            **hppm_ctx,
         )
 
     @app.route("/scrum/sprint/<int:sprint_id>/leave-tracker", methods=["GET"])
@@ -7540,8 +11281,18 @@ def create_app() -> Flask:
             conn.close()
             flash("Sprint not found.", "error")
             return redirect(url_for("scrum"))
+        _maybe_auto_close_scrum_sprint(conn, int(sprint_id))
+        sprint = conn.execute(
+            "SELECT * FROM scrum_sprint WHERE id = ? AND team_id = ?", (int(sprint_id), team_id)
+        ).fetchone()
+        if not sprint:
+            conn.close()
+            flash("Sprint not found.", "error")
+            return redirect(url_for("scrum"))
         cards_by_col = _load_kanban_cards(conn, int(sprint_id), assignee, team_id)
         task_kinds_rows = _list_team_task_kinds(conn, team_id)
+        tf = _sprint_team_page_template_flags(conn, team_id, int(sprint_id))
+        conn.commit()
         conn.close()
         kb_leave_ctx = build_kanban_leave_worksheet_context(
             app,
@@ -7566,13 +11317,17 @@ def create_app() -> Flask:
                 "item_add": url_for("scrum_api_item_add"),
                 "item_appreciation": url_for("scrum_api_item_appreciation"),
                 "item_appreciation_delete_all": url_for("scrum_api_item_appreciation_delete_all"),
+                "area_suggest": url_for("scrum_api_areas"),
             },
             kb_form_urls={
                 "item_update": url_for("scrum_sprint_item_update"),
                 "item_delete": url_for("scrum_sprint_item_delete"),
+                "attachment_upload": url_for("scrum_sprint_item_attachment_upload"),
+                "attachment_delete": url_for("scrum_sprint_item_attachment_delete"),
             },
             portal_kanban=False,
-            sprint_readonly=_sprint_row_is_closed(sprint),
+            sprint_readonly=tf["sprint_board_readonly"],
+            sprint_freeze_mode=tf["sprint_freeze_mode"],
             **kb_leave_ctx,
         )
 
@@ -7596,9 +11351,10 @@ def create_app() -> Flask:
         if not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, assignee):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         row = conn.execute(
             "SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (item_id,)
         ).fetchone()
@@ -7674,9 +11430,10 @@ def create_app() -> Flask:
         if not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, assignee):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         row = conn.execute(
             "SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (item_id,)
         ).fetchone()
@@ -7696,7 +11453,6 @@ def create_app() -> Flask:
             (item_id, body, ch, ts),
         )
         conn.commit()
-        conn.close()
         conn.close()
         return jsonify({"ok": True})
 
@@ -7721,9 +11477,10 @@ def create_app() -> Flask:
         if not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, assignee):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         
         ts = _utc_stamp()
         conn.execute(
@@ -7734,9 +11491,15 @@ def create_app() -> Flask:
             "UPDATE scrum_sprint_item SET updated_at = ? WHERE id = ?",
             (ts, item_id),
         )
+        burn = _kanban_single_item_burn_payload(conn, int(item_id))
+        ch_row = conn.execute(
+            "SELECT committed_hours FROM scrum_item_activity WHERE id = ? AND item_id = ?",
+            (activity_id, item_id),
+        ).fetchone()
+        ch_out = float(ch_row["committed_hours"] or 0) if ch_row else ch
         conn.commit()
         conn.close()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "burn": burn, "activity_committed_hours": ch_out})
 
     @app.post("/scrum/api/item/appreciation")
     def scrum_api_item_appreciation():
@@ -7760,9 +11523,10 @@ def create_app() -> Flask:
         if not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, assignee):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         author = str(getattr(g, "manager_team_name", "") or "").strip() or "Manager"
         ts = _utc_stamp()
         conn.execute(
@@ -7799,9 +11563,10 @@ def create_app() -> Flask:
         if not _item_belongs_to_sprint_team(conn, item_id, sprint_id, team_id, assignee):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         cur = conn.execute("DELETE FROM scrum_item_appreciation WHERE item_id = ?", (item_id,))
         deleted = int(cur.rowcount or 0)
         ts = _utc_stamp()
@@ -7812,6 +11577,21 @@ def create_app() -> Flask:
         conn.commit()
         conn.close()
         return jsonify({"ok": True, "deleted": deleted})
+
+    @app.get("/scrum/api/areas")
+    def scrum_api_areas():
+        if not _manager_logged_in():
+            return jsonify({"matches": []}), 403
+        q = (request.args.get("q") or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]
+        if len(q) < 1:
+            return jsonify({"matches": []})
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        try:
+            out = _scrum_distinct_area_suggestions(conn, team_id, q)
+        finally:
+            conn.close()
+        return jsonify({"matches": out})
 
     @app.post("/scrum/api/task-kind/add")
     def scrum_api_task_kind_add():
@@ -7845,9 +11625,10 @@ def create_app() -> Flask:
         if not _sprint_row_for_team(conn, sprint_id, team_id):
             conn.close()
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            return jsonify({"ok": False, "error": "sprint_closed"}), 403
+            return jsonify({"ok": False, "error": fr}), 403
         _ensure_team_task_kinds(conn, team_id)
         new_l = (data.get("new_kind_label") or "").strip()
         if new_l:
@@ -7940,16 +11721,28 @@ def create_app() -> Flask:
             return redirect(url_for("scrum"))
         name = (request.form.get("name") or "").strip() or "Sprint"
         goal = ""
-        try:
-            sd = date.fromisoformat((request.form.get("start_date") or "").strip()[:10])
-        except ValueError:
-            flash("Invalid sprint dates (use YYYY-MM-DD).", "error")
-            return redirect(url_for("scrum"))
+        create_next = (request.form.get("create_next") or "").strip().lower() in ("1", "true", "yes", "on")
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        if create_next:
+            sd = _next_sprint_start_after_latest_end(conn, team_id)
+            if sd is None:
+                conn.close()
+                flash(
+                    "There is no previous sprint yet. Create your first sprint with a start date above.",
+                    "error",
+                )
+                return redirect(url_for("scrum"))
+        else:
+            try:
+                sd = date.fromisoformat((request.form.get("start_date") or "").strip()[:10])
+            except ValueError:
+                conn.close()
+                flash("Invalid sprint dates (use YYYY-MM-DD).", "error")
+                return redirect(url_for("scrum"))
         ed = scrum_sprint_default_end_date(sd)
         ts = _utc_stamp()
-        team_id = int(g.manager_team_id)
         cap_h = compute_team_sprint_capacity_leave_hours(app, g.manager_roster, sd, ed)
-        conn = get_db(app)
         if _sprint_name_exists_for_team(conn, team_id, name):
             conn.close()
             flash(
@@ -7971,7 +11764,8 @@ def create_app() -> Flask:
         session["active_sprint_id"] = new_id
         if n_carried:
             flash(
-                f"Sprint created — carried {n_carried} sticky(ies) from Do / In progress on the prior sprint into this sprint’s backlog (same assignees and details; estimates reduced by logged Burnt hours).",
+                f"Sprint created — carried {n_carried} sticky(ies) from Do / In progress on the prior sprint into this sprint’s backlog "
+                "(same assignees, details, and original estimate hours; Burnt starts at 0 on each new sticky).",
                 "success",
             )
         else:
@@ -7996,10 +11790,7 @@ def create_app() -> Flask:
             conn.close()
             flash("Unknown sprint.", "error")
             return redirect(url_for("scrum"))
-        if _sprint_is_closed_by_id(conn, sid):
-            conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
-            return redirect(url_for("scrum_sprint_team", sprint_id=sid))
+        # Deleting is allowed even when the sprint is closed or past end (hub + team cleanup).
         conn.execute("DELETE FROM scrum_sprint WHERE id = ? AND team_id = ?", (sid, team_id))
         conn.commit()
         conn.close()
@@ -8026,9 +11817,10 @@ def create_app() -> Flask:
             conn.close()
             flash("Unknown sprint.", "error")
             return redirect(url_for("scrum"))
-        if _sprint_is_closed_by_id(conn, sid):
+        fr = _sprint_board_frozen_reason(conn, sid)
+        if fr:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
             return redirect(url_for("scrum_sprint_team", sprint_id=sid))
         try:
             sd = date.fromisoformat((request.form.get("start_date") or "").strip()[:10])
@@ -8075,9 +11867,10 @@ def create_app() -> Flask:
             conn.close()
             flash("Unknown sprint.", "error")
             return redirect(url_for("scrum"))
-        if _sprint_row_is_closed(row):
+        frn = _sprint_board_frozen_reason(conn, sid)
+        if frn:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(frn) or "This sprint is read-only.", "error")
             return redirect(url_for("scrum"))
         old = (str(row["name"]) or "").strip()
         if name.lower() == old.lower():
@@ -8146,7 +11939,8 @@ def create_app() -> Flask:
             return redirect(url_for("scrum"))
         team_id = int(g.manager_team_id)
         conn = get_db(app)
-        if not _sprint_row_for_team(conn, sid, team_id):
+        row = _sprint_row_for_team(conn, sid, team_id)
+        if not row:
             conn.close()
             flash("Unknown sprint.", "error")
             return redirect(url_for("scrum"))
@@ -8161,7 +11955,14 @@ def create_app() -> Flask:
         )
         conn.commit()
         conn.close()
-        flash("Sprint opened — editing is enabled again.", "success")
+        if _sprint_row_past_end(row):
+            flash(
+                "Sprint opened for records, but this sprint’s end date has already passed — the board stays read-only "
+                "and burndown is frozen at the last sprint day.",
+                "info",
+            )
+        else:
+            flash("Sprint opened — editing is enabled again.", "success")
         return redirect(url_for("scrum_sprint_team", sprint_id=sid))
 
     @app.post("/scrum/sprint/item/add")
@@ -8179,9 +11980,10 @@ def create_app() -> Flask:
             conn.close()
             flash("Invalid sprint.", "error")
             return redirect(url_for("scrum"))
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
             return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
         title = (request.form.get("title") or "").strip()
         if not title:
@@ -8245,9 +12047,10 @@ def create_app() -> Flask:
             conn.close()
             flash("Invalid sprint.", "error")
             return redirect(url_for("scrum"))
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
             return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
         row = conn.execute(
             "SELECT assignee, kanban_column, sticky_color_hex FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
@@ -8283,6 +12086,25 @@ def create_app() -> Flask:
             conn.commit()
             conn.close()
             flash("Done sticky updated (details and artifacts).", "success")
+            return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
+
+        if cur_col == "doing":
+            est = _parse_hours_field(request.form.get("estimate_hours"))
+            if est <= SCRUM_HOUR_EPS:
+                conn.close()
+                flash("Estimated hours must be greater than zero while this sticky is In progress.", "error")
+                return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
+            st = _status_for_kanban_column("doing")
+            conn.execute(
+                """
+                UPDATE scrum_sprint_item SET estimate_hours = ?, status = ?, updated_at = ?
+                WHERE id = ? AND sprint_id = ?
+                """,
+                (est, st, ts, item_id, sprint_id),
+            )
+            conn.commit()
+            conn.close()
+            flash("Plan estimate updated for this In progress sticky.", "success")
             return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
 
         if cur_col != "do":
@@ -8337,15 +12159,27 @@ def create_app() -> Flask:
             conn.close()
             flash("Invalid sprint.", "error")
             return redirect(url_for("scrum"))
-        if _sprint_is_closed_by_id(conn, sprint_id):
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
             conn.close()
-            flash(SCRUM_SPRINT_READONLY_FLASH, "error")
+            flash(_sprint_board_frozen_flash_for_reason(fr) or "This sprint is read-only.", "error")
             return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
         ar = conn.execute(
-            "SELECT assignee FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            "SELECT assignee, kanban_column FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
             (item_id, sprint_id),
         ).fetchone()
-        assignee = (ar["assignee"] or "").strip() if ar else ""
+        if not ar:
+            conn.close()
+            flash("Item not found.", "error")
+            return redirect(url_for("scrum"))
+        if _normalize_kanban_column(ar["kanban_column"] if "kanban_column" in ar.keys() else None) != "do":
+            assignee_err = (ar["assignee"] or "").strip()
+            conn.close()
+            flash("Stickies can only be removed while they are in Do.", "error")
+            if assignee_err:
+                return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee_err))
+            return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
+        assignee = (ar["assignee"] or "").strip()
         conn.execute("DELETE FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?", (item_id, sprint_id))
         conn.commit()
         conn.close()
@@ -8353,6 +12187,117 @@ def create_app() -> Flask:
         if assignee:
             return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
         return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
+
+    @app.post("/scrum/sprint/item/attachment")
+    def scrum_sprint_item_attachment_upload():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        if not _csrf_form_ok():
+            flash("Invalid security token. Try again.", "error")
+            return redirect(url_for("scrum"))
+        item_id = _parse_optional_int(request.form.get("item_id"))
+        sprint_id = _parse_optional_int(request.form.get("sprint_id"))
+        assignee_redir = (request.form.get("assignee") or "").strip()
+        team_id = int(g.manager_team_id)
+        if not item_id or not sprint_id:
+            flash("Missing item.", "error")
+            return redirect(url_for("scrum"))
+        conn = get_db(app)
+        cat, msg, assignee = _scrum_attachment_upload_run_batch(
+            app, conn, team_id=team_id, sprint_id=sprint_id, item_id=item_id, roster_gate=None
+        )
+        conn.close()
+        flash(msg, cat)
+        if (request.form.get("return_to") or "").strip() == "team_detailed":
+            return redirect(url_for("scrum_sprint_team_detailed", sprint_id=sprint_id))
+        assignee_out = assignee_redir or assignee
+        if assignee_out:
+            return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee_out))
+        return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
+
+    @app.post("/scrum/sprint/item/attachment/delete")
+    def scrum_sprint_item_attachment_delete():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        if not _csrf_form_ok():
+            flash("Invalid security token. Try again.", "error")
+            return redirect(url_for("scrum"))
+        aid = _parse_optional_int(request.form.get("attachment_id"))
+        sprint_id = _parse_optional_int(request.form.get("sprint_id"))
+        assignee_redir = (request.form.get("assignee") or "").strip()
+        team_id = int(g.manager_team_id)
+        if not aid or not sprint_id:
+            flash("Missing attachment.", "error")
+            return redirect(url_for("scrum"))
+        conn = get_db(app)
+        ok, msg, assignee = _scrum_attachment_delete_core(
+            app, conn, team_id=team_id, sprint_id=sprint_id, attachment_id=int(aid), roster_gate=None
+        )
+        conn.close()
+        flash(msg, "success" if ok else "error")
+        if (request.form.get("return_to") or "").strip() == "team_detailed":
+            return redirect(url_for("scrum_sprint_team_detailed", sprint_id=sprint_id))
+        if not ok and not assignee:
+            return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
+        return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee_redir or assignee))
+
+    @app.get("/scrum/sprint/item/attachment/<int:attachment_id>/file")
+    def scrum_sprint_item_attachment_download(attachment_id: int):
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        ar = _scrum_attachment_auth_row(conn, int(attachment_id))
+        conn.close()
+        if not ar or int(ar["team_id"]) != team_id:
+            return Response("Not found.", status=404, mimetype="text/plain")
+        rel = (str(ar["rel_path"]) or "").strip().replace("\\", "/")
+        if ".." in rel or rel.startswith("/"):
+            return Response("Bad path.", status=400, mimetype="text/plain")
+        path = _scrum_attachment_root_dir(app) / rel
+        if not path.is_file():
+            return Response("File missing on server.", status=404, mimetype="text/plain")
+        ct = str(ar["content_type"] or "application/octet-stream").strip()[:200] or "application/octet-stream"
+        inline_req = (request.args.get("inline") or "").strip().lower() in ("1", "true", "yes")
+        inline_ok = inline_req and (
+            ct.startswith("image/")
+            or ct == "application/pdf"
+            or ct.startswith("text/plain")
+            or ct in ("text/csv", "text/markdown", "application/json")
+        )
+        return send_file(
+            path,
+            as_attachment=not inline_ok,
+            download_name=str(ar["original_filename"] or "download").strip()[:200] or "download",
+            mimetype=ct,
+        )
+
+    @app.get("/scrum/sprint/item/attachment/<int:attachment_id>/preview-html")
+    def scrum_sprint_item_attachment_preview_html(attachment_id: int):
+        if not _manager_logged_in():
+            return Response("Unauthorized.", status=401, mimetype="text/plain")
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        ar = _scrum_attachment_auth_row(conn, int(attachment_id))
+        conn.close()
+        if not ar or int(ar["team_id"]) != team_id:
+            return Response("Not found.", status=404, mimetype="text/plain")
+        rel = (str(ar["rel_path"]) or "").strip().replace("\\", "/")
+        if ".." in rel or rel.startswith("/"):
+            return Response("Bad path.", status=400, mimetype="text/plain")
+        path = _scrum_attachment_root_dir(app) / rel
+        if not path.is_file():
+            return Response("File missing on server.", status=404, mimetype="text/plain")
+        low = (str(ar["original_filename"]) or "").lower()
+        if not (low.endswith((".xlsx", ".xlsm", ".xltx", ".csv"))):
+            return Response("Preview not available for this file type.", status=415, mimetype="text/plain")
+        doc = _scrum_attachment_build_preview_html(path, str(ar["original_filename"] or ""))
+        if not doc:
+            return Response("Could not build preview (install openpyxl for Excel files).", status=500, mimetype="text/plain")
+        return Response(doc, mimetype="text/html; charset=utf-8")
 
     @app.route("/")
     def home():
@@ -8794,6 +12739,41 @@ def create_app() -> Flask:
             status_labels=status_labels,
         )
 
+    @app.route("/worksheet/nokia-audit-compare.xlsx")
+    @app.route("/reports/nokia-audit-compare.xlsx")
+    def nokia_audit_compare_xlsx():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        today = date.today()
+        try:
+            year = int(request.args.get("year") or today.year)
+            month = int(request.args.get("month") or today.month)
+        except ValueError:
+            year, month = today.year, today.month
+        year = max(2000, min(2100, year))
+        month = max(1, min(12, month))
+        employee_name = (request.args.get("employee_name") or "").strip()
+        if not employee_name or employee_name not in g.manager_roster:
+            flash("Select an employee from your team roster.", "error")
+            return redirect(url_for("nokia_audit", year=year, month=month))
+        compare_rows_result, cmp_err = _nokia_audit_compare_rows_from_session(employee_name, year)
+        if cmp_err:
+            flash(cmp_err, "error")
+            return redirect(url_for("nokia_audit", year=year, month=month, employee_name=employee_name))
+        rows = compare_rows_result or []
+        data, err = build_nokia_compare_xlsx_bytes(rows, employee_name=employee_name, year=year)
+        if err or not data:
+            flash(err or "Could not build Excel export.", "error")
+            return redirect(url_for("nokia_audit", year=year, month=month, employee_name=employee_name))
+        safe_emp = _sanitize_xlsx_base_filename(employee_name)
+        fname = f"nokia_eleave_compare_{safe_emp}_{year}.xlsx"
+        return Response(
+            data,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
     @app.route("/worksheet/nokia-audit", methods=["GET", "POST"])
     @app.route("/reports/nokia-audit", methods=["GET", "POST"])
     def nokia_audit():
@@ -8810,14 +12790,15 @@ def create_app() -> Flask:
         year = max(2000, min(2100, year))
         month = max(1, min(12, month))
 
-        preview_url: str | None = None
-        worksheet_leave_rows: list[dict] = []
-        ocr_used = False
-        csv_used = False
-        color_sampling_used = False
-        defaults: list[dict] = []
-        nokia_only: list[dict] = []
-        unmatched: list[tuple[str, str]] = []
+        employee_name = (request.values.get("employee_name") or "").strip()
+
+        marked_rows: list[dict[str, Any]] = []
+        tracker_approved_rows: list[dict[str, Any]] = []
+        tracker_approved_submitted = False
+        dsm_tracker_rows: list[dict[str, Any]] = []
+        dsm_tracker_submitted = False
+        compare_rows: list[dict[str, Any]] = []
+        compare_submitted = False
         parse_error: str | None = None
         csv_paste_value = ""
 
@@ -8826,188 +12807,205 @@ def create_app() -> Flask:
                 flash("Invalid security token. Try again.", "error")
             else:
                 csv_paste_value = request.form.get("nokia_csv") or ""
-                nokia_csv_max = 2_000_000
                 csv_text_input = (csv_paste_value or "").strip()
-                cf = request.files.get("nokia_csv_file")
-                if cf and cf.filename:
-                    raw_csv = cf.read()
-                    if len(raw_csv) > nokia_csv_max:
-                        flash("CSV file too large (max 2 MB).", "error")
-                    else:
-                        file_txt: str | None = None
-                        try:
-                            file_txt = raw_csv.decode("utf-8-sig")
-                        except UnicodeDecodeError:
-                            try:
-                                file_txt = raw_csv.decode("latin-1")
-                            except Exception:  # noqa: BLE001
-                                flash("CSV file could not be decoded (try UTF-8).", "error")
-                        if file_txt is not None:
-                            csv_text_input = file_txt.strip()
 
-                screenshot_raw: bytes | None = None
-                f = request.files.get("screenshot")
-                if f and f.filename:
-                    mime = (f.mimetype or "").lower()
-                    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
-                        flash("Screenshot must be PNG, JPEG, WebP, or GIF.", "error")
+                if app.config.get("TESTING"):
+                    ot = (request.form.get("nokia_ocr_text") or "").strip()
+                    if ot:
+                        csv_text_input = ot
+                        if not (request.form.get("nokia_csv") or "").strip():
+                            csv_paste_value = ot
+
+                audit_action = (request.form.get("audit_action") or "show_approved").strip()
+                month_lab = date(year, month, 1).strftime("%B %Y")
+
+                if audit_action == "show_approved":
+                    if not employee_name or employee_name not in g.manager_roster:
+                        parse_error = "Select an employee from your team roster."
+                    elif not csv_text_input.strip():
+                        parse_error = "Paste Nokia eLeave text first, then click Show Approved Leaves."
                     else:
-                        raw = f.read()
-                        if len(raw) > 4_000_000:
-                            flash("Screenshot too large (max 4 MB).", "error")
+                        name_err = _nokia_paste_employee_must_match_selected_or_error(
+                            employee_name,
+                            csv_text_input,
+                            g.manager_roster,
+                            require_roster_name_in_paste=True,
+                        )
+                        if name_err:
+                            parse_error = name_err
                         else:
-                            screenshot_raw = raw
-                            b64 = base64.standard_b64encode(raw).decode("ascii")
-                            preview_url = f"data:{mime};base64,{b64}"
-
-                nokia_source = ""
-                ocr_text_stored = ""
-                ocr_err: str | None = None
-                color_sampling_used = False
-                testing = bool(app.config.get("TESTING"))
-                test_grid = (request.form.get("nokia_ocr_text") or "").strip() if testing else ""
-
-                if screenshot_raw:
-                    ocr_text, ocr_err = _ocr_image_to_text(screenshot_raw)
-                    ocr_text_stored = (ocr_text or "").strip()
-
-                if test_grid:
-                    nokia_source = test_grid
-                elif csv_text_input:
-                    nokia_source = csv_text_input
-                    csv_used = True
-                elif ocr_text_stored:
-                    nokia_source = ocr_text_stored
-                    ocr_used = True
-
-                if not test_grid:
-                    has_grid_input = bool(
-                        (screenshot_raw)
-                        or (csv_text_input and csv_text_input.strip())
-                    )
-                    if not has_grid_input:
-                        if not testing:
-                            parse_error = (
-                                "Add a screenshot of the Nokia leave grid (paste, drag, or choose a file), "
-                                "or paste / upload a CSV export of the same grid, then set the year and month and compare."
+                            tracker_approved_submitted = True
+                            preview_rows, prev_err, preview_segs = _nokia_paste_approved_preview_rows(
+                                app, csv_text_input.strip(), employee_name
                             )
-                        else:
-                            parse_error = "Tests must send a screenshot, nokia_ocr_text, or CSV grid content."
-
-                tess_path = _resolve_tesseract_cmd()
-                color_map: dict[str, set[int]] | None = None
-                color_err: str | None = None
-                if screenshot_raw and tess_path and not test_grid:
-                    try:
-                        from leave_grid_image import extract_leave_from_colored_grid
-
-                        color_map, color_err = extract_leave_from_colored_grid(
-                            screenshot_raw, year, month, tess_path, roster=tuple(g.manager_roster)
-                        )
-                    except Exception as ex:  # noqa: BLE001
-                        color_err = str(ex)
-
-                if parse_error is None:
-                    nokia_map = None
-                    err_txt: str | None = None
-                    unmatched = []
-                    if nokia_source.strip():
-                        nokia_map, unmatched, err_txt = parse_nokia_grid_combined(
-                            nokia_source, year, month, roster=g.manager_roster
-                        )
-
-                    if (
-                        nokia_map is None
-                        and err_txt
-                        and csv_used
-                        and ocr_text_stored
-                        and not test_grid
-                    ):
-                        nokia_map, unmatched, err_txt = parse_nokia_grid_combined(
-                            ocr_text_stored, year, month, roster=g.manager_roster
-                        )
-                        if nokia_map is not None:
-                            csv_used = False
-                            ocr_used = True
-
-                    if color_map:
-                        color_sampling_used = True
-                        if nokia_map is None:
-                            nokia_map = {e: set(color_map.get(e, ())) for e in g.manager_roster}
-                            unmatched = []
-                        else:
-                            for emp in g.manager_roster:
-                                nokia_map[emp] |= color_map.get(emp, set())
-
-                    if nokia_map is None:
-                        parse_error = (
-                            err_txt
-                            or color_err
-                            or ocr_err
-                            or (
-                                "Could not read the grid from the image. Install Tesseract OCR on the server "
-                                "(and Pillow + pytesseract), or try a larger / sharper screenshot, "
-                                "or use a CSV export instead."
-                            )
-                        )
-                    elif err_txt and not color_map:
-                        parse_error = err_txt
+                            if prev_err:
+                                parse_error = prev_err
+                                tracker_approved_rows = []
+                                session.pop(NOKIA_AUDIT_SESSION_APPROVED_SEGS, None)
+                                session.pop(NOKIA_AUDIT_SESSION_LAST_APPROVED_PREVIEW, None)
+                            else:
+                                tracker_approved_rows = preview_rows
+                                session[NOKIA_AUDIT_SESSION_LAST_APPROVED_PREVIEW] = {
+                                    "employee_name": employee_name,
+                                    "rows": _nokia_audit_session_safe_row_dicts(tracker_approved_rows),
+                                }
+                                session.modified = True
+                                if preview_segs is not None:
+                                    session[NOKIA_AUDIT_SESSION_APPROVED_SEGS] = {
+                                        "employee_name": employee_name,
+                                        "fingerprint": _nokia_paste_fingerprint(csv_text_input.strip()),
+                                        "segments": _nokia_segs_to_store(preview_segs),
+                                    }
+                                    session.modified = True
+                                flash(
+                                    f"Parsed {len(tracker_approved_rows)} approved row(s) from pasted text for "
+                                    f"{employee_name} ({month_lab}).",
+                                    "success",
+                                )
+                elif audit_action == "mark_approved":
+                    if not employee_name or employee_name not in g.manager_roster:
+                        parse_error = "Select an employee from your team roster."
+                    elif not csv_text_input.strip():
+                        parse_error = "Paste Nokia approved leave text into the text area first."
                     else:
-                        app_map = app_leave_days_by_employee_month(app, year, month, roster=g.manager_roster)
-                        defaults, nokia_only = compare_nokia_vs_app(
-                            nokia_map, app_map, year, month, roster=g.manager_roster
+                        name_err = _nokia_paste_employee_must_match_selected_or_error(
+                            employee_name,
+                            csv_text_input,
+                            g.manager_roster,
+                            require_roster_name_in_paste=True,
                         )
-                        worksheet_leave_rows = [
-                            {
-                                "employee": emp,
-                                "days": sorted(app_map[emp]),
-                                "label": ", ".join(str(d) for d in sorted(app_map[emp])) or "—",
+                        if name_err:
+                            parse_error = name_err
+                        else:
+                            payload = session.get(NOKIA_AUDIT_SESSION_APPROVED_SEGS)
+                            fp = _nokia_paste_fingerprint(csv_text_input.strip())
+                            segs_override: list[tuple[date, date, str, str, bool]] | None = None
+                            if (
+                                isinstance(payload, dict)
+                                and payload.get("employee_name") == employee_name
+                                and payload.get("fingerprint") == fp
+                            ):
+                                segs_override = _nokia_segs_from_store(payload.get("segments") or [])
+                                if segs_override is None:
+                                    session.pop(NOKIA_AUDIT_SESSION_APPROVED_SEGS, None)
+                            elif payload is not None:
+                                session.pop(NOKIA_AUDIT_SESSION_APPROVED_SEGS, None)
+                            marked_rows, tagged_existing, mk_err = _nokia_mark_approved_leaves(
+                                app,
+                                employee_name,
+                                year,
+                                month,
+                                csv_text_input.strip(),
+                                precomputed_segments=segs_override,
+                            )
+                            if mk_err:
+                                parse_error = mk_err
+                                marked_rows = []
+                            elif not marked_rows and not tagged_existing:
+                                flash(
+                                    f"No new leave was added — Nokia dates in range were already on the tracker for "
+                                    f"{employee_name} ({month_lab}).",
+                                    "info",
+                                )
+                            else:
+                                session.pop(NOKIA_AUDIT_SESSION_APPROVED_SEGS, None)
+                                session.pop(NOKIA_AUDIT_SESSION_LAST_APPROVED_PREVIEW, None)
+                                parts: list[str] = []
+                                if marked_rows:
+                                    parts.append(
+                                        f"Added {len(marked_rows)} approved leave record(s) to the tracker for "
+                                        f"{employee_name} ({month_lab})."
+                                    )
+                                if tagged_existing:
+                                    parts.append(
+                                        f"Updated {tagged_existing} existing tracker record(s) with the Nokia-approved "
+                                        f"indicator (green A) for {employee_name} ({month_lab})."
+                                    )
+                                flash(" ".join(parts), "success")
+                elif audit_action == "show_dsm":
+                    if not employee_name or employee_name not in g.manager_roster:
+                        parse_error = "Select an employee from your team roster."
+                    else:
+                        dsm_name_err: str | None = None
+                        if csv_text_input.strip() and _nokia_paste_has_nokia_approved_leave_date_line(
+                            csv_text_input
+                        ):
+                            dsm_name_err = _nokia_paste_employee_must_match_selected_or_error(
+                                employee_name,
+                                csv_text_input,
+                                g.manager_roster,
+                                require_roster_name_in_paste=True,
+                            )
+                        if dsm_name_err:
+                            parse_error = dsm_name_err
+                        else:
+                            dsm_tracker_submitted = True
+                            dsm_tracker_rows = _nokia_audit_dsm_leave_rows(app, employee_name, year)
+                            n_dsm = len(dsm_tracker_rows)
+                            session[NOKIA_AUDIT_SESSION_LAST_DSM] = {
+                                "employee_name": employee_name,
+                                "year": int(year),
+                                "rows": _nokia_audit_session_safe_row_dicts(dsm_tracker_rows),
                             }
-                            for emp in g.manager_roster
-                        ]
-                        msg = "Comparison updated."
-                        if csv_used:
-                            msg += " The Nokia grid was read from pasted or uploaded CSV."
-                        if color_sampling_used:
-                            msg += " Colored leave cells were read from the screenshot (layout + color sampling)."
-                        flash(msg, "success")
+                            session.modified = True
+                            if n_dsm:
+                                flash(
+                                    f"Loaded {n_dsm} leave record(s) from Leave tracker for "
+                                    f"{employee_name} (calendar year {year}).",
+                                    "success",
+                                )
+                            else:
+                                flash(
+                                    f"No pending or approved leave in Leave tracker for {employee_name} "
+                                    f"in calendar year {year}.",
+                                    "info",
+                                )
+                elif audit_action == "compare":
+                    if not employee_name or employee_name not in g.manager_roster:
+                        parse_error = "Select an employee from your team roster."
+                    else:
+                        compare_rows_result, cmp_err = _nokia_audit_compare_rows_from_session(
+                            employee_name, year
+                        )
+                        if cmp_err:
+                            parse_error = cmp_err
+                        else:
+                            compare_submitted = True
+                            compare_rows = compare_rows_result or []
+                            if compare_rows:
+                                flash(f"Compare: {len(compare_rows)} row(s) merged.", "success")
+                            else:
+                                flash("Compare: no rows to show (both sources were empty).", "info")
+                else:
+                    parse_error = "Unknown action."
 
         month_label = date(year, month, 1).strftime("%B %Y")
-        month_choices = [(m, calendar.month_name[m]) for m in range(1, 13)]
-        if month <= 1:
-            prev_year, prev_month = year - 1, 12
-        else:
-            prev_year, prev_month = year, month - 1
-        if month >= 12:
-            next_year, next_month = year + 1, 1
-        else:
-            next_year, next_month = year, month + 1
-        prev_ym = f"{prev_year:04d}-{prev_month:02d}"
-        next_ym = f"{next_year:04d}-{next_month:02d}"
+        tracker_approved_days_total = _sum_nokia_audit_day_column(tracker_approved_rows)
+        marked_rows_days_total = _sum_nokia_audit_day_column(marked_rows)
+        dsm_tracker_days_total = _sum_nokia_audit_day_column(dsm_tracker_rows)
+        compare_days_elv_total = _sum_nokia_audit_compare_days(compare_rows, "days_elv")
+        compare_days_dsm_total = _sum_nokia_audit_compare_days(compare_rows, "days_dsm")
         return render_template(
             "nokia_audit.html",
             year=year,
             month=month,
             month_label=month_label,
-            month_choices=month_choices,
-            prev_year=prev_year,
-            prev_month=prev_month,
-            next_year=next_year,
-            next_month=next_month,
-            prev_ym=prev_ym,
-            next_ym=next_ym,
-            today_year=today.year,
-            today_month=today.month,
-            defaults=defaults,
-            nokia_only=nokia_only,
-            unmatched=unmatched,
             parse_error=parse_error,
-            preview_url=preview_url,
-            ocr_used=ocr_used,
-            csv_used=csv_used,
-            color_sampling_used=color_sampling_used,
-            worksheet_leave_rows=worksheet_leave_rows,
             csv_paste_value=csv_paste_value,
+            employee_name=employee_name,
+            roster_names=g.manager_roster,
+            marked_rows=marked_rows,
+            tracker_approved_rows=tracker_approved_rows,
+            tracker_approved_submitted=tracker_approved_submitted,
+            tracker_approved_days_total=tracker_approved_days_total,
+            marked_rows_days_total=marked_rows_days_total,
+            dsm_tracker_rows=dsm_tracker_rows,
+            dsm_tracker_submitted=dsm_tracker_submitted,
+            dsm_tracker_days_total=dsm_tracker_days_total,
+            compare_rows=compare_rows,
+            compare_submitted=compare_submitted,
+            compare_days_elv_total=compare_days_elv_total,
+            compare_days_dsm_total=compare_days_dsm_total,
         )
 
     @app.route("/reports/leave/<int:leave_id>/status", methods=["POST"])
@@ -9022,10 +13020,25 @@ def create_app() -> Flask:
             return redirect(url_for("reports"))
 
         conn = get_db(app)
+        prow = conn.execute(
+            "SELECT employee_name FROM leave_requests WHERE id = ?",
+            (leave_id,),
+        ).fetchone()
+        if not prow:
+            conn.close()
+            flash("Leave request not found.", "error")
+            return redirect(url_for("reports"))
+        if prow["employee_name"] not in g.manager_roster:
+            conn.close()
+            flash("That leave is not on your team roster.", "error")
+            return redirect(url_for("reports"))
+
         conn.execute(
             "UPDATE leave_requests SET status = ? WHERE id = ?",
             (new_status, leave_id),
         )
+        if new_status == "rejected":
+            _purge_meet_leave_day_rows_for_leave(conn, leave_id)
         conn.commit()
         conn.close()
         flash("Saved.", "success")
@@ -9299,11 +13312,8 @@ def create_app() -> Flask:
     with app.app_context():
         init_db(app)
 
+    import team_tracker_backup
+
+    team_tracker_backup.maybe_start_backup_scheduler(app)
+
     return app
-
-
-if __name__ == "__main__":
-    host = os.environ.get("FLASK_RUN_HOST", "127.0.0.1")
-    port = int(os.environ.get("FLASK_RUN_PORT", "5000"))
-    debug = os.environ.get("FLASK_DEBUG", "1").lower() in ("1", "true", "yes")
-    create_app().run(host=host, port=port, debug=debug)

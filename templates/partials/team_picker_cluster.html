@@ -1,0 +1,65 @@
+{# Reusable team switcher. Set tp_prefix before include: '' for nav, 'scrum-hub-' for Sprint hub (unique element ids). #}
+<div class="nav-team-cluster{% if tp_prefix %} scrum-hub-team-cluster{% endif %}">
+  <button
+    type="button"
+    class="nav-team-trigger"
+    id="{{ tp_prefix }}team-picker-open"
+    aria-haspopup="dialog"
+    aria-controls="{{ tp_prefix }}team-picker-dialog"
+    aria-expanded="false"
+  >
+    <span class="nav-team-trigger-label">Team</span>
+    <span class="nav-team-trigger-row">
+      <span class="nav-team-trigger-value">{{ active_team_name or "Team" }}</span>
+      <span class="nav-team-trigger-chev" aria-hidden="true"></span>
+    </span>
+  </button>
+  <dialog id="{{ tp_prefix }}team-picker-dialog" class="team-picker-dialog" aria-labelledby="{{ tp_prefix }}team-picker-title">
+    <div class="team-picker-panel">
+      <header class="team-picker-header">
+        <h2 id="{{ tp_prefix }}team-picker-title" class="team-picker-title">Switch team</h2>
+        <p class="team-picker-lede">
+          Leave tracker, Scrum, Meet, Nokia compare, and exports use the roster for the team you choose here.
+        </p>
+      </header>
+      <ul class="team-picker-list">
+        {% for t in manager_teams %}
+          <li style="display: flex; gap: 0.5rem; align-items: stretch; margin-bottom: 0.5rem;">
+            <form method="post" action="{{ url_for('reports_team_select') }}" class="team-picker-form" style="flex: 1;">
+              {% include "partials/csrf.html" %}
+              <input type="hidden" name="next" value="{{ request.full_path }}" />
+              <input type="hidden" name="team_id" value="{{ t.id }}" />
+              <button type="submit" class="team-picker-choice{% if active_team_id is not none and t.id == active_team_id %} is-current{% endif %}">
+                <span class="team-picker-choice-left">
+                  <span class="team-picker-choice-name">{{ t.name }}</span>
+                  {% if t.hub_mode == 'scrum' %}
+                    <span class="team-hub-pill" title="Team default hub">Scrum</span>
+                  {% else %}
+                    <span class="team-hub-pill is-leave" title="Team default hub">Leave</span>
+                  {% endif %}
+                </span>
+                {% if active_team_id is not none and t.id == active_team_id %}
+                  <span class="team-picker-current-badge">Current</span>
+                {% endif %}
+              </button>
+            </form>
+            <form method="post" action="{{ url_for('delete_team') }}" onsubmit="return confirmDeleteTeam(event, '{{ t.name|replace('\'', '\\\'') }}');" style="display: flex;">
+              {% include "partials/csrf.html" %}
+              <input type="hidden" name="team_id" value="{{ t.id }}" />
+              <input type="hidden" name="next" value="{{ request.full_path }}" />
+              <button type="submit" class="btn secondary" style="padding: 0 0.75rem; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05); background: rgba(30, 32, 60, 0.65);" title="Delete team">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+              </button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+      <div class="team-picker-footer">
+        <button type="button" class="btn secondary team-picker-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+</div>

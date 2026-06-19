@@ -8,6 +8,7 @@
     {% include "partials/csrf.html" %}
     <input type="hidden" name="return_year" value="{{ return_year }}" />
     <input type="hidden" name="return_month" value="{{ return_month }}" />
+    <input type="hidden" name="return_records_q" value="{{ return_records_q|default('', true)|e }}" />
 
     <div class="field">
       <label for="employee_name">Employee</label>
@@ -54,6 +55,9 @@
           <option value="{{ st }}" {% if (form.get('status') or row['status']) == st %}selected{% endif %}>{{ st }}</option>
         {% endfor %}
       </select>
+      <p class="date-fieldset-hint" style="margin-top: 0.35rem">
+        Choosing <strong>rejected</strong> removes this leave from every tracker view (month grid, DSM meet strip, sprint leave / capacity). Per-day DSM decisions for this request are cleared.
+      </p>
     </div>
 
     <div class="field field-readonly">
@@ -65,7 +69,7 @@
       <button type="submit" class="btn">Save</button>
       <a
         class="btn secondary"
-        href="{% if return_year and return_month %}{{ url_for('dashboard', year=return_year|int, month=return_month|int) }}{% else %}{{ url_for('dashboard') }}{% endif %}"
+        href="{% if return_year and return_month %}{{ url_for('dashboard', year=return_year|int, month=return_month|int) }}{% if return_records_q %}&records_q={{ return_records_q|urlencode }}{% endif %}{% else %}{{ url_for('dashboard') }}{% endif %}"
         >Cancel</a>
     </div>
   </form>

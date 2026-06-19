@@ -626,6 +626,48 @@ button.small,
   margin: 0;
 }
 
+.dashboard-all-records-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: 22rem;
+  margin-bottom: 0.85rem;
+}
+
+.dashboard-all-records-filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dashboard-all-records-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.875rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.75);
+  color: #f1f5f9;
+}
+
+.dashboard-all-records-filter-input::placeholder {
+  color: #64748b;
+}
+
+.dashboard-all-records-filter-input:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.dashboard-all-records-filter-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

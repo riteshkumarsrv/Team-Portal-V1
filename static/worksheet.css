@@ -131,6 +131,19 @@
   border: 1px solid rgba(167, 139, 250, 0.3) !important;
 }
 
+.cell-compoff {
+  background: rgba(148, 163, 184, 0.22) !important;
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.4) !important;
+}
+
+/* Nokia e-tool → Mark Approved in tracker */
+.cell-nokia-approved {
+  background: rgba(34, 197, 94, 0.22) !important;
+  color: #22c55e !important;
+  border: 1px solid rgba(34, 197, 94, 0.45) !important;
+}
+
 .cell-pending {
   outline: 2px dashed rgba(245, 158, 11, 0.7);
   outline-offset: -2px;
@@ -163,4 +176,239 @@
 
 .dashboard-sprint-card tr.dashboard-sprint-active td:first-child {
   box-shadow: inset 3px 0 0 0 rgba(52, 211, 153, 0.75);
+}
+
+/* Month + sprint leave grids: fit within viewport (no horizontal scroll) + sticky lead columns */
+.worksheet-wrap.ws-month-fit {
+  overflow-x: visible;
+  max-width: 100%;
+  --ws-name-col: clamp(8.25rem, 19vw, 12.5rem);
+  --ws-total-w: 2.35rem;
+  --ws-eleave-w: 0;
+  --ws-gap-w: 0;
+  --ws-lead-cols-w: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
+}
+
+.ws-month-fit.ws-lead-5 {
+  --ws-eleave-w: 4.25rem;
+  --ws-gap-w: 2.65rem;
+}
+
+/* Dashboard month grid: optional # column before name (sticky strip). */
+.ws-month-fit.ws-lead-5.ws-has-rownum {
+  --ws-rownum-w: 2.1rem;
+  --ws-lead-cols-w: calc(
+    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w)
+  );
+}
+
+.ws-month-fit .ws-table th.ws-rownum-col,
+.ws-month-fit .ws-table td.ws-rownum-col {
+  width: var(--ws-rownum-w);
+  min-width: var(--ws-rownum-w);
+  max-width: var(--ws-rownum-w);
+  left: 0;
+  padding: 0.2rem 0.06rem;
+  text-align: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: rgba(30, 41, 59, 0.98) !important;
+  color: #94a3b8 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
+  z-index: 3;
+  position: sticky;
+}
+
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-name,
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-name {
+  left: var(--ws-rownum-w);
+}
+
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-total-col,
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-total-col {
+  left: calc(var(--ws-rownum-w) + var(--ws-name-col));
+}
+
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-eleave-col,
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-eleave-col {
+  left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w));
+}
+
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-gap-col,
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-gap-col {
+  left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w));
+}
+
+.ws-month-fit .ws-table {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  font-size: clamp(0.5rem, 0.48vw + 0.4rem, 0.72rem);
+}
+
+.ws-month-fit .ws-table th,
+.ws-month-fit .ws-table td {
+  padding: 0.14rem 0.05rem;
+}
+
+.ws-month-fit .ws-table th.ws-name,
+.ws-month-fit .ws-table td.ws-name {
+  width: var(--ws-name-col);
+  min-width: 8.25rem;
+  max-width: 12.5rem;
+  left: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  line-height: 1.2;
+  padding: 0.22rem 0.3rem;
+  font-size: clamp(0.5rem, 0.45vw + 0.38rem, 0.68rem);
+}
+
+.ws-month-fit .ws-table th.ws-total-col,
+.ws-month-fit .ws-table td.ws-total-col {
+  width: var(--ws-total-w);
+  min-width: var(--ws-total-w);
+  max-width: var(--ws-total-w);
+  left: var(--ws-name-col);
+  padding: 0.2rem 0.08rem;
+  text-align: center;
+  font-weight: 700;
+  background: rgba(30, 41, 59, 0.98) !important;
+  color: #e2e8f0 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  position: sticky;
+}
+
+.ws-month-fit .ws-table th.ws-eleave-col,
+.ws-month-fit .ws-table td.ws-eleave-col {
+  width: var(--ws-eleave-w);
+  min-width: var(--ws-eleave-w);
+  max-width: var(--ws-eleave-w);
+  left: calc(var(--ws-name-col) + var(--ws-total-w));
+  padding: 0.12rem 0.06rem;
+  text-align: center;
+  vertical-align: middle;
+  font-weight: 600;
+  background: rgba(30, 41, 59, 0.98) !important;
+  color: #e2e8f0 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  position: sticky;
+}
+
+.ws-month-fit .ws-table th.ws-gap-col,
+.ws-month-fit .ws-table td.ws-gap-col {
+  width: var(--ws-gap-w);
+  min-width: var(--ws-gap-w);
+  max-width: var(--ws-gap-w);
+  left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w));
+  padding: 0.2rem 0.06rem;
+  text-align: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: rgba(30, 41, 59, 0.98) !important;
+  color: #cbd5e1 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  position: sticky;
+}
+
+.ws-month-fit .ws-table td.ws-gap-col.ws-gap-col-negative {
+  color: #f87171 !important;
+}
+
+.ws-month-fit .ws-eleave-input {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.12rem 0.08rem;
+  font: inherit;
+  font-size: clamp(0.48rem, 0.42vw + 0.34rem, 0.66rem);
+  font-weight: 600;
+  text-align: center;
+  border-radius: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(15, 23, 42, 0.9);
+  color: #f1f5f9;
+}
+
+.ws-month-fit .ws-eleave-display {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.1rem 0.04rem;
+  font-size: clamp(0.48rem, 0.42vw + 0.34rem, 0.66rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: #86efac;
+}
+
+.ws-month-fit .ws-eleave-input:focus {
+  outline: 2px solid rgba(56, 189, 248, 0.55);
+  outline-offset: 1px;
+}
+
+.ws-month-fit .ws-cell-interactive,
+.ws-month-fit .ws-cell-interactive-add {
+  cursor: pointer;
+}
+
+.ws-month-fit .ws-cell-interactive:focus-visible,
+.ws-month-fit .ws-cell-interactive-add:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.45);
+  outline-offset: 1px;
+}
+
+.ws-month-fit .ws-name {
+  position: sticky;
+  z-index: 2;
+}
+
+.ws-month-fit .ws-table thead tr:first-child th.ws-dayhead,
+.ws-month-fit .ws-table thead tr:last-child th {
+  width: calc((100% - var(--ws-lead-cols-w)) / var(--ws-days, 31));
+  min-width: 0;
+  padding-left: 0.04rem;
+  padding-right: 0.04rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Weekday row (MON, TUE, …): smaller type so 3-letter labels fit narrow day cells */
+.ws-month-fit .ws-table thead tr:first-child th.ws-dayhead {
+  font-size: clamp(0.36rem, 0.32vw + 0.24rem, 0.5rem);
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  line-height: 1.05;
+}
+
+/* Sprint month grid: Name + Total, then day columns from 3rd cell */
+.ws-month-fit:not(.ws-lead-5) .ws-table tbody td:nth-child(n + 3) {
+  width: calc((100% - var(--ws-lead-cols-w)) / var(--ws-days, 31));
+  min-width: 0;
+}
+
+/* Dashboard month grid: Name + Total + eLeaveCount + GAP, then day columns from 5th cell */
+.ws-month-fit.ws-lead-5:not(.ws-has-rownum) .ws-table tbody td:nth-child(n + 5) {
+  width: calc((100% - var(--ws-lead-cols-w)) / var(--ws-days, 31));
+  min-width: 0;
+}
+
+/* Same layout with leading # column: day cells from 6th td */
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table tbody td:nth-child(n + 6) {
+  width: calc((100% - var(--ws-lead-cols-w)) / var(--ws-days, 31));
+  min-width: 0;
+}
+
+.ws-month-fit .ws-cell {
+  min-width: 0 !important;
+  height: auto;
+  min-height: 1.45rem;
+  font-size: clamp(0.48rem, 0.44vw + 0.36rem, 0.66rem);
 }

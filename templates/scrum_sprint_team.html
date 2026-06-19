@@ -2,7 +2,7 @@
 {% block title %}Sprint — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=31) }}" />
 {% endblock %}
 {% block content %}
   {% macro scrum_col_label(c) -%}
@@ -10,20 +10,37 @@
   {%- endmacro %}
   <section class="card scrum-board-hero scrum-team-hero">
     <div class="scrum-team-hero-layout">
-      <div class="scrum-team-hero-main{% if sprint_readonly %} scrum-team-readonly{% endif %}">
+      <div class="scrum-team-hero-main{% if sprint_board_readonly %} scrum-team-readonly{% endif %}">
         <p class="scrum-hero-back"><a href="{{ url_for('scrum') }}">← Sprint hub</a></p>
         <div class="scrum-team-hero-title-row scrum-team-hero-title-row--solo">
           <h2 class="page-heading scrum-hero-title scrum-team-hero-title-text">
-            {{ sprint_name }}{% if sprint_team_capacity_hours is not none %} <span class="scrum-hero-title-cap">({{ "%.1f"|format(sprint_team_capacity_hours) }}h)</span>{% endif %}
+            <span class="scrum-team-hero-title-name">{{ sprint_name }}</span>
+            {% if sprint_team_capacity_hours is not none %}
+              <span
+                class="scrum-hero-title-cap scrum-hero-title-cap--sprint-net"
+                id="sprint-capacity-line"
+                data-start="{{ sprint_start }}"
+                data-end="{{ sprint_end }}"
+                data-capacity-url="{{ url_for('scrum_api_sprint_team_capacity') }}"
+                title="Mon–Fri × roster × 8h, minus pending/approved leave for this sprint window. Refreshes on reload; open sprints also refresh every 2 minutes while this tab is visible."
+              >
+                <span class="scrum-cap-sep" aria-hidden="true">·</span>
+                <span class="scrum-cap-label">Sprint capacity</span>
+                <span class="scrum-cap-value-wrap"> <span id="sprint-team-capacity-live">{{ "%.1f"|format(sprint_team_capacity_hours) }}</span><span class="scrum-cap-unit"> h</span></span>
+                <span class="scrum-cap-sublabel">net, weekdays after leave</span>
+              </span>
+            {% endif %}
           </h2>
         </div>
         <div class="scrum-sprint-dates-below-name">
-          <p class="scrum-sprint-dates-below-summary" id="sprint-dates-summary" aria-live="polite">{{ sprint_start }} → {{ sprint_end }}</p>
+          <p class="scrum-sprint-dates-below-summary" id="sprint-dates-summary" aria-live="polite">
+            <span id="sprint-dates-summary-start">{{ sprint_start }}</span><span class="scrum-sprint-dates-summary-hint"> · 14 calendar days</span>
+          </p>
           <form method="post" action="{{ url_for('scrum_sprint_update') }}" class="scrum-sprint-dates-below-form">
             {% include "partials/csrf.html" %}
             <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
             <div class="scrum-sprint-dates-below-grid">
-              <div class="scrum-sprint-dates-below-field">
+              <div class="scrum-sprint-dates-below-field scrum-sprint-dates-below-field-start">
                 <label class="scrum-sprint-dates-below-label" for="sprint-edit-start">Start</label>
                 <input
                   id="sprint-edit-start"
@@ -31,25 +48,12 @@
                   type="date"
                   required
                   value="{{ sprint_start }}"
-                  {% if sprint_readonly %}readonly class="scrum-sprint-date-readonly scrum-sprint-dates-below-input"{% else %}class="scrum-sprint-dates-below-input"{% endif %}
-                  title="{% if sprint_readonly %}Sprint start (read-only){% else %}Sprint start — end is always 14 calendar days from this date (inclusive){% endif %}"
-                />
-              </div>
-              <div class="scrum-sprint-dates-below-field">
-                <label class="scrum-sprint-dates-below-label" for="sprint-preview-end">End</label>
-                <input
-                  id="sprint-preview-end"
-                  type="date"
-                  readonly
-                  class="scrum-sprint-date-readonly scrum-sprint-dates-below-input scrum-sprint-dates-below-end"
-                  value="{{ sprint_end }}"
-                  tabindex="0"
-                  title="Follows start: 14 calendar days inclusive (not sent on save)."
-                  aria-readonly="true"
+                  {% if sprint_board_readonly %}readonly class="scrum-sprint-date-readonly scrum-sprint-dates-below-input"{% else %}class="scrum-sprint-dates-below-input"{% endif %}
+                  title="{% if sprint_board_readonly %}Sprint start (read-only){% else %}Sprint start — end is always 14 calendar days from this date (inclusive). Save applies both dates.{% endif %}"
                 />
               </div>
               <div class="scrum-sprint-dates-below-save">
-                {% if sprint_readonly %}
+                {% if sprint_board_readonly %}
                   <span class="scrum-readonly-hint">Read-only</span>
                 {% else %}
                   <button type="submit" class="btn secondary small">Save</button>
@@ -58,45 +62,49 @@
             </div>
           </form>
         </div>
-        <div class="scrum-team-hero-oneline" role="group" aria-label="Sprint quick links and status">
-          {% if sprint_readonly %}
-            <span class="scrum-sprint-status-pill scrum-sprint-status-pill-closed">CLOSED</span>
-          {% else %}
-            <span class="scrum-sprint-status-pill scrum-sprint-status-pill-open">OPEN</span>
-          {% endif %}
-          <span class="scrum-team-hero-oneline-sep" aria-hidden="true">·</span>
-          <span class="scrum-sprint-leave-view scrum-team-hero-oneline-leave">
-            <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
-          </span>
-        </div>
-        <div class="scrum-sprint-lifecycle-row">
-          <div class="scrum-sprint-lifecycle-actions">
-            {% if sprint_readonly %}
-              <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form">
+        <div class="scrum-team-hero-actions" role="group" aria-label="Sprint status, links, and lifecycle">
+          <div class="scrum-team-hero-actions-meta">
+            <div class="scrum-team-hero-actions-status">
+              {% if sprint_status_label == 'CLOSED' %}
+                <span class="scrum-sprint-status-pill scrum-sprint-status-pill-closed" title="Manually closed">CLOSED</span>
+              {% elif sprint_status_label == 'ENDED' %}
+                <span class="scrum-sprint-status-pill scrum-sprint-status-pill-closed scrum-sprint-status-pill-ended" title="Sprint window ended — board frozen at last day">ENDED</span>
+              {% else %}
+                <span class="scrum-sprint-status-pill scrum-sprint-status-pill-open" title="Sprint accepts edits">OPEN</span>
+              {% endif %}
+            </div>
+            <nav class="scrum-team-hero-actions-links" aria-label="Sprint views">
+              <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
+              <a class="scrum-sprint-hppm-link" href="{{ url_for('scrum_sprint_hppm_view', sprint_id=sprint_id) }}">HPPM view</a>
+            </nav>
+          </div>
+          <div class="scrum-team-hero-actions-lifecycle">
+            {% if sprint_manually_closed %}
+              <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form scrum-team-hero-lifecycle-form">
                 {% include "partials/csrf.html" %}
                 <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                <button type="submit" class="btn secondary small">Open sprint</button>
+                <button type="submit" class="btn secondary small scrum-team-hero-lifecycle-btn">Open sprint</button>
               </form>
             {% else %}
-              <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
+              <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form scrum-team-hero-lifecycle-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
                 {% include "partials/csrf.html" %}
                 <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                <button type="submit" class="btn secondary small">Close sprint</button>
+                <button type="submit" class="btn secondary small scrum-team-hero-lifecycle-btn">Close sprint</button>
               </form>
             {% endif %}
+            <form
+              id="scrum-sprint-delete-form"
+              method="post"
+              action="{{ url_for('scrum_sprint_delete') }}"
+              class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline scrum-team-hero-lifecycle-form"
+            >
+              {% include "partials/csrf.html" %}
+              <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+              <button type="button" class="btn secondary small danger-ghost scrum-team-hero-lifecycle-btn" id="scrum-delete-sprint-open" title="Permanently delete this sprint and all stickies (works for closed or ended sprints too)">
+                Delete sprint
+              </button>
+            </form>
           </div>
-          <form
-            id="scrum-sprint-delete-form"
-            method="post"
-            action="{{ url_for('scrum_sprint_delete') }}"
-            class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline"
-          >
-            {% include "partials/csrf.html" %}
-            <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-            <button type="button" class="btn secondary small danger-ghost" id="scrum-delete-sprint-open" {% if sprint_readonly %}disabled title="Open the sprint before deleting"{% endif %}>
-              Delete sprint
-            </button>
-          </form>
         </div>
 
         {% if (portal_proposals_pending|default(0)) > 0 %}
@@ -134,61 +142,7 @@
       </div>
 
       <div class="scrum-team-charts-wrap">
-        <aside class="scrum-team-kind-stack" aria-label="Estimated versus burnt hours by task type">
-          {% if kind_stack_has_chart %}
-            <div class="scrum-bd-head">
-              <div class="scrum-bd-stats">
-                <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Est. (by type)</span> <strong>{{ "%.1f"|format(kind_stack_total_est) }}h</strong></span>
-                <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Burnt (by type)</span> <strong>{{ "%.1f"|format(kind_stack_total_burnt) }}h</strong></span>
-              </div>
-              <h3 class="scrum-bd-title">Type stack</h3>
-              <div class="scrum-bd-legend scrum-kst-legend">
-                <span class="scrum-bd-leg scrum-kst-leg-burnt"><i></i>Burnt ≤ est.</span>
-                <span class="scrum-bd-leg scrum-kst-leg-over"><i></i>Burnt over est.</span>
-                <span class="scrum-bd-leg scrum-kst-leg-rem"><i></i>Est. remaining</span>
-              </div>
-            </div>
-            <div class="scrum-bd-chart-wrap">
-              <svg
-                class="scrum-bd-svg"
-                viewBox="0 0 {{ kind_stack_svg_w }} {{ kind_stack_svg_h }}"
-                preserveAspectRatio="xMidYMid meet"
-                role="img"
-                aria-label="Stacked bars: estimated versus burnt hours per task type for this sprint"
-              >
-                {% for t in kind_stack_y_ticks %}
-                  <line class="scrum-bd-grid" x1="46" y1="{{ t.y }}" x2="{{ kind_stack_svg_w - 12 }}" y2="{{ t.y }}" />
-                  <text class="scrum-bd-y-label" x="4" y="{{ t.y + 4 }}">{{ t.label }}</text>
-                {% endfor %}
-                {% for b in kind_stack_bars %}
-                  <g class="scrum-kst-bar-group">
-                    <title>{{ b.title }}</title>
-                    {% for s in b.segments %}
-                      <rect
-                        class="scrum-kst-rect"
-                        x="{{ s.x }}"
-                        y="{{ s.y }}"
-                        width="{{ s.w }}"
-                        height="{{ s.h }}"
-                        fill="{{ s.fill }}"
-                        rx="3"
-                        ry="3"
-                      />
-                    {% endfor %}
-                  </g>
-                {% endfor %}
-                {% for b in kind_stack_bars %}
-                  <text class="scrum-bd-x-label" x="{{ b.cx }}" y="{{ kind_stack_svg_h - 8 }}" text-anchor="middle">{{ b.label_short }}</text>
-                {% endfor %}
-                <text class="scrum-bd-axis-title" x="{{ kind_stack_svg_w / 2 }}" y="{{ kind_stack_svg_h - 1 }}" text-anchor="middle">{{ kind_stack_axis_label }}</text>
-              </svg>
-            </div>
-          {% else %}
-            <h3 class="scrum-bd-title">Type stack</h3>
-            <p class="scrum-bd-empty">{{ kind_stack_message }}</p>
-          {% endif %}
-        </aside>
-
+        {% include "partials/scrum_kind_stack_panel.html" %}
         <aside class="scrum-team-burndown" aria-label="Sprint burndown">
         {% if burndown_has_chart %}
           <div class="scrum-bd-head">
@@ -251,6 +205,10 @@
     <div class="scrum-team-shell-head">
       <div class="scrum-team-shell-title-row">
         <h3 class="scrum-team-shell-title">Team overview</h3>
+        <a
+          class="scrum-team-shell-detail-link"
+          href="{{ url_for('scrum_sprint_team_detailed', sprint_id=sprint_id) }}"
+        >Team Overview Detailed</a>
         <span class="scrum-team-shell-bracketed-actions" role="group" aria-label="Expand or collapse all member rows">
           <span class="scrum-team-shell-paren" aria-hidden="true">{</span>
           <button type="button" class="scrum-team-bulk-toggle btn secondary small" id="scrum-team-expand-all" aria-label="Expand all member rows">
@@ -272,7 +230,7 @@
             <th scope="col" class="scrum-th-queue">Queue <span class="scrum-th-hint">B·D·Dg·Dn</span></th>
             <th scope="col" class="scrum-th-effort">Estimated vs Burnt</th>
             <th scope="col" class="scrum-th-doing">In progress</th>
-            <th scope="col" class="scrum-th-notes">Latest activity</th>
+            <th scope="col" class="scrum-th-notes">Latest comment</th>
           </tr>
         </thead>
         <tbody id="scrum-team-member-tbody">
@@ -302,8 +260,10 @@
                   </div>
                   <div class="scrum-member-peek">
                     {% if m.task_count > 0 and m.progress_pct is not none %}
-                      <span class="scrum-member-peek-burn">{{ "%.0f"|format(m.progress_pct) }}%</span>
-                      <span class="scrum-member-peek-hrs">Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)</span>
+                      <span class="scrum-sprint-burnt-highlight scrum-sprint-burnt-highlight--peek">
+                        <span class="scrum-member-peek-burn">{{ "%.0f"|format(m.progress_pct) }}%</span>
+                        <span class="scrum-member-peek-hrs">Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)</span>
+                      </span>
                     {% elif m.task_count > 0 %}
                       <span class="scrum-member-peek-muted">Sprint burnt needs a positive total estimate</span>
                     {% else %}
@@ -316,7 +276,9 @@
                   <div class="scrum-member-collapsed-summary">
                     <div class="scrum-cl-line">
                       {% if m.task_count > 0 and m.progress_pct is not none %}
-                        <strong>{{ "%.0f"|format(m.progress_pct) }}%</strong> Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)
+                        <span class="scrum-sprint-burnt-highlight">
+                          <strong>{{ "%.0f"|format(m.progress_pct) }}%</strong> Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)
+                        </span>
                         {% if m.pending_portal %}
                           <span class="scrum-member-collapsed-pend"> · {{ (m.pending_portal or [])|length }} portal pending</span>
                         {% endif %}
@@ -707,8 +669,13 @@
                       {% if n.committed_hours and n.committed_hours > 0.0001 %}
                         <span> +{{ "%.1f"|format(n.committed_hours) }}h</span>
                       {% endif %}
-                      {% if n.title %}
-                        <span> · {{ n.title[:44] }}{% if n.title|length > 44 %}…{% endif %}</span>
+                      {% set snippet = n.body.strip() if n.body else "" %}
+                      {% if snippet %}
+                        <span> · {{ snippet[:44] }}{% if snippet|length > 44 %}…{% endif %}</span>
+                      {% elif n.committed_hours and n.committed_hours > 0.0001 %}
+                        <span class="scrum-cl-line-muted"> · (hours, no text)</span>
+                      {% else %}
+                        <span class="scrum-cl-line-muted"> · —</span>
                       {% endif %}
                     </div>
                   {% endfor %}
@@ -733,13 +700,15 @@
                             <span class="scrum-note-move">In progress update</span>
                           {% endif %}
                         </div>
-                        {% if n.title %}
-                          <div class="scrum-note-task">{{ n.title[:70] }}{% if n.title|length > 70 %}…{% endif %}</div>
-                        {% endif %}
-                        {% if n.body %}
-                          <p class="scrum-note-body">{{ n.body[:160] }}{% if n.body|length > 160 %}…{% endif %}</p>
+                        {% set nb = n.body.strip() if n.body else "" %}
+                        {% if nb %}
+                          <div class="scrum-note-task">{{ nb[:200] }}{% if nb|length > 200 %}…{% endif %}</div>
                         {% elif n.committed_hours and n.committed_hours > 0.0001 %}
-                          <p class="scrum-note-body scrum-note-body-muted">Hours logged (no text).</p>
+                          <p class="scrum-note-body scrum-note-body-muted">Hours logged (no comment text).</p>
+                        {% elif n.from_column and n.to_column and n.from_column != n.to_column %}
+                          <p class="scrum-note-body scrum-note-body-muted">Column change (no comment text).</p>
+                        {% else %}
+                          <p class="scrum-note-body scrum-note-body-muted">—</p>
                         {% endif %}
                       </div>
                     {% endfor %}
@@ -830,37 +799,41 @@
     })();
     (function () {
       var startEl = document.getElementById("sprint-edit-start");
-      var endEl = document.getElementById("sprint-preview-end");
-      if (!startEl || !endEl || startEl.readOnly) return;
-      function sprintEndInclusiveTwoWeeks(startIso) {
-        if (!startIso || startIso.length < 10) return "";
-        var p = startIso.slice(0, 10).split("-");
-        var y = parseInt(p[0], 10);
-        var mo = parseInt(p[1], 10) - 1;
-        var d = parseInt(p[2], 10);
-        if (isNaN(y) || isNaN(mo) || isNaN(d)) return "";
-        var dt = new Date(Date.UTC(y, mo, d));
-        dt.setUTCDate(dt.getUTCDate() + 13);
-        return (
-          dt.getUTCFullYear() +
-          "-" +
-          String(dt.getUTCMonth() + 1).padStart(2, "0") +
-          "-" +
-          String(dt.getUTCDate()).padStart(2, "0")
-        );
-      }
+      if (!startEl || startEl.readOnly) return;
       function sync() {
         var s = startEl.value;
-        if (!s) return;
-        var e = sprintEndInclusiveTwoWeeks(s);
-        if (!e) return;
-        endEl.value = e;
-        var sum = document.getElementById("sprint-dates-summary");
-        if (sum) sum.textContent = s + " → " + e;
+        if (!s || s.length < 10) return;
+        var startSpan = document.getElementById("sprint-dates-summary-start");
+        if (startSpan) startSpan.textContent = s.slice(0, 10);
       }
       startEl.addEventListener("change", sync);
       startEl.addEventListener("input", sync);
       sync();
+    })();
+    (function () {
+      var line = document.getElementById("sprint-capacity-line");
+      var capLive = document.getElementById("sprint-team-capacity-live");
+      if (!line || !capLive) return;
+      var url = line.getAttribute("data-capacity-url");
+      var sd = line.getAttribute("data-start");
+      var ed = line.getAttribute("data-end");
+      if (!url || !sd || !ed) return;
+      function pullCapacity() {
+        fetch(url + "?start_date=" + encodeURIComponent(sd) + "&end_date=" + encodeURIComponent(ed))
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (j) {
+            if (j && j.ok && typeof j.hours === "number") {
+              capLive.textContent = j.hours.toFixed(1);
+            }
+          })
+          .catch(function () {});
+      }
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) pullCapacity();
+      });
+      setInterval(pullCapacity, 120000);
     })();
     (function () {
       function setTeamRowExpanded(row, expanded) {

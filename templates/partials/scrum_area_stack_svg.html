@@ -1,0 +1,54 @@
+<svg
+  class="scrum-bd-svg scrum-area-stack-svg"
+  viewBox="0 0 {{ area_stack_svg_w }} {{ area_stack_svg_h }}"
+  preserveAspectRatio="xMidYMid meet"
+  role="img"
+  aria-label="Horizontal bars: estimated versus burnt hours per task area"
+>
+  {% for b in area_stack_bars %}
+    {% if b.row_idx % 2 == 0 %}
+      <rect
+        class="scrum-area-stack-row-band"
+        x="{{ area_stack_band_x }}"
+        y="{{ b.row_y0 }}"
+        width="{{ area_stack_band_w }}"
+        height="{{ (b.row_y1 - b.row_y0) }}"
+      />
+    {% endif %}
+  {% endfor %}
+  {% for t in area_stack_x_ticks %}
+    <line class="scrum-bd-grid scrum-area-stack-vgrid" x1="{{ t.x }}" y1="{{ area_stack_chart_y0 }}" x2="{{ t.x }}" y2="{{ area_stack_chart_y1 }}" />
+  {% endfor %}
+  <line
+    class="scrum-area-stack-baseline"
+    x1="{{ area_stack_chart_x0 }}"
+    y1="{{ area_stack_chart_y1 }}"
+    x2="{{ area_stack_svg_w - area_stack_pad_r }}"
+    y2="{{ area_stack_chart_y1 }}"
+  />
+  {% for b in area_stack_bars %}
+    <g class="scrum-area-stack-hbar-row">
+      <title>{{ b.title }}</title>
+      {% for s in b.segments %}
+        <rect
+          class="scrum-kst-rect scrum-area-stack-hseg"
+          x="{{ s.x }}"
+          y="{{ s.y }}"
+          width="{{ s.w }}"
+          height="{{ s.h }}"
+          fill="{{ s.fill }}"
+          rx="2"
+          ry="2"
+        />
+      {% endfor %}
+    </g>
+  {% endfor %}
+  {% for b in area_stack_bars %}
+    <text class="scrum-area-stack-row-label" x="{{ b.label_x }}" y="{{ b.label_y }}" text-anchor="end">{{ b.label }}</text>
+  {% endfor %}
+  {% for t in area_stack_x_ticks %}
+    <text class="scrum-area-stack-haxis-label" x="{{ t.x }}" y="{{ area_stack_x_tick_y }}" text-anchor="middle">{{ t.label }}</text>
+  {% endfor %}
+  {% set _axis_mid = (area_stack_chart_x0 + (area_stack_svg_w - area_stack_pad_r)) / 2 %}
+  <text class="scrum-area-stack-axis-title-h" x="{{ _axis_mid }}" y="{{ area_stack_axis_title_y }}" text-anchor="middle">{{ area_stack_axis_label }}</text>
+</svg>

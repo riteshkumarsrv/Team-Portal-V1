@@ -4,7 +4,7 @@
 Does not delete teams, leave data, or scrum data — only the manager login row.
 
 Usage:
-  set TEAM_TRACKER_DB_PATH=path\\to\\team_tracker.db   (optional; default: ./data/team_tracker.db next to app.py)
+  set TEAM_TRACKER_DB_PATH=path\\to\\team_tracker.db   (optional; default: ./data/team_tracker.db in the project root)
   python scripts/delete_manager_account.py user@example.com
 """
 

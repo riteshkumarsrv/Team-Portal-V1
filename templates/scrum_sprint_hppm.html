@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}HPPM view — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
+{% block body_class %}page-scrum-board{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=35) }}" />
+{% endblock %}
+{% block content %}
+  <section class="card scrum-board-hero scrum-team-hero scrum-hppm-hero">
+    <p class="scrum-hero-back">
+      <a href="{{ url_for('scrum_sprint_team', sprint_id=sprint_id) }}">← Sprint team</a>
+    </p>
+    <h2 class="page-heading scrum-hero-title">HPPM view · {{ sprint_name }}</h2>
+    <p class="scrum-hppm-dates">{{ sprint_start }} → {{ sprint_end }}</p>
+    {% set sprint_freeze_mode = sprint_freeze_mode|default(none) %}
+    {% if sprint_readonly %}
+      <p class="scrum-kb-readonly-banner" role="status">
+        {% if sprint_freeze_mode == 'sprint_closed' %}
+        This sprint is <strong>closed</strong> — charts reflect the last saved state.
+        {% else %}
+        This sprint’s <strong>end date has passed</strong> — charts reflect work through the last sprint day only.
+        {% endif %}
+      </p>
+    {% endif %}
+    <p class="scrum-hppm-lede">
+      Sprint <strong>estimated vs burnt</strong> by sticky type (Type stack) and by area (Area stack). The type chart height matches the area chart when both are shown. Tables use HPPM work-type names mapped from sticky types; <strong>Absences</strong> are team leave hours for this sprint window (weekday leave day-units × 8h, same grid as SprintLeaveView).
+    </p>
+  </section>
+
+  <section class="card scrum-hppm-charts-card">
+    <div class="scrum-hppm-charts-row">
+      <div class="scrum-hppm-type-col">
+        <div class="scrum-team-charts-wrap scrum-hppm-type-stack-wrap">
+          {% include "partials/scrum_kind_stack_panel.html" %}
+        </div>
+      </div>
+      <div class="scrum-hppm-area-col">
+        <div class="scrum-team-area-stack-row scrum-hppm-area-row">
+          {% include "partials/scrum_area_stack_panel.html" %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card scrum-hppm-tables">
+    <h3 class="scrum-hppm-section-title">HPPM summary (estimate &amp; burnt by work type)</h3>
+    {% if hppm_team_capacity_gross_hours is not none %}
+      <p class="scrum-hppm-cap-footnote scrum-hppm-cap-footnote--pct">
+        <strong>% Team Sprint Estimate</strong> = that row’s estimate hours ÷ <strong>total estimate hours</strong> in this table (the Total row shows <strong>100%</strong>). <strong>% Team Burnt</strong> = <strong>100 × burnt ÷ estimate</strong> for that row; the Total row is <strong>100 × (sum burnt ÷ sum estimate)</strong>.
+      </p>
+      <p class="scrum-hppm-cap-footnote">
+        Reference — <strong>gross</strong> team sprint capacity: <strong>{{ "%.1f"|format(hppm_team_capacity_gross_hours) }}h</strong> (Mon–Fri × roster × 8h, before leave). <strong>Net</strong> after leave: {% if hppm_team_capacity_net_hours is not none %}<strong>{{ "%.1f"|format(hppm_team_capacity_net_hours) }}h</strong>{% else %}<strong>—</strong>{% endif %}.
+      </p>
+    {% else %}
+      <p class="scrum-hppm-cap-footnote">
+        <strong>% Team Sprint Estimate</strong> is each row’s share of total estimate hours (Total = 100%). <strong>% Team Burnt</strong> is burnt ÷ estimate × 100 per row (Total = total burnt ÷ total estimate × 100). Gross/net team capacity is unavailable without roster and sprint dates.
+      </p>
+    {% endif %}
+    <div class="scrum-hppm-table-wrap">
+      <table class="scrum-hppm-table scrum-hppm-summary-table">
+        <thead>
+          <tr>
+            <th scope="col">Pool name</th>
+            <th scope="col">Work type</th>
+            <th scope="col" class="scrum-hppm-num-col">Estimate sprint (h)</th>
+            <th scope="col" class="scrum-hppm-num-col scrum-hppm-pct-col">% Team Sprint Estimate</th>
+            <th scope="col" class="scrum-hppm-num-col scrum-hppm-th-sprint-burnt">{{ sprint_name }} · Burnt (h)</th>
+            <th scope="col" class="scrum-hppm-num-col scrum-hppm-pct-col">% Team Burnt</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in hppm_summary_rows %}
+            <tr{% if row.is_absence %} class="scrum-hppm-row-absence"{% endif %}>
+              <td>{{ hppm_pool_name }}</td>
+              <td>{{ row.work_type }}</td>
+              <td class="scrum-hppm-num-col">
+                {% if row.estimate_hours is not none %}{{ "%.4f"|format(row.estimate_hours) }}{% else %}—{% endif %}
+              </td>
+              <td class="scrum-hppm-num-col scrum-hppm-pct-col">
+                {% if row.pct_capacity_estimate is not none %}{{ "%.2f"|format(row.pct_capacity_estimate) }}%{% else %}—{% endif %}
+              </td>
+              <td class="scrum-hppm-num-col">{{ "%.4f"|format(row.burnt_hours) }}</td>
+              <td class="scrum-hppm-num-col scrum-hppm-pct-col">
+                {% if row.pct_capacity_burnt is not none %}{{ "%.2f"|format(row.pct_capacity_burnt) }}%{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="scrum-hppm-summary-total-row">
+            <td colspan="2"><strong>Total</strong></td>
+            <td class="scrum-hppm-num-col"><strong>{{ "%.4f"|format(hppm_summary_totals.estimate_hours) }}</strong></td>
+            <td class="scrum-hppm-num-col scrum-hppm-pct-col">
+              {% if hppm_summary_totals.pct_capacity_estimate is not none %}<strong>{{ "%.2f"|format(hppm_summary_totals.pct_capacity_estimate) }}%</strong>{% else %}<strong>—</strong>{% endif %}
+            </td>
+            <td class="scrum-hppm-num-col"><strong>{{ "%.4f"|format(hppm_summary_totals.burnt_hours) }}</strong></td>
+            <td class="scrum-hppm-num-col scrum-hppm-pct-col">
+              {% if hppm_summary_totals.pct_capacity_burnt is not none %}<strong>{{ "%.2f"|format(hppm_summary_totals.pct_capacity_burnt) }}%</strong>{% else %}<strong>—</strong>{% endif %}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <h3 class="scrum-hppm-section-title">All stickies (HPPM work type &amp; burnt)</h3>
+    <div class="scrum-hppm-table-wrap scrum-hppm-table-scroll">
+      <table class="scrum-hppm-table scrum-hppm-tasks-table">
+        <thead>
+          <tr>
+            <th scope="col">Pool name</th>
+            <th scope="col">Work type</th>
+            <th scope="col">Area type</th>
+            <th scope="col">Title</th>
+            <th scope="col">Assignee</th>
+            <th scope="col" class="scrum-hppm-num-col">Est. (h)</th>
+            <th scope="col" class="scrum-hppm-num-col">Burnt (h)</th>
+            <th scope="col" class="scrum-hppm-num-col scrum-hppm-pct-col">Burnt %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in hppm_task_rows %}
+            <tr>
+              <td>{{ t.pool_name }}</td>
+              <td>{{ t.work_type }}</td>
+              <td class="scrum-hppm-area-type-cell">{{ t.area_type }}</td>
+              <td class="scrum-hppm-title-cell">{{ t.title }}</td>
+              <td>{{ t.assignee }}</td>
+              <td class="scrum-hppm-num-col">{{ "%.2f"|format(t.estimate_hours) }}</td>
+              <td class="scrum-hppm-num-col">{{ "%.4f"|format(t.burnt_hours) }}</td>
+              <td class="scrum-hppm-num-col scrum-hppm-pct-col">
+                {% if t.burnt_pct is not none %}{{ "%.2f"|format(t.burnt_pct) }}%{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" class="scrum-hppm-empty-row">No stickies in this sprint yet.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

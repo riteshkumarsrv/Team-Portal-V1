@@ -4,20 +4,43 @@ from __future__ import annotations
 
 import io
 import re
-from datetime import datetime, timedelta, timezone
+import uuid
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from app import (
     EMPLOYEES,
+    NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER,
+    SCRUM_KANBAN_WEEKDAY_HOURS,
     create_app,
     fuzzy_employee_matches,
     get_db,
     parse_nokia_grid_combined,
+    parse_nokia_employee_summary_leave_dates,
     parse_nokia_grid_tsv,
     parse_nokia_grid_whitespace,
     resolve_employee_name,
+    build_month_context,
+    _available_hours_for_assignee_sprint_window,
+    _nokia_reason_and_label_from_line,
+    _nokia_eleavetool_type_display,
+    _nokia_paste_approved_preview_rows,
+    _parse_nokia_audit_dd_mm_range,
 )
+
+
+def _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path: str) -> None:
+    """After ``load_dotenv``, restore ``TEAM_TRACKER_DB_PATH`` so project ``.env`` cannot override test DB."""
+    import config as config_module
+
+    _real_load_dotenv = config_module.load_dotenv
+
+    def _load_dotenv_then_restore_test_db(*args, **kwargs):
+        _real_load_dotenv(*args, **kwargs)
+        monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+
+    monkeypatch.setattr(config_module, "load_dotenv", _load_dotenv_then_restore_test_db)
 
 
 def test_roster_fuzzy():
@@ -27,12 +50,19 @@ def test_roster_fuzzy():
 
 @pytest.fixture()
 def app(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "test.db"))
+    """Isolated SQLite under tmp_path; pin TEAM_TRACKER_DB_PATH after create_app's dotenv load."""
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.setenv("MICROSOFT_OAUTH_CLIENT_ID", "test-ms-client-id")
     monkeypatch.setenv("MICROSOFT_OAUTH_CLIENT_SECRET", "test-ms-client-secret")
-    application = create_app()
+
+    import app as app_module
+
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
+
+    application = app_module.create_app()
     application.config["TESTING"] = True
     monkeypatch.setenv("TEAM_TRACKER_AUTO_TESSERACT", "0")
     return application
@@ -72,7 +102,9 @@ def test_home_ok(client):
 
 
 def test_home_shows_email_otp_when_smtp_only(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "otp_home.db"))
+    db_path = str(tmp_path / "otp_home.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.delenv("MICROSOFT_OAUTH_CLIENT_ID", raising=False)
@@ -88,7 +120,9 @@ def test_home_shows_email_otp_when_smtp_only(tmp_path, monkeypatch):
 
 
 def test_home_auto_enables_dev_otp_when_unconfigured(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "auto_otp_home.db"))
+    db_path = str(tmp_path / "auto_otp_home.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.delenv("MICROSOFT_OAUTH_CLIENT_ID", raising=False)
@@ -105,7 +139,9 @@ def test_home_auto_enables_dev_otp_when_unconfigured(tmp_path, monkeypatch):
 
 
 def test_home_employee_signin_off_when_production_without_auth(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "prod_signin_home.db"))
+    db_path = str(tmp_path / "prod_signin_home.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.setenv("TEAM_TRACKER_PRODUCTION", "1")
@@ -122,7 +158,9 @@ def test_home_employee_signin_off_when_production_without_auth(tmp_path, monkeyp
 
 
 def test_portal_email_otp_send_verify(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "otp_flow.db"))
+    db_path = str(tmp_path / "otp_flow.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.delenv("MICROSOFT_OAUTH_CLIENT_ID", raising=False)
@@ -155,7 +193,9 @@ def test_portal_email_otp_send_verify(tmp_path, monkeypatch):
 
 
 def test_portal_email_otp_dev_console_flow(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "otp_dev.db"))
+    db_path = str(tmp_path / "otp_dev.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.delenv("MICROSOFT_OAUTH_CLIENT_ID", raising=False)
@@ -212,7 +252,9 @@ def test_leave_submit_via_portal_uses_roster_and_ip(client, app):
 
 
 def test_dashboard_gate_shows_without_password_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "nogate.db"))
+    db_path = str(tmp_path / "nogate.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.delenv("MICROSOFT_OAUTH_CLIENT_ID", raising=False)
@@ -341,7 +383,9 @@ def test_dashboard_wrong_secret(client):
 
 
 def test_lpo_sm_signin_opens_leave_tracker(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "lpo_signin.db"))
+    db_path = str(tmp_path / "lpo_signin.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrx")
     monkeypatch.setenv("LPO_SM_DASHBOARD_PASSWORD", "lponsecret")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
@@ -361,7 +405,9 @@ def test_lpo_sm_signin_opens_leave_tracker(tmp_path, monkeypatch):
 
 
 def test_lpo_sm_wrong_secret(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "lpo_wrong.db"))
+    db_path = str(tmp_path / "lpo_wrong.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrx")
     monkeypatch.setenv("LPO_SM_DASHBOARD_PASSWORD", "goodlpo")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
@@ -377,7 +423,9 @@ def test_lpo_sm_wrong_secret(tmp_path, monkeypatch):
 
 def test_lpo_sm_rejects_manager_code(tmp_path, monkeypatch):
     """Manager password must not unlock the LPO/SM gate."""
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "lpo_mix.db"))
+    db_path = str(tmp_path / "lpo_mix.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "onlymgr")
     monkeypatch.setenv("LPO_SM_DASHBOARD_PASSWORD", "onlylpo")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
@@ -431,8 +479,182 @@ def test_dashboard_leave_tracker_renders(client):
     r = c.get("/dashboard?year=2026&month=7")
     assert r.status_code == 200
     assert b"worksheet-wrap" in r.data
+    assert b"ws-month-fit" in r.data
+    assert b"ws-lead-5" in r.data
+    assert b"ws-has-rownum" in r.data
+    assert b"ws-rownum-col" in r.data
+    assert b"ws-total-col" in r.data
+    assert b"ws-eleave-col" in r.data
+    assert b"ws-eleave-display" in r.data
+    assert b"ws-eleave-input" not in r.data
+    assert b"ws-gap-col" in r.data
+    assert b"ws-cell-interactive-add" in r.data
+    assert b"dashboard-meet-add-dialog" in r.data
+    assert b"leave-tracker-meet-quick-leave" in r.data
+    assert b"dashboard-all-leaves-name-filter" in r.data
     assert b"ws-weekend-head" in r.data
     assert b"Leave tracker" in r.data
+    assert b"leave-tracker-month.xlsx" in r.data
+    assert b"Export .xlsx" in r.data
+    assert b"CompOFF" in r.data
+    assert b"WFH" not in r.data
+
+    xlsx = c.get("/dashboard/leave-tracker-month.xlsx?year=2026&month=7")
+    assert xlsx.status_code == 200
+    assert xlsx.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert xlsx.data[:2] == b"PK"
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(xlsx.data))
+    assert "July 2026" in wb.sheetnames
+    ws = wb["July 2026"]
+    assert ws.cell(row=1, column=1).value == "#"
+    assert ws.cell(row=1, column=2).value == "July"
+    assert ws.cell(row=1, column=3).value == "Total"
+    assert ws.cell(row=1, column=4).value == "eLeaveCount"
+    assert ws.cell(row=1, column=5).value == "GAP"
+    assert ws.cell(row=1, column=6).value == "Wed"
+    sat_cols = [col for col in range(6, 6 + 31) if ws.cell(1, col).value == "Sat"]
+    sun_cols = [col for col in range(6, 6 + 31) if ws.cell(1, col).value == "Sun"]
+    assert sat_cols and sun_cols
+    for col in sat_cols:
+        assert ws.cell(3, col).fill.fill_type == "solid"
+        assert str(ws.cell(3, col).fill.start_color.rgb).upper().endswith("E0E7FF")
+    for col in sun_cols:
+        assert ws.cell(3, col).fill.fill_type == "solid"
+        assert str(ws.cell(3, col).fill.start_color.rgb).upper().endswith("EDE9FE")
+
+
+def test_dashboard_all_records_filter_survives_records_q_in_url(client):
+    _manager_login(client)
+    r = client.get("/dashboard?year=2026&month=7&records_q=anas")
+    assert r.status_code == 200
+    assert b'value="anas"' in r.data
+
+
+def test_dashboard_leave_tracker_meet_quick_leave_creates_row(client):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    rv = client.post(
+        "/dashboard/api/leave-tracker-meet-quick-leave",
+        data={
+            "employee_name": name,
+            "work_date": "2026-07-11",
+            "year": "2026",
+            "month": "7",
+            "reason": "pl",
+            "duration_type": "full",
+        },
+    )
+    assert rv.status_code == 200
+    assert rv.get_json() == {"ok": True}
+    dash = client.get("/dashboard?year=2026&month=7")
+    assert dash.status_code == 200
+    assert name.encode("utf-8") in dash.data
+
+
+def test_compoff_shown_on_leave_grid_but_not_in_leave_day_total(app):
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'compoff', '', '2026-07-01', '2026-07-01', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-07-02', '2026-07-02', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+
+    ctx = build_month_context(app, 2026, 7, roster=(name,))
+    row = next(r for r in ctx["grid_rows"] if r["employee"] == name)
+    assert row["leave_days_total"] == 1.0
+    day_cells = list(zip(ctx["days"], row["cells"]))
+    c1 = next(c for d, c in day_cells if d["iso"] == "2026-07-01")
+    c2 = next(c for d, c in day_cells if d["iso"] == "2026-07-02")
+    assert c1 and c1.get("code") == "CO"
+    assert c1.get("css", "").startswith("cell-compoff")
+    assert c2 and c2.get("code") == "PL"
+
+
+def test_compoff_does_not_reduce_sprint_capacity_hours(app):
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'compoff', '', '2026-07-14', '2026-07-14', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+    sd = date(2026, 7, 13)
+    ed = date(2026, 7, 17)
+    h = _available_hours_for_assignee_sprint_window(app, name, sd, ed)
+    assert abs(h - 5 * SCRUM_KANBAN_WEEKDAY_HOURS) < 1e-6
+
+
+def test_nokia_reason_line_maps_comp_off_to_compoff():
+    code, lab = _nokia_reason_and_label_from_line("approved compensatory off 01/07/2026".lower())
+    assert code == "compoff"
+    assert lab == "CompOFF"
+
+
+def test_reject_leave_via_reports_clears_meet_leave_day_rows(client, app):
+    """Rejecting a request must drop meet_leave_day rows so calendars/capacity cannot still see DSM state."""
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-06-01', '2026-06-05', 'multi', 'pending', ?, '')
+        """,
+        (name, ts),
+    )
+    lid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO meet_leave_day (leave_id, work_date, decision, updated_at)
+        VALUES (?, '2026-06-03', 'approved', ?)
+        """,
+        (lid, ts),
+    )
+    conn.commit()
+    conn.close()
+
+    rv = client.post(
+        f"/reports/leave/{lid}/status",
+        data={
+            "status": "rejected",
+            "report_start": "2026-06-01",
+            "report_end": "2026-06-30",
+        },
+        follow_redirects=False,
+    )
+    assert rv.status_code in (302, 303)
+
+    conn = get_db(app)
+    n_day = int(conn.execute("SELECT COUNT(*) AS c FROM meet_leave_day WHERE leave_id = ?", (lid,)).fetchone()["c"])
+    st = conn.execute("SELECT status FROM leave_requests WHERE id = ?", (lid,)).fetchone()["status"]
+    conn.close()
+    assert n_day == 0
+    assert st == "rejected"
 
 
 def test_manager_main_nav_home_links_to_scrum_hub(client):
@@ -591,8 +813,749 @@ def test_parse_nokia_grid_whitespace_detects_leave():
     assert not un
 
 
+def test_parse_nokia_employee_summary_leave_dates_may():
+    txt = """Leave Entry 5845074 Approved 15-05-2026 15-05-2026
+Leave Entry 5845071 Approved 29-05-2026 29-05-2026
+"""
+    s, err = parse_nokia_employee_summary_leave_dates(txt, 2026, 5)
+    assert err is None
+    assert s == {15, 29}
+
+
+def test_parse_nokia_audit_dd_mm_range_accepts_arrow_and_ascii_arrow():
+    assert _parse_nokia_audit_dd_mm_range("20-03-2026 → 20-03-2026") == (date(2026, 3, 20), date(2026, 3, 20))
+    assert _parse_nokia_audit_dd_mm_range("20-03-2026 -> 20-03-2026") == (date(2026, 3, 20), date(2026, 3, 20))
+    assert _parse_nokia_audit_dd_mm_range("20/03/2026 -> 21/03/2026") == (date(2026, 3, 20), date(2026, 3, 21))
+    assert _parse_nokia_audit_dd_mm_range("29-05-2026") == (date(2026, 5, 29), date(2026, 5, 29))
+    assert _parse_nokia_audit_dd_mm_range("") is None
+
+
+def test_nokia_compare_dedupes_duplicate_elv_same_day_so_dsm_stays_paired():
+    from app import _nokia_audit_build_compare_rows
+
+    dsm = [
+        {
+            "name": "X",
+            "days": "1",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "20-03-2026 → 20-03-2026",
+        }
+    ]
+    nokia_dup = [
+        {
+            "name": "X",
+            "days": "1",
+            "type": "Annual leave",
+            "status": "Approved",
+            "dates_range": "20-03-2026 → 20-03-2026",
+        },
+        {
+            "name": "X",
+            "days": "1",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "20-03-2026 → 20-03-2026",
+        },
+    ]
+    rows = _nokia_audit_build_compare_rows(nokia_dup, dsm)
+    assert len(rows) == 1
+    assert rows[0]["days_dsm"] == "1"
+    assert rows[0]["dates_dsm"] == "20-03-2026 → 20-03-2026"
+
+
+def test_nokia_audit_merge_contiguous_dsm_rows_then_compare_single_row():
+    """Adjacent single-day DSM rows (same type/status) merge so one Nokia range pairs once."""
+    from app import _merge_contiguous_nokia_audit_dsm_leave_rows, _nokia_audit_build_compare_rows
+
+    dsm_raw = [
+        {
+            "name": "Emp X",
+            "days": "1",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "26-03-2026 → 26-03-2026",
+        },
+        {
+            "name": "Emp X",
+            "days": "1",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "27-03-2026 → 27-03-2026",
+        },
+    ]
+    dsm = _merge_contiguous_nokia_audit_dsm_leave_rows(dsm_raw)
+    assert len(dsm) == 1
+    assert dsm[0]["dates_range"] == "26-03-2026 → 27-03-2026"
+    assert dsm[0]["days"] == "2"
+
+    nokia = [
+        {
+            "name": "Emp X",
+            "days": "2",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "26-03-2026 → 27-03-2026",
+        }
+    ]
+    rows = _nokia_audit_build_compare_rows(nokia, dsm)
+    assert len(rows) == 1
+    assert rows[0]["dates_elv"] == "26-03-2026 → 27-03-2026"
+    assert rows[0]["dates_dsm"] == "26-03-2026 → 27-03-2026"
+
+
+def test_nokia_compare_merges_contiguous_elv_fragments_one_dsm_row():
+    """When eTool lists two adjacent chips but DSM is one span, Compare shows a single merged row."""
+    from app import _nokia_audit_build_compare_rows
+
+    dsm = [
+        {
+            "name": "X",
+            "days": "3",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "23-03-2026 → 25-03-2026",
+        }
+    ]
+    nokia = [
+        {
+            "name": "X",
+            "days": "1",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "23-03-2026 → 23-03-2026",
+        },
+        {
+            "name": "X",
+            "days": "2",
+            "type": "A",
+            "status": "Approved",
+            "dates_range": "24-03-2026 → 25-03-2026",
+        },
+    ]
+    rows = _nokia_audit_build_compare_rows(nokia, dsm)
+    assert len(rows) == 1
+    assert rows[0]["dates_elv"] == "23-03-2026 → 25-03-2026"
+    assert rows[0]["dates_dsm"] == "23-03-2026 → 25-03-2026"
+    assert rows[0]["days_elv"] == "3"
+
+
+def test_nokia_audit_show_approved_parses_paste_into_preview_table(client):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    txt = f"Leave Entry 5845071 Approved 29-05-2026 29-05-2026 {name}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "29-05-2026" in html
+    assert "Leave dates (From → To)" in html
+    assert "No. of Days" in html
+    assert "Annual leave" not in html
+    assert ">A</td>" in html
+    assert "TOTAL" in html
+    assert "1.00" in html
+
+
+def test_nokia_eleavetool_type_display_and_half_day_preview(app):
+    assert _nokia_eleavetool_type_display("Annual leave", "1") == "A"
+    assert _nokia_eleavetool_type_display("Annual leave", "0.5") == "A1/2"
+    assert _nokia_eleavetool_type_display("Annual leave", 0.5) == "A1/2"
+    assert _nokia_eleavetool_type_display("Sick leave", "1") == "Sick leave"
+    assert _nokia_eleavetool_type_display("PL — Planned leave", "0.5") == "A1/2"
+    assert _nokia_eleavetool_type_display("PL — Planned leave", "1") == "A"
+    name = EMPLOYEES[0]
+    txt = "Leave Entry 1 Approved 0.5 day 15-05-2026 15-05-2026\n"
+    rows, err, segs = _nokia_paste_approved_preview_rows(app, txt, name)
+    assert err is None
+    assert segs is not None
+    assert rows[0]["days"] == "0.5"
+    assert rows[0]["type"] == "A1/2"
+
+
+def test_nokia_audit_show_approved_includes_all_dates_not_only_form_month(client):
+    """Paste preview lists every parseable row; not limited to year/month hidden fields."""
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    txt = (
+        f"Leave Entry 1 Approved 29-05-2026 29-05-2026 {name}\n"
+        f"Leave Entry 2 Approved 31-07-2026 31-07-2026 {name}\n"
+    )
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "29-05-2026" in html
+    assert "31-07-2026" in html
+    assert "TOTAL" in html
+    assert "2.00" in html
+
+
+def test_nokia_approved_preview_sorted_chronologically_not_lexicographic_on_dd_mm_yyyy(app):
+    """Leave dates column uses dd-mm-yyyy; table rows are ordered by real calendar start date."""
+    name = EMPLOYEES[0]
+    txt = (
+        "Leave Entry 1 Approved 01-06-2026 02-06-2026\n"
+        "Leave Entry 2 Approved 04-03-2026 05-03-2026\n"
+        "Leave Entry 3 Approved 07-01-2026 09-01-2026\n"
+    )
+    rows, err, segs = _nokia_paste_approved_preview_rows(app, txt, name)
+    assert err is None
+    assert segs is not None
+    assert [r["dates_range"] for r in rows] == [
+        "07-01-2026 → 09-01-2026",
+        "04-03-2026 → 05-03-2026",
+        "01-06-2026 → 02-06-2026",
+    ]
+
+
+def test_nokia_audit_mark_approved_inserts_and_shows_table(client, app):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    txt = f"Leave Entry 5845071 Approved 29-05-2026 29-05-2026 {name}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "mark_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "No. of days" in html
+    assert "Approved in tracker" in html
+    assert "Leave dates (From → To)" in html
+    assert "29-05-2026 → 29-05-2026" in html
+    assert "TOTAL" in html
+    assert "1.00" in html
+    conn = get_db(app)
+    n = conn.execute(
+        """
+        SELECT COUNT(*) FROM leave_requests
+        WHERE employee_name = ? AND status = 'approved'
+          AND start_date = '2026-05-29' AND end_date = '2026-05-29'
+        """,
+        (name,),
+    ).fetchone()[0]
+    desc_row = conn.execute(
+        """
+        SELECT description FROM leave_requests
+        WHERE employee_name = ? AND status = 'approved' AND start_date = '2026-05-29' LIMIT 1
+        """,
+        (name,),
+    ).fetchone()
+    conn.close()
+    assert int(n) >= 1
+    assert desc_row is not None
+    assert NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in (desc_row["description"] or "")
+
+
+def test_dashboard_month_grid_shows_green_a_for_nokia_marked_leave(client):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    txt = f"Leave Entry 5845071 Approved 29-05-2026 29-05-2026 {name}\n"
+    assert (
+        client.post(
+            "/worksheet/nokia-audit",
+            data={
+                "year": "2026",
+                "month": "5",
+                "employee_name": name,
+                "nokia_ocr_text": txt,
+                "audit_action": "mark_approved",
+            },
+        ).status_code
+        == 200
+    )
+    dash = client.get("/dashboard?year=2026&month=5")
+    assert dash.status_code == 200
+    html = dash.get_data(as_text=True)
+    assert "cell-nokia-approved" in html
+    assert re.search(r"cell-nokia-approved[^>]*>\s*A\s*<", html)
+    assert f'data-employee="{name}"' in html
+    assert re.search(
+        r'data-employee="' + re.escape(name) + r'"[^>]*data-eleave-days="1\.00"',
+        html,
+    )
+
+
+def test_nokia_mark_appends_marker_when_day_already_on_tracker(client, app):
+    """If the day already has approved leave without the Nokia marker, Mark Approved tags it so the grid shows green A."""
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-20', '2026-05-20', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+    txt = f"Leave Entry 999 Approved 20-05-2026 20-05-2026 {name}\n"
+    assert (
+        client.post(
+            "/worksheet/nokia-audit",
+            data={
+                "year": "2026",
+                "month": "5",
+                "employee_name": name,
+                "nokia_ocr_text": txt,
+                "audit_action": "mark_approved",
+            },
+        ).status_code
+        == 200
+    )
+    conn = get_db(app)
+    n_rows = int(
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM leave_requests WHERE employee_name = ? AND start_date = '2026-05-20'",
+            (name,),
+        ).fetchone()["c"]
+    )
+    desc_row = conn.execute(
+        "SELECT description FROM leave_requests WHERE employee_name = ? AND start_date = '2026-05-20' LIMIT 1",
+        (name,),
+    ).fetchone()
+    conn.close()
+    assert n_rows == 1
+    assert desc_row is not None
+    assert NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in (desc_row["description"] or "")
+    dash = client.get("/dashboard?year=2026&month=5")
+    assert dash.status_code == 200
+    html = dash.get_data(as_text=True)
+    assert "cell-nokia-approved" in html
+    assert re.search(r"cell-nokia-approved[^>]*>\s*A\s*<", html)
+    assert re.search(
+        r'data-employee="' + re.escape(name) + r'"[^>]*data-eleave-days="1\.00"',
+        html,
+    )
+
+
+def test_dashboard_month_prefers_nokia_tagged_row_on_same_day_overlap(client, app):
+    """When two approved rows overlap one day, the Nokia-tagged row must win display even if its id is lower."""
+    _manager_login(client)
+    name = EMPLOYEES[3]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    marker = NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', ?, '2026-05-14', '2026-05-14', 'full', 'approved', ?, '')
+        """,
+        (name, marker, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-14', '2026-05-14', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+    dash = client.get("/dashboard?year=2026&month=5")
+    assert dash.status_code == 200
+    html = dash.get_data(as_text=True)
+    assert "cell-nokia-approved" in html
+    assert re.search(r"cell-nokia-approved[^>]*>\s*A\s*<", html)
+    assert re.search(
+        r'data-employee="' + re.escape(name) + r'"[^>]*data-eleave-days="1\.00"',
+        html,
+    )
+
+
 def test_nokia_audit_requires_manager(client):
     assert client.get("/worksheet/nokia-audit", follow_redirects=False).status_code == 302
+
+
+def test_nokia_audit_paste_suffix_name_mismatch_blocks_show_approved(client):
+    _manager_login(client)
+    sel = EMPLOYEES[0]
+    wrong = EMPLOYEES[1]
+    txt = f"Leave Entry 1 Approved 29-05-2026 29-05-2026 Approver {wrong}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": sel,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "does not match" in html
+    assert wrong in html
+    assert sel in html
+    assert "No. of Days" not in html
+
+
+def test_nokia_audit_paste_suffix_name_mismatch_blocks_mark_approved(client, app):
+    _manager_login(client)
+    sel = EMPLOYEES[0]
+    wrong = EMPLOYEES[2]
+    txt = f"Leave Entry 1 Approved 29-05-2026 29-05-2026 {wrong}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": sel,
+            "nokia_ocr_text": txt,
+            "audit_action": "mark_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "does not match" in html
+    conn = get_db(app)
+    n = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM leave_requests WHERE employee_name = ? AND start_date = '2026-05-29'",
+            (sel,),
+        ).fetchone()[0]
+    )
+    conn.close()
+    assert n == 0
+
+
+def test_nokia_audit_paste_suffix_matches_selection_allows_mark_approved(client, app):
+    _manager_login(client)
+    sel = EMPLOYEES[0]
+    txt = f"Leave Entry 1 Approved 29-05-2026 29-05-2026 {sel}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": sel,
+            "nokia_ocr_text": txt,
+            "audit_action": "mark_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "does not match" not in html
+    conn = get_db(app)
+    n = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM leave_requests WHERE employee_name = ? AND start_date = '2026-05-29'",
+            (sel,),
+        ).fetchone()[0]
+    )
+    conn.close()
+    assert n >= 1
+
+
+def test_nokia_audit_mark_approved_blocks_without_detectable_employee_in_paste(client, app):
+    """Approved+date rows must include a roster name (suffix or TSV last column) before marking."""
+    _manager_login(client)
+    sel = EMPLOYEES[0]
+    txt = "Leave Entry 5845071 Approved 29-05-2026 29-05-2026\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": sel,
+            "nokia_ocr_text": txt,
+            "audit_action": "mark_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "Could not find a roster employee name" in html
+    conn = get_db(app)
+    n = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM leave_requests WHERE employee_name = ? AND start_date = '2026-05-29'",
+            (sel,),
+        ).fetchone()[0]
+    )
+    conn.close()
+    assert n == 0
+
+
+def test_nokia_paste_require_roster_name_in_paste_helper():
+    from app import EMPLOYEES, _nokia_paste_employee_must_match_selected_or_error
+
+    name = EMPLOYEES[0]
+    txt = "Leave Entry 5845071 Approved 29-05-2026 29-05-2026\n"
+    assert _nokia_paste_employee_must_match_selected_or_error(name, txt, EMPLOYEES) is None
+    err = _nokia_paste_employee_must_match_selected_or_error(
+        name, txt, EMPLOYEES, require_roster_name_in_paste=True
+    )
+    assert err is not None
+    assert "Could not find a roster employee name" in err
+    assert (
+        _nokia_paste_employee_must_match_selected_or_error(
+            name, f"{txt.strip()} {name}\n", EMPLOYEES, require_roster_name_in_paste=True
+        )
+        is None
+    )
+
+
+def test_nokia_tsv_employee_last_column_used_for_name_match_and_segment_parses():
+    """Tab-separated eLeave rows: employee is the last column (manager may appear before)."""
+    from app import (
+        EMPLOYEES,
+        _nokia_paste_employee_must_match_selected_or_error,
+        _nokia_paste_trailing_roster_name_hints,
+        _nokia_segment_tuples_from_filtered_approved_lines,
+    )
+
+    roster = list(EMPLOYEES)
+    sh = "Shaishta Anjum"
+    mgr = "Gajendra Singh Thakur"
+    line = f"5780137\tApproved\t\t24-03-2026\t25-03-2026\t-2\t\t{mgr}\t{sh}\n"
+    hints = _nokia_paste_trailing_roster_name_hints(line, roster)
+    assert hints == {sh}, hints
+    assert _nokia_paste_employee_must_match_selected_or_error(sh, line, roster) is None
+    assert _nokia_paste_employee_must_match_selected_or_error(mgr, line, roster) is not None
+    filtered = "\n".join(L for L in line.splitlines() if "approved" in L.lower())
+    segs = _nokia_segment_tuples_from_filtered_approved_lines(filtered.strip())
+    assert len(segs) == 1
+    assert segs[0][0] == date(2026, 3, 24) and segs[0][1] == date(2026, 3, 25)
+
+
+def test_nokia_audit_paste_multiple_suffix_names_blocks(client):
+    _manager_login(client)
+    a, b = EMPLOYEES[0], EMPLOYEES[1]
+    txt = (
+        f"Leave Entry 1 Approved 29-05-2026 29-05-2026 {a}\n"
+        f"Leave Entry 2 Approved 30-05-2026 30-05-2026 {b}\n"
+    )
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": a,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "more than one employee name" in html
+
+
+def test_nokia_mark_approved_three_consecutive_weekdays_one_multi_row(client, app):
+    """Multi-day Nokia range that is Wed–Fri inserts one contiguous approved row (no Sat/Sun in range)."""
+    _manager_login(client)
+    name = EMPLOYEES[4]
+    d0 = date(2026, 5, 6)
+    d2 = d0 + timedelta(days=2)
+    assert d0.weekday() == 2 and d2.weekday() == 4
+    txt = f"5766761 Approved {d0.strftime('%d-%m-%Y')} {d2.strftime('%d-%m-%Y')} -3  Ritesh Kumar {name}\n"
+    assert (
+        client.post(
+            "/worksheet/nokia-audit",
+            data={
+                "year": "2026",
+                "month": "5",
+                "employee_name": name,
+                "nokia_ocr_text": txt,
+                "audit_action": "mark_approved",
+            },
+        ).status_code
+        == 200
+    )
+    conn = get_db(app)
+    rows = conn.execute(
+        """
+        SELECT start_date, end_date, duration_type FROM leave_requests
+        WHERE employee_name = ? AND description LIKE ?
+        ORDER BY id ASC
+        """,
+        (name, "%" + NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER + "%"),
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert str(rows[0]["start_date"]).startswith("2026-05-06")
+    assert str(rows[0]["end_date"]).startswith("2026-05-08")
+    assert rows[0]["duration_type"] == "multi"
+
+
+def test_nokia_mark_approved_spanning_weekend_skips_sat_sun(client, app):
+    """Fri–Tue range: only Fri, Mon, Tue get tracker rows (Sat/Sun omitted)."""
+    _manager_login(client)
+    name = EMPLOYEES[5]
+    fri = date(2026, 5, 8)
+    tue = date(2026, 5, 12)
+    assert fri.weekday() == 4 and tue.weekday() == 1
+    txt = f"5766761 Approved {fri.strftime('%d-%m-%Y')} {tue.strftime('%d-%m-%Y')} -5  Ritesh Kumar {name}\n"
+    assert (
+        client.post(
+            "/worksheet/nokia-audit",
+            data={
+                "year": "2026",
+                "month": "5",
+                "employee_name": name,
+                "nokia_ocr_text": txt,
+                "audit_action": "mark_approved",
+            },
+        ).status_code
+        == 200
+    )
+    conn = get_db(app)
+    rows = list(
+        conn.execute(
+            """
+            SELECT start_date, end_date FROM leave_requests
+            WHERE employee_name = ? AND description LIKE ?
+            ORDER BY start_date ASC
+            """,
+            (name, "%" + NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER + "%"),
+        )
+    )
+    conn.close()
+    assert len(rows) == 2
+    spans = {(str(r["start_date"])[:10], str(r["end_date"])[:10]) for r in rows}
+    assert ("2026-05-08", "2026-05-08") in spans
+    assert ("2026-05-11", "2026-05-12") in spans
+
+
+def test_nokia_mark_approved_single_weekend_day_inserts_nothing(client, app):
+    """A Nokia line that is only a Saturday (or Sunday) must not create tracker rows (no weekend marking)."""
+    _manager_login(client)
+    name = EMPLOYEES[6]
+    sat = date(2026, 5, 30)
+    assert sat.weekday() == 5
+    txt = f"5766761 Approved {sat.strftime('%d-%m-%Y')} {sat.strftime('%d-%m-%Y')} -1  Ritesh Kumar {name}\n"
+    assert (
+        client.post(
+            "/worksheet/nokia-audit",
+            data={
+                "year": "2026",
+                "month": "5",
+                "employee_name": name,
+                "nokia_ocr_text": txt,
+                "audit_action": "mark_approved",
+            },
+        ).status_code
+        == 200
+    )
+    conn = get_db(app)
+    n = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM leave_requests
+            WHERE employee_name = ? AND description LIKE ?
+            """,
+            (name, "%" + NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER + "%"),
+        ).fetchone()[0]
+    )
+    conn.close()
+    assert n == 0
+
+
+def test_nokia_audit_show_approved_preview_uses_weekday_count_for_range(client):
+    """Preview 'No. of Days' for a multi-day Nokia row counts Mon–Fri only."""
+    _manager_login(client)
+    name = EMPLOYEES[6]
+    fri = date(2026, 5, 8)
+    mon = date(2026, 5, 11)
+    txt = f"5766761 Approved {fri.strftime('%d-%m-%Y')} {mon.strftime('%d-%m-%Y')} -4  Ritesh Kumar {name}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert re.search(r"<strong>\s*2\.00\s*</strong>", html)
+    assert "4.00" not in html
+
+
+def test_nokia_show_then_mark_replays_same_plan_as_preview(client, app):
+    """After Show Approved, Mark uses stored segments so tracker rows match the preview table."""
+    _manager_login(client)
+    name = EMPLOYEES[2]
+    txt = f"Leave Entry 1 Approved 10-06-2026 12-06-2026 Approver {name}\n"
+    common = {
+        "year": "2026",
+        "month": "6",
+        "employee_name": name,
+        "nokia_ocr_text": txt,
+    }
+    show = client.post("/worksheet/nokia-audit", data={**common, "audit_action": "show_approved"})
+    assert show.status_code == 200
+    prev_html = show.get_data(as_text=True)
+    assert "Leave dates (From → To)" in prev_html
+    mark = client.post("/worksheet/nokia-audit", data={**common, "audit_action": "mark_approved"})
+    assert mark.status_code == 200
+    conn = get_db(app)
+    n = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM leave_requests WHERE employee_name = ? AND description LIKE ?",
+            (name, "%" + NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER + "%"),
+        ).fetchone()[0]
+    )
+    conn.close()
+    assert n >= 1
+
+
+def test_nokia_audit_show_approved_preview_lists_each_line_even_same_calendar_day(client):
+    """Preview lists one row per Nokia approved line; overlapping days are not collapsed in the table."""
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    txt = (
+        f"Leave Entry 1 Approved 15-05-2026 15-05-2026 {name}\n"
+        f"Leave Entry 2 Approved 15-05-2026 15-05-2026 {name}\n"
+    )
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert html.count("15-05-2026 → 15-05-2026") == 2
+    assert re.search(r"<strong>\s*2\.00\s*</strong>", html)
+
+
+def test_nokia_reason_maps_medical_to_sick_leave():
+    low = "5766761 approved medical 10-06-2026 10-06-2026"
+    code, _lab = _nokia_reason_and_label_from_line(low)
+    assert code == "sl"
 
 
 def test_nokia_audit_year_month_query_and_month_names(client):
@@ -600,8 +1563,9 @@ def test_nokia_audit_year_month_query_and_month_names(client):
     _manager_login(c)
     r = c.get("/worksheet/nokia-audit?year=2024&month=3")
     assert r.status_code == 200
-    assert b"March" in r.data
-    assert b"2024" in r.data
+    html = r.get_data(as_text=True)
+    assert 'name="year"' in html and 'value="2024"' in html
+    assert 'name="month"' in html and 'value="3"' in html
 
 
 def test_team_roster_csv_upload_and_switch_worksheet(client, app):
@@ -726,38 +1690,251 @@ def test_default_team_shows_union_of_all_rosters(client, app):
     assert EMPLOYEES[0] in html
 
 
-def test_nokia_audit_post_compare(client):
+def test_nokia_audit_show_approved_empty_or_table(client):
+    """Show Approved Leaves lists approved rows or empty copy for that month."""
     c = client
     _manager_login(c)
     name = EMPLOYEES[0]
-    c.post(
-        "/leave",
-        data={
-            "employee_name": name.lower(),
-            "reason": "pl",
-            "start_date": "2026-05-15",
-            "end_date": "2026-05-15",
-            "day_part": "full",
-        },
-        follow_redirects=False,
-    )
-    hdr = ["Emp ID", "Name", "Country"] + [str(d) for d in range(1, 32)]
-    row = ["1", "Nope, Nobody", "India"] + [""] * 31
-    grid = "\t".join(hdr) + "\n" + "\t".join(row)
     r = c.post(
         "/worksheet/nokia-audit",
-        data={"year": "2026", "month": "5", "nokia_ocr_text": grid},
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "audit_action": "show_approved",
+        },
     )
     assert r.status_code == 200
-    assert b"Defaulters" in r.data
-    assert b"2026-05-15" in r.data
-    assert b"Leave tracker" in r.data
+    html = r.get_data(as_text=True)
+    assert "Aprooved eLeave in Tool" in html
+    assert "Approved leave list" not in html
+    assert "No approved leave records for this person" not in html
+    assert "Paste Nokia eLeave text first" in html
+    assert "<th>No. of Days</th>" not in html
+
+
+def test_nokia_audit_show_dsm_lists_tracker_with_grid_leave_codes(client, app):
+    """DSM table lists overlapping leave for the full calendar year (not only the form month)."""
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-21', '2026-05-21', 'half_am', 'pending', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'ul', '', '2026-06-10', '2026-06-10', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={"year": "2026", "month": "5", "employee_name": name, "audit_action": "show_dsm"},
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "nokia-dsm-leaves-table" in html
+    assert "Leave tracker — DSM leaves" in html
+    assert "calendar year 2026" in html
+    assert "Pending" in html
+    assert "Approved" in html
+    assert "PL" in html
+    assert "UL" in html
+    assert "21-05-2026" in html
+    assert "10-06-2026" in html
+
+
+def test_nokia_audit_show_dsm_blocked_when_paste_employee_mismatch(client, app):
+    """Show DSM Leaves skips the table if pasted Nokia approved rows name someone other than the dropdown."""
+    _manager_login(client)
+    sel = EMPLOYEES[0]
+    wrong = EMPLOYEES[2]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-21', '2026-05-21', 'full', 'approved', ?, '')
+        """,
+        (sel, ts),
+    )
+    conn.commit()
+    conn.close()
+    txt = f"Leave Entry 1 Approved 29-05-2026 29-05-2026 {wrong}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": sel,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_dsm",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "does not match" in html
+    assert "nokia-dsm-leaves-table" not in html
+
+
+def test_nokia_audit_show_dsm_shows_table_when_paste_matches_selection(client, app):
+    _manager_login(client)
+    sel = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-21', '2026-05-21', 'full', 'approved', ?, '')
+        """,
+        (sel, ts),
+    )
+    conn.commit()
+    conn.close()
+    txt = f"Leave Entry 1 Approved 29-05-2026 29-05-2026 {sel}\n"
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": sel,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_dsm",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "does not match" not in html
+    assert "nokia-dsm-leaves-table" in html
+    assert "21-05-2026" in html
+
+
+def test_nokia_audit_compare_merges_elv_and_dsm_types(client, app):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-29', '2026-05-29', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+    txt = f"Leave Entry 5845071 Approved 29-05-2026 29-05-2026 {name}\n"
+    client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "audit_action": "show_dsm",
+        },
+    )
+    r = client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "audit_action": "compare",
+        },
+    )
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert "nokia-compare-table" in html
+    assert "eLeavetool Type" in html
+    assert "Type of leave DSM" in html
+    assert "PL" in html
+    assert "Annual leave" not in html
+    assert ">A</td>" in html
+    assert "29-05-2026" in html
+    assert "nokia-audit-compare.xlsx" in html
+
+
+def test_nokia_audit_compare_xlsx_download(client, app):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-05-29', '2026-05-29', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    conn.close()
+    txt = f"Leave Entry 5845071 Approved 29-05-2026 29-05-2026 {name}\n"
+    client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "nokia_ocr_text": txt,
+            "audit_action": "show_approved",
+        },
+    )
+    client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "audit_action": "show_dsm",
+        },
+    )
+    client.post(
+        "/worksheet/nokia-audit",
+        data={
+            "year": "2026",
+            "month": "5",
+            "employee_name": name,
+            "audit_action": "compare",
+        },
+    )
+    rx = client.get(
+        "/worksheet/nokia-audit-compare.xlsx",
+        query_string={"year": "2026", "month": "5", "employee_name": name},
+    )
+    assert rx.status_code == 200
+    assert rx.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert rx.data[:4] == b"PK\x03\x04"
 
 
 def test_export_forbidden_without_manager(client):
     assert client.get("/reports/export.csv").status_code == 302
     assert client.get("/reports/export-leaves.xlsx").status_code == 302
     assert client.get("/reports/roster-export.xlsx").status_code == 302
+    assert client.get("/dashboard/leave-tracker-month.xlsx").status_code == 302
     assert client.get("/reports/roster-export.csv", follow_redirects=False).status_code == 301
 
 
@@ -768,6 +1945,17 @@ def test_scrum_sprint_default_two_week_end_inclusive():
 
     assert scrum_sprint_default_end_date(date(2026, 6, 5)) == date(2026, 6, 18)
     assert scrum_sprint_default_end_date(date(2026, 9, 1)) == date(2026, 9, 14)
+
+
+def test_suggest_next_sprint_name_from_previous():
+    from app import suggest_next_sprint_name_from_previous
+
+    assert suggest_next_sprint_name_from_previous("FRONTIER-FB2612") == "FRONTIER-FB2613"
+    assert suggest_next_sprint_name_from_previous("Sprint 12") == "Sprint 13"
+    assert suggest_next_sprint_name_from_previous("  v2.008 ") == "v2.009"
+    assert suggest_next_sprint_name_from_previous("id099") == "id100"
+    assert suggest_next_sprint_name_from_previous("Alpha") is None
+    assert suggest_next_sprint_name_from_previous("") is None
 
 
 def test_scrm_requires_manager(client):
@@ -781,6 +1969,101 @@ def test_scrm_renders(client):
     assert r.status_code == 200
     assert b"Sprint hub" in r.data
     assert b"14 calendar days" in r.data or b"two-week" in r.data
+
+
+def test_scrum_hub_create_next_prefills_incremented_sprint_name(client, app):
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={"name": "FRONTIER-FB2612", "start_date": "2026-06-01"},
+        follow_redirects=True,
+    )
+    html = c.get("/scrum").get_data(as_text=True)
+    assert 'id="sp-next-name"' in html
+    assert 'value="FRONTIER-FB2613"' in html
+
+
+def test_scrum_hub_no_bottom_leave_settings_buttons(client):
+    """Sprint hub used to duplicate Leave tracker / Settings at the bottom; main nav still has them."""
+    c = client
+    _manager_login(c)
+    html = c.get("/scrum").get_data(as_text=True)
+    assert "Create sprint" in html
+    assert "scrum-hub-create-next" not in html  # no sprints yet
+    assert 'class="btn secondary" href="/dashboard"' not in html
+    assert 'class="btn secondary" href="/reports"' not in html
+
+
+def test_scrum_sprint_create_next_requires_prior_sprint(client, app):
+    c = client
+    _manager_login(c)
+    r = c.post(
+        "/scrum/sprint/create",
+        data={"name": "Should Not Exist", "create_next": "1"},
+        follow_redirects=True,
+    )
+    assert r.status_code == 200
+    assert b"first sprint" in r.data or b"no previous sprint" in r.data
+    conn = get_db(app)
+    n = int(
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM scrum_sprint WHERE name = ?", ("Should Not Exist",)
+        ).fetchone()["c"]
+    )
+    conn.close()
+    assert n == 0
+
+
+def test_scrum_sprint_create_next_chains_start_and_carries_doing(client, app):
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={"name": "Prior Sprint Next", "start_date": "2026-09-01"},
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid1 = int(
+        conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("Prior Sprint Next",)).fetchone()["id"]
+    )
+    conn.close()
+    c.post(
+        "/scrum/sprint/item/add",
+        data={
+            "sprint_id": str(sid1),
+            "title": "Carry Me",
+            "assignee": EMPLOYEES[0],
+            "estimate_hours": "5",
+            "kanban_column": "doing",
+            "task_kind": "ndy",
+        },
+        follow_redirects=True,
+    )
+    hub = c.get("/scrum")
+    assert hub.status_code == 200
+    assert b"Create next sprint" in hub.data
+    assert b"2026-09-15" in hub.data
+    c.post(
+        "/scrum/sprint/create",
+        data={"name": "Chained Sprint", "create_next": "1"},
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    row = conn.execute(
+        "SELECT id, start_date, end_date FROM scrum_sprint WHERE name = ?", ("Chained Sprint",)
+    ).fetchone()
+    assert row
+    assert row["start_date"][:10] == "2026-09-15"
+    assert row["end_date"][:10] == "2026-09-28"
+    sid2 = int(row["id"])
+    carried = conn.execute(
+        "SELECT title, kanban_column FROM scrum_sprint_item WHERE sprint_id = ? AND title = ?",
+        (sid2, "Carry Me"),
+    ).fetchone()
+    conn.close()
+    assert carried
+    assert str(carried["kanban_column"]).lower().strip() == "backlog"
 
 
 def test_scrum_sprint_rename_from_hub(client, app):
@@ -801,6 +2084,9 @@ def test_scrum_sprint_rename_from_hub(client, app):
     assert b"scrum-sprint-rename-form" in hub.data
     assert b"/scrum/sprint/rename" in hub.data
     assert b"SprintLeaveView" in hub.data
+    assert b"/scrum/sprint/delete" in hub.data
+    assert b"scrum-hub-sprint-delete-form" in hub.data
+    assert b"Delete sprint" in hub.data
     conn = get_db(app)
     sid = int(conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("Rename Me Sprint",)).fetchone()["id"])
     conn.close()
@@ -814,6 +2100,121 @@ def test_scrum_sprint_rename_from_hub(client, app):
     nm = conn.execute("SELECT name FROM scrum_sprint WHERE id = ?", (sid,)).fetchone()["name"]
     conn.close()
     assert nm == "FB0052"
+
+
+def test_scrum_past_sprint_end_blocks_kanban_move_api(client, app, monkeypatch):
+    """After the sprint window ends, the sprint is auto-closed and board mutations return ``sprint_closed``."""
+
+    monkeypatch.setattr(
+        "app._sprint_clock_utc",
+        lambda: datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={"name": "Frozen Sprint", "start_date": "2026-06-01", "goal": ""},
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid = int(conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("Frozen Sprint",)).fetchone()["id"])
+    conn.close()
+    assignee = EMPLOYEES[0]
+    c.post(
+        "/scrum/sprint/item/add",
+        data={
+            "sprint_id": str(sid),
+            "title": "Task A",
+            "assignee": assignee,
+            "estimate_hours": "5",
+            "kanban_column": "do",
+            "task_kind": "ndy",
+        },
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    iid = int(
+        conn.execute("SELECT id FROM scrum_sprint_item WHERE sprint_id = ? LIMIT 1", (sid,)).fetchone()["id"]
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "app._sprint_clock_utc",
+        lambda: datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    r = c.post(
+        "/scrum/api/item/move",
+        json={
+            "item_id": iid,
+            "sprint_id": sid,
+            "assignee": assignee,
+            "to_column": "doing",
+            "note": "start",
+        },
+    )
+    assert r.status_code == 403
+    assert r.get_json()["error"] == "sprint_closed"
+
+
+def test_scrum_rename_blocked_after_sprint_window_ends(client, app, monkeypatch):
+    monkeypatch.setattr(
+        "app._sprint_clock_utc",
+        lambda: datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={"name": "Old Sprint Name", "start_date": "2026-06-01", "goal": ""},
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid = int(conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("Old Sprint Name",)).fetchone()["id"])
+    conn.close()
+
+    monkeypatch.setattr(
+        "app._sprint_clock_utc",
+        lambda: datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc),
+    )
+    c.post("/scrum/sprint/rename", data={"sprint_id": str(sid), "name": "Try Rename"}, follow_redirects=True)
+    conn = get_db(app)
+    nm = conn.execute("SELECT name FROM scrum_sprint WHERE id = ?", (sid,)).fetchone()["name"]
+    conn.close()
+    assert nm == "Old Sprint Name"
+
+
+def test_scrum_sprint_auto_close_sets_is_closed(client, app, monkeypatch):
+    monkeypatch.setattr(
+        "app._sprint_clock_utc",
+        lambda: datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    c = client
+    _manager_login(c)
+    sprint_name = "AutoClose Sprint " + uuid.uuid4().hex[:12]
+    resp = c.post(
+        "/scrum/sprint/create",
+        data={"name": sprint_name, "start_date": "2026-06-01", "goal": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    loc = resp.headers.get("Location") or ""
+    m = re.search(r"/scrum/sprint/(\d+)", loc)
+    assert m, (loc, sprint_name)
+    sid = int(m.group(1))
+    conn = get_db(app)
+    assert int(conn.execute("SELECT COALESCE(is_closed,0) FROM scrum_sprint WHERE id = ?", (sid,)).fetchone()[0]) == 0
+    conn.close()
+    monkeypatch.setattr(
+        "app._sprint_clock_utc",
+        lambda: datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc),
+    )
+    r = c.get(f"/scrum/sprint/{sid}")
+    assert r.status_code == 200
+    conn = get_db(app)
+    assert int(conn.execute("SELECT COALESCE(is_closed,0) FROM scrum_sprint WHERE id = ?", (sid,)).fetchone()[0]) == 1
+    conn.close()
 
 
 def test_scrum_sprint_rename_rejects_duplicate(client, app):
@@ -900,6 +2301,8 @@ def test_scrum_sprint_team_delete_ui_has_modal_and_delete_post_works(client, app
     conn.close()
     r = c.get("/scrum/sprint/%d" % sid)
     assert r.status_code == 200
+    assert b'Sprint capacity' in r.data
+    assert ("/scrum/sprint/%d/team-detailed" % sid).encode() in r.data
     assert b'id="scrum-delete-sprint-dialog"' in r.data
     assert b'id="scrum-delete-sprint-open"' in r.data
     assert b'id="scrum-sprint-delete-form"' in r.data
@@ -910,6 +2313,145 @@ def test_scrum_sprint_team_delete_ui_has_modal_and_delete_post_works(client, app
     gone = conn.execute("SELECT id FROM scrum_sprint WHERE id = ?", (sid,)).fetchone() is None
     conn.close()
     assert gone
+
+
+def test_scrum_attachment_build_preview_html_xlsx(tmp_path):
+    from openpyxl import Workbook
+
+    from app import _scrum_attachment_build_preview_html
+
+    p = tmp_path / "sample.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["ColA", "ColB"])
+    ws.append([1, 2])
+    wb.save(p)
+    wb.close()
+    html = _scrum_attachment_build_preview_html(p, "sample.xlsx")
+    assert html
+    assert "<table>" in html
+    assert "ColA" in html
+
+
+def test_scrum_attachment_build_preview_html_csv(tmp_path):
+    from app import _scrum_attachment_build_preview_html
+
+    p = tmp_path / "t.csv"
+    p.write_text("h1,h2\n3,4\n", encoding="utf-8")
+    html = _scrum_attachment_build_preview_html(p, "t.csv")
+    assert html and "h1" in html and "3" in html
+
+
+def test_scrum_sprint_team_detailed_renders_summary_and_stickies(client, app):
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={
+            "name": "DetailedOverviewSp",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-14",
+            "goal": "",
+        },
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid = int(
+        conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("DetailedOverviewSp",)).fetchone()["id"]
+    )
+    emp = EMPLOYEES[0]
+    c.post(
+        "/scrum/sprint/item/add",
+        data={
+            "sprint_id": str(sid),
+            "title": "DetailOverviewSticky",
+            "assignee": emp,
+            "estimate_hours": "1",
+            "kanban_column": "do",
+            "task_kind": "ndy",
+            "notes": "",
+        },
+        follow_redirects=True,
+    )
+    conn.close()
+    r = c.get("/scrum/sprint/%d/team-detailed" % sid)
+    assert r.status_code == 200
+    assert b"scrum-team-detail-summary-line" in r.data
+    assert b"scrum-team-detail-member" in r.data
+    assert b"scrum-team-detail-sticky-attachments" in r.data
+    assert b'name="return_to"' in r.data
+    assert b"team_detailed" in r.data
+    assert b"scrum-team-detail-member-filter" in r.data
+    assert b'show tasks for' in r.data.lower()
+    assert b"preview-html" in r.data
+    n_blocks = r.data.count(b'<article class="scrum-team-detail-member"')
+    r_one = c.get("/scrum/sprint/%d/team-detailed" % sid, query_string={"member": emp})
+    assert r_one.status_code == 200
+    assert r_one.data.count(b'<article class="scrum-team-detail-member"') == 1
+    r_bad = c.get("/scrum/sprint/%d/team-detailed" % sid, query_string={"member": "__not_on_roster__"})
+    assert r_bad.status_code == 200
+    assert r_bad.data.count(b'<article class="scrum-team-detail-member"') == n_blocks
+
+
+def test_scrum_team_detailed_attachment_upload_redirects_back(client, app):
+    from io import BytesIO
+
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={
+            "name": "DetailAttachRedirectSp",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-24",
+            "goal": "",
+        },
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid = int(
+        conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("DetailAttachRedirectSp",)).fetchone()["id"]
+    )
+    emp = EMPLOYEES[0]
+    c.post(
+        "/scrum/sprint/item/add",
+        data={
+            "sprint_id": str(sid),
+            "title": "DetailAttachSticky",
+            "assignee": emp,
+            "estimate_hours": "2",
+            "kanban_column": "doing",
+            "task_kind": "ndy",
+            "notes": "",
+        },
+        follow_redirects=True,
+    )
+    iid = int(
+        conn.execute(
+            "SELECT id FROM scrum_sprint_item WHERE sprint_id = ? AND title = ?",
+            (sid, "DetailAttachSticky"),
+        ).fetchone()["id"]
+    )
+    conn.close()
+    up = c.post(
+        "/scrum/sprint/item/attachment",
+        data={
+            "item_id": str(iid),
+            "sprint_id": str(sid),
+            "assignee": emp,
+            "return_to": "team_detailed",
+            "file": (BytesIO(b"detailed-page-bytes"), "doc.txt"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert up.status_code in (302, 303)
+    loc = up.headers.get("Location") or ""
+    assert "/team-detailed" in loc
+    det = c.get("/scrum/sprint/%d/team-detailed" % sid)
+    assert det.status_code == 200
+    assert b"detailed-page-bytes" not in det.data
+    assert b"doc.txt" in det.data
 
 
 def test_scrum_sprint_create_rejects_duplicate_name(client, app):
@@ -1024,7 +2566,10 @@ def test_scrum_sprint_export_xlsx(client, app):
     wb = load_workbook(io.BytesIO(res.data))
     assert wb.sheetnames[0] == "Summary"
     assert "SprintStatus" in wb.sheetnames
-    assert "Activity log" in wb.sheetnames
+    assert "HPPM" in wb.sheetnames
+    wh = wb["HPPM"]
+    assert wh.cell(row=1, column=1).value and "HPPM" in str(wh.cell(row=1, column=1).value)
+    assert "Activity log" not in wb.sheetnames
     assert "Daily tasks Details" in wb.sheetnames
     assert "Appriciation" in wb.sheetnames
     ws0 = wb["Summary"]
@@ -1040,7 +2585,7 @@ def test_scrum_sprint_export_xlsx(client, app):
         if ws0.cell(row=r, column=1).value == "Total Sprint Capacity (h)":
             assert ws0.cell(row=r, column=2).value not in (None, "", "—")
             found_cap = True
-        if ws0.cell(row=r, column=1).value == "Planned capacity (sum estimates ÷ sprint capacity, %)":
+        if ws0.cell(row=r, column=1).value == "Planned capacity ((sum estimates + Sprint leaves) ÷ sprint capacity, %)":
             found_planned = True
     assert found_sprint and found_cap and found_planned
     titles = [wb["SprintStatus"].cell(row=2, column=j).value for j in range(1, 5)]
@@ -1048,10 +2593,6 @@ def test_scrum_sprint_export_xlsx(client, app):
     hdr1 = [wb["SprintStatus"].cell(row=1, column=j).value for j in range(1, wb["SprintStatus"].max_column + 1)]
     dcol = hdr1.index("2026-09-02") + 1
     assert float(wb["SprintStatus"].cell(row=2, column=dcol).value or 0) >= 1.4
-    act = wb["Activity log"]
-    ah = [act.cell(row=1, column=j).value for j in range(1, act.max_column + 1)]
-    dcol2 = ah.index("2026-09-02") + 1
-    assert float(act.cell(row=2, column=dcol2).value or 0) >= 1.4
     wsd = wb["Daily tasks Details"]
     found_ov = False
     for row in range(1, 25):
@@ -1080,6 +2621,53 @@ def test_team_hub_mode_updates_active_team(client, app):
     assert row["hub_mode"] == "scrum"
 
 
+def test_scrum_hppm_entry_redirects_and_page_loads(client, app):
+    c = client
+    _manager_login(c)
+    r0 = c.get("/scrum/hppm", follow_redirects=False)
+    assert r0.status_code == 302
+    loc0 = r0.headers.get("Location") or ""
+    assert "/scrum" in loc0
+
+    c.post(
+        "/scrum/sprint/create",
+        data={
+            "name": "HPPM Sprint",
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-14",
+            "goal": "",
+        },
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sp = conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("HPPM Sprint",)).fetchone()
+    assert sp
+    sid = int(sp["id"])
+    conn.close()
+
+    team = c.get("/scrum/sprint/%d" % sid)
+    assert team.status_code == 200
+    assert b"HPPM view" in team.data
+    assert ("/scrum/sprint/%d/hppm" % sid).encode() in team.data
+    assert b"Type stack" in team.data
+
+    hppm = c.get("/scrum/sprint/%d/hppm" % sid)
+    assert hppm.status_code == 200
+    assert b"Type stack" in hppm.data
+    assert b"scrum-team-kind-stack--horizontal" in hppm.data
+    assert b"Area stack" in hppm.data
+    assert b"HPPM summary" in hppm.data
+    assert b"Total" in hppm.data
+    assert b"Estimate sprint" in hppm.data
+    assert b"Absences" in hppm.data
+    assert b"Feature Support (Y)" in hppm.data
+
+    r1 = c.get("/scrum/hppm", follow_redirects=False)
+    assert r1.status_code == 302
+    loc1 = r1.headers.get("Location") or ""
+    assert str(sid) in loc1 and "/hppm" in loc1
+
+
 def test_scrm_sprint_team_and_sticky(client, app):
     c = client
     _manager_login(c)
@@ -1106,6 +2694,8 @@ def test_scrm_sprint_team_and_sticky(client, app):
     lv = c.get("/scrum/sprint/%d/leave-tracker" % sid)
     assert lv.status_code == 200
     assert b"ws-table" in lv.data
+    assert b"ws-month-fit" in lv.data
+    assert b"Total</th>" in lv.data
     assert b"Leave tracker" in lv.data
     c.post(
         "/scrum/sprint/item/add",
@@ -1131,6 +2721,256 @@ def test_scrm_sprint_team_and_sticky(client, app):
     assert ("/scrum/sprint/%d/leave-tracker" % sid).encode() in board.data
     assert b"ws-table" in board.data
     assert b"Available" in board.data
+
+
+def test_scrum_sticky_attachment_upload_and_download(client, app):
+    from io import BytesIO
+
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={
+            "name": "AttachSprint",
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-14",
+            "goal": "",
+        },
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid = int(conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("AttachSprint",)).fetchone()["id"])
+    emp = EMPLOYEES[0]
+    c.post(
+        "/scrum/sprint/item/add",
+        data={
+            "sprint_id": str(sid),
+            "title": "WithAttach",
+            "assignee": emp,
+            "estimate_hours": "3",
+            "kanban_column": "do",
+            "task_kind": "ndy",
+            "notes": "",
+        },
+        follow_redirects=True,
+    )
+    row = conn.execute(
+        "SELECT id FROM scrum_sprint_item WHERE sprint_id = ? AND title = ?", (sid, "WithAttach")
+    ).fetchone()
+    assert row
+    iid = int(row["id"])
+    conn.close()
+    up = c.post(
+        "/scrum/sprint/item/attachment",
+        data={
+            "item_id": str(iid),
+            "sprint_id": str(sid),
+            "assignee": emp,
+            "file": (BytesIO(b"hello-attachment-bytes"), "notes.txt"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert up.status_code in (302, 303)
+    conn = get_db(app)
+    aid = int(conn.execute("SELECT id FROM scrum_sprint_item_attachment WHERE item_id = ?", (iid,)).fetchone()["id"])
+    conn.close()
+    dl = c.get("/scrum/sprint/item/attachment/%d/file" % aid)
+    assert dl.status_code == 200
+    assert dl.data == b"hello-attachment-bytes"
+
+
+def test_scrum_sticky_attachment_multi_upload(client, app):
+    from io import BytesIO
+
+    from werkzeug.datastructures import MultiDict
+
+    c = client
+    _manager_login(c)
+    c.post(
+        "/scrum/sprint/create",
+        data={
+            "name": "MultiAttachSprint",
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-14",
+            "goal": "",
+        },
+        follow_redirects=True,
+    )
+    conn = get_db(app)
+    sid = int(conn.execute("SELECT id FROM scrum_sprint WHERE name = ?", ("MultiAttachSprint",)).fetchone()["id"])
+    emp = EMPLOYEES[0]
+    c.post(
+        "/scrum/sprint/item/add",
+        data={
+            "sprint_id": str(sid),
+            "title": "MultiAttach",
+            "assignee": emp,
+            "estimate_hours": "1",
+            "kanban_column": "do",
+            "task_kind": "ndy",
+            "notes": "",
+        },
+        follow_redirects=True,
+    )
+    iid = int(
+        conn.execute(
+            "SELECT id FROM scrum_sprint_item WHERE sprint_id = ? AND title = ?", (sid, "MultiAttach")
+        ).fetchone()["id"]
+    )
+    conn.close()
+    up = c.post(
+        "/scrum/sprint/item/attachment",
+        data=MultiDict(
+            [
+                ("item_id", str(iid)),
+                ("sprint_id", str(sid)),
+                ("assignee", emp),
+                ("files", (BytesIO(b"one"), "one.txt")),
+                ("files", (BytesIO(b"two"), "two.txt")),
+            ]
+        ),
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert up.status_code in (302, 303)
+    conn = get_db(app)
+    n = int(
+        conn.execute("SELECT COUNT(*) AS c FROM scrum_sprint_item_attachment WHERE item_id = ?", (iid,)).fetchone()[
+            "c"
+        ]
+    )
+    rows = conn.execute(
+        "SELECT original_filename FROM scrum_sprint_item_attachment WHERE item_id = ? ORDER BY id",
+        (iid,),
+    ).fetchall()
+    conn.close()
+    assert n == 2
+    assert {r["original_filename"] for r in rows} == {"one.txt", "two.txt"}
+
+
+def test_portal_sticky_attachment_upload_delete_and_download(client, app):
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.attach@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-12-01T00:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Portal Attach Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'PortalAttachCard', 1, 'open', '', 0, ?, ?, 'do', 'ndy')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+
+    board = client.get("/portal/sprint/%d/board" % sid)
+    assert board.status_code == 200
+    assert b"/portal/scrum/sprint/item/attachment" in board.data
+
+    up = client.post(
+        "/portal/scrum/sprint/item/attachment",
+        data={
+            "item_id": str(iid),
+            "sprint_id": str(sid),
+            "file": (io.BytesIO(b"portal-bytes"), "note.pdf"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert up.status_code in (302, 303)
+    conn = get_db(app)
+    aid = int(conn.execute("SELECT id FROM scrum_sprint_item_attachment WHERE item_id = ?", (iid,)).fetchone()["id"])
+    conn.close()
+
+    dl = client.get("/portal/scrum/sprint/item/attachment/%d/file" % aid)
+    assert dl.status_code == 200
+    assert dl.data == b"portal-bytes"
+
+    rm = client.post(
+        "/portal/scrum/sprint/item/attachment/delete",
+        data={"attachment_id": str(aid), "sprint_id": str(sid)},
+        follow_redirects=False,
+    )
+    assert rm.status_code in (302, 303)
+    conn = get_db(app)
+    n = int(conn.execute("SELECT COUNT(*) AS c FROM scrum_sprint_item_attachment WHERE id = ?", (aid,)).fetchone()["c"])
+    conn.close()
+    assert n == 0
+
+
+def test_portal_sticky_attachment_multi_upload_one_post(client, app):
+    from werkzeug.datastructures import MultiDict
+
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.multi@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-12-02T00:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Portal Multi Sprint', '2026-12-02', '2026-12-12', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'PortalMulti', 1, 'open', '', 0, ?, ?, 'do', 'ndy')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    up = client.post(
+        "/portal/scrum/sprint/item/attachment",
+        data=MultiDict(
+            [
+                ("item_id", str(iid)),
+                ("sprint_id", str(sid)),
+                ("files", (io.BytesIO(b"a"), "a.txt")),
+                ("files", (io.BytesIO(b"b"), "b.txt")),
+            ]
+        ),
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert up.status_code in (302, 303)
+    conn = get_db(app)
+    n = int(
+        conn.execute("SELECT COUNT(*) AS c FROM scrum_sprint_item_attachment WHERE item_id = ?", (iid,)).fetchone()[
+            "c"
+        ]
+    )
+    conn.close()
+    assert n == 2
 
 
 def test_scrum_kanban_capacity_strip_shows_daily_burnt_hours_including_weekend(client, app):
@@ -1181,6 +3021,10 @@ def test_scrum_kanban_capacity_strip_shows_daily_burnt_hours_including_weekend(c
     conn.close()
     board = c.get("/scrum/sprint/%d/board" % sid, query_string={"assignee": emp})
     assert board.status_code == 200
+    assert b"Total burnt" in board.data
+    assert b"scrum-bar-cap-burnt" in board.data
+    assert b'name="files"' in board.data
+    assert b"multiple" in board.data
     assert b"scrum-ws-cell-effort" in board.data
     assert b"3.0h" in board.data
     assert b"Improvement" in board.data
@@ -1388,7 +3232,9 @@ def test_scrum_sprint_team_highlights_activity_within_last_24h(client, app):
 
 def test_unified_login_register_and_empty_workspace(tmp_path, monkeypatch):
     """Unified login: register manager account → sign in → empty workspace banner."""
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "login_flow.db"))
+    db_path = str(tmp_path / "login_flow.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "mgrpw")
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
     monkeypatch.setenv("TEAM_TRACKER_AUTO_TESSERACT", "0")
@@ -1443,7 +3289,9 @@ def test_unified_login_register_and_empty_workspace(tmp_path, monkeypatch):
 
 def test_primary_owner_manager_seeded_from_master_pin(tmp_path, monkeypatch):
     seed_email = "owner-seed-test@example.com"
-    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", str(tmp_path / "owner_seed.db"))
+    db_path = str(tmp_path / "owner_seed.db")
+    monkeypatch.setenv("TEAM_TRACKER_DB_PATH", db_path)
+    _monkeypatch_dotenv_restore_db_path(monkeypatch, db_path)
     monkeypatch.setenv("MANAGER_DASHBOARD_PASSWORD", "my_master_99")
     monkeypatch.setenv("PRIMARY_OWNER_MANAGER_EMAIL", seed_email)
     monkeypatch.setenv("WTF_CSRF_ENABLED", "false")
@@ -1570,7 +3418,6 @@ def test_scrum_sprint_carry_forward_do_and_doing(client, app):
             (new_sid,),
         )
     )
-    conn.close()
     assert len(rows) == 2
     by_title = {x["title"]: x for x in rows}
     assert by_title["Do task"]["kanban_column"] == "backlog"
@@ -1584,8 +3431,24 @@ def test_scrum_sprint_carry_forward_do_and_doing(client, app):
     assert (by_title["Doing task"]["sticky_color_hex"] or "").lower() == "#112233"
     assert by_title["Do task"]["assignee"] == emp
     assert by_title["Doing task"]["assignee"] == emp
-    assert abs(float(by_title["Do task"]["estimate_hours"]) - 1.5) < 0.001  # 3 - 1.5 logged
-    assert abs(float(by_title["Doing task"]["estimate_hours"]) - 2.0) < 0.001  # 4 - 2 logged
+    assert abs(float(by_title["Do task"]["estimate_hours"]) - 3.0) < 0.001
+    assert abs(float(by_title["Doing task"]["estimate_hours"]) - 4.0) < 0.001
+    for title in ("Do task", "Doing task"):
+        iid = int(
+            conn.execute(
+                "SELECT id FROM scrum_sprint_item WHERE sprint_id = ? AND title = ?",
+                (new_sid, title),
+            ).fetchone()["id"]
+        )
+        burn = float(
+            conn.execute(
+                "SELECT COALESCE(SUM(committed_hours), 0) AS h FROM scrum_item_activity WHERE item_id = ?",
+                (iid,),
+            ).fetchone()["h"]
+            or 0
+        )
+        assert burn == 0.0
+    conn.close()
 
 
 def test_scrum_board_leave_strip_shows_stretch_when_overallocated(client, app):
@@ -1877,6 +3740,74 @@ def test_scrm_api_move_backlog_to_doing_keeps_prior_burnt(client, app):
     )
     conn.close()
     assert abs(total - 3.0) < 0.001
+
+
+def test_scrum_api_activity_update_returns_burn_totals(client, app):
+    """Editing stand-up hours updates DB and JSON includes refreshed task burn (sum of activity hours)."""
+    c = client
+    _manager_login(c)
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY name COLLATE NOCASE LIMIT 1").fetchone()["id"])
+    name_row = conn.execute(
+        "SELECT employee_name FROM team_roster WHERE team_id = ? ORDER BY employee_name COLLATE NOCASE LIMIT 1",
+        (tid,),
+    ).fetchone()
+    assignee = str(name_row["employee_name"]).strip() if name_row else EMPLOYEES[0]
+    ts = "2026-11-05T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'S ActUpd', '2026-11-01', '2026-11-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'Burn card', 8, 'open', '', 0, ?, ?, 'doing', 'ndy')
+        """,
+        (sid, assignee, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_item_activity (item_id, body, committed_hours, from_column, to_column, created_at)
+        VALUES (?, 'work', 2.5, 'doing', 'doing', ?)
+        """,
+        (iid, ts),
+    )
+    aid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    r = c.post(
+        "/scrum/api/item/activity_update",
+        json={
+            "item_id": iid,
+            "sprint_id": sid,
+            "assignee": assignee,
+            "activity_id": aid,
+            "note": "revised",
+            "committed_hours": "1",
+        },
+    )
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j.get("ok") is True
+    assert j.get("activity_committed_hours") == 1.0
+    br = j.get("burn") or {}
+    assert abs(float(br.get("committed_logged_hours", 0)) - 1.0) < 0.001
+    assert br.get("burn_pct") is not None
+    conn = get_db(app)
+    total = float(
+        conn.execute(
+            "SELECT COALESCE(SUM(committed_hours), 0) AS s FROM scrum_item_activity WHERE item_id = ?",
+            (iid,),
+        ).fetchone()["s"]
+    )
+    conn.close()
+    assert abs(total - 1.0) < 0.001
 
 
 def test_scrm_api_move_do_to_doing_resets_burnt(client, app):
@@ -2252,6 +4183,108 @@ def test_portal_proposal_approve_without_attest_does_not_apply(client, app):
     conn.close()
     assert col == "backlog"
     assert st == "pending"
+
+
+def test_manager_scrum_item_update_doing_column_updates_estimate_only(client, app):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-01T00:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Est Doing Sprint', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'Doing est', 4, 'doing', '', 0, ?, ?, 'doing', 'task')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    res = client.post(
+        "/scrum/sprint/item/update",
+        data={"item_id": str(iid), "sprint_id": str(sid), "estimate_hours": "12.5"},
+        follow_redirects=False,
+    )
+    assert res.status_code in (302, 303)
+    conn = get_db(app)
+    est = float(conn.execute("SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()[0])
+    title = conn.execute("SELECT title FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()["title"]
+    conn.close()
+    assert abs(est - 12.5) < 0.001
+    assert title == "Doing est"
+
+
+def test_portal_doing_estimate_change_queues_proposal_and_approve_updates_db(client, app):
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.test@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-01T00:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Portal Est Sprint', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'Portal doing est', 3, 'doing', '', 0, ?, ?, 'doing', 'task')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    r = client.post(
+        "/portal/scrum/sprint/item/update",
+        data={"item_id": str(iid), "sprint_id": str(sid), "estimate_hours": "8"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 303)
+    conn = get_db(app)
+    est_before = float(conn.execute("SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()[0])
+    prow = conn.execute(
+        "SELECT id, action FROM scrum_portal_proposal WHERE item_id = ? AND status = 'pending'",
+        (iid,),
+    ).fetchone()
+    conn.close()
+    assert abs(est_before - 3.0) < 0.001
+    assert prow is not None
+    assert prow["action"] == "item_update_doing_estimate"
+    pid = int(prow["id"])
+    _manager_login(client)
+    res = client.post(
+        "/scrum/portal-proposal/resolve",
+        data={"proposal_id": str(pid), "decision": "approve", "note": "ok", "manager_attest": "1"},
+        follow_redirects=False,
+    )
+    assert res.status_code in (302, 303)
+    conn = get_db(app)
+    est_after = float(conn.execute("SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()[0])
+    st = conn.execute("SELECT status FROM scrum_portal_proposal WHERE id = ?", (pid,)).fetchone()["status"]
+    conn.close()
+    assert abs(est_after - 8.0) < 0.001
+    assert st == "approved"
 
 
 def test_attendance_url_redirects_home(client):

@@ -3,6 +3,7 @@
 {% block extra_head %}
   {% if not gate_only %}
     <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='meet.css') }}" />
   {% endif %}
 {% endblock %}
 {% block content %}
@@ -112,14 +113,22 @@
         <a class="btn secondary" href="{{ url_for('dashboard', year=next_y, month=next_m) }}">Next Month →</a>
         <div class="ws-toolbar-spacer"></div>
         <a class="btn secondary" href="{{ url_for('nokia_audit', year=year, month=month) }}">Nokia e-tool</a>
-        <a class="btn secondary" href="{{ url_for('export_csv', start=month_start, end=month_end) }}">Export CSV</a>
+        <a class="btn secondary" href="{{ url_for('dashboard_leave_tracker_month_xlsx', year=year, month=month) }}">Export .xlsx</a>
       </div>
 
-      <div class="worksheet-wrap">
+      <p class="meet-hint" style="margin: 0 0 1rem">
+        Edit the month grid like <strong>DSM-Attendance</strong> (<a href="{{ url_for('meet') }}">open meet strip</a>): click an <strong>empty</strong> day cell to add leave; <strong>single-click</strong> a filled cell to approve that day when it is pending; <strong>double-click</strong> a filled cell to remove that day from the grid.
+      </p>
+
+      <div class="worksheet-wrap ws-month-fit ws-lead-5 ws-has-rownum" style="--ws-days: {{ days|length }};">
         <table class="ws-table" role="grid" aria-label="Leave tracker month grid">
           <thead>
             <tr>
-              <th class="ws-name" rowspan="2">Name</th>
+              <th class="ws-rownum-col" rowspan="2" title="Row">#</th>
+              <th class="ws-name" rowspan="2" title="Employee">{{ month_name }}</th>
+              <th class="ws-total-col" rowspan="2" title="Sum of leave day-units this month (full weekday leave = 1, half-day = 0.5). Same rules as the day cells.">Total</th>
+              <th class="ws-eleave-col" rowspan="2" title="Nokia e-tool approved day-units this month (green A cells): 1 per full day, 0.5 per half-day. Computed automatically.">eLeave<br />Count</th>
+              <th class="ws-gap-col" rowspan="2" title="eLeaveCount minus Total. Negative means the tracker shows more leave than eLeave.">GAP</th>
               {% for d in days %}
                 <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
               {% endfor %}
@@ -132,14 +141,44 @@
           </thead>
           <tbody>
             {% for row in grid_rows %}
-              <tr>
-                <td class="ws-name">{{ row.employee }}</td>
+              <tr
+                class="ws-month-grid-row"
+                data-year="{{ year }}"
+                data-month="{{ month }}"
+                data-employee="{{ row.employee }}"
+                data-leave-total="{{ row.leave_days_total }}"
+                data-eleave-days="{{ '%.2f'|format(row.eleave_days) if row.eleave_days is defined else '0.00' }}"
+              >
+                <td class="ws-rownum-col" aria-label="Row {{ loop.index }}">{{ loop.index }}</td>
+                <td class="ws-name" title="{{ row.employee }}">{{ row.employee }}</td>
+                <td class="ws-total-col" title="Leave day-units this month">{{ row.leave_days_total }}</td>
+                <td class="ws-eleave-col" title="Nokia-approved day-units (A) this month">
+                  <span class="ws-eleave-display" aria-label="Nokia eLeave day-units for {{ row.employee }}">{{ '%.2f'|format(row.eleave_days) if row.eleave_days is defined else '0.00' }}</span>
+                </td>
+                <td class="ws-gap-col{% if row.gap_days is defined and row.gap_days < -0.0001 %} ws-gap-col-negative{% endif %}">{{ row.gap_days if row.gap_days is defined else 0 }}</td>
                 {% for cell in row.cells %}
                   {% set wk = days[loop.index0].is_weekend %}
+                  {% set dmeta = days[loop.index0] %}
                   {% if cell %}
-                    <td class="ws-cell {{ cell.css }}{% if wk %} ws-col-weekend{% endif %}" title="{{ cell.title }}">{{ cell.code }}</td>
+                    <td
+                      class="ws-cell ws-cell-interactive {{ cell.css }}{% if wk %} ws-col-weekend{% endif %}"
+                      data-leave-id="{{ cell.leave_id }}"
+                      data-work-date="{{ cell.work_date }}"
+                      data-year="{{ year }}"
+                      data-month="{{ month }}"
+                      title="{{ cell.title }}"
+                      tabindex="0"
+                    >{{ cell.code }}</td>
                   {% else %}
-                    <td class="ws-cell ws-cell-empty{% if wk %} ws-col-weekend{% endif %}"></td>
+                    <td
+                      class="ws-cell ws-cell-empty ws-cell-interactive-add{% if wk %} ws-col-weekend{% endif %}"
+                      data-emp="{{ row.employee }}"
+                      data-work-date="{{ dmeta.iso }}"
+                      data-year="{{ year }}"
+                      data-month="{{ month }}"
+                      title="Click to add leave for this day"
+                      tabindex="0"
+                    ></td>
                   {% endif %}
                 {% endfor %}
               </tr>
@@ -153,8 +192,141 @@
         <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
         <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
         <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
-        <span class="ws-legend-note">½ = half day · dashed = pending</span>
+        <span><span class="legend-box" style="background: rgba(148, 163, 184, 0.35)"></span>CO</span>
+        <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
+        <span class="ws-legend-note">Total = leave day-units this month (1 = full day, 0.5 = half; <strong>CompOFF</strong> is shown as CO but not counted) · ½ = half day · dashed = pending · <strong>A</strong> = approved via Nokia e-tool · <strong>eLeave Count</strong> = Nokia A day-units this month (auto) · <strong>GAP</strong> = eLeaveCount − Total (shown in red when negative).</span>
       </div>
+
+      <dialog id="dashboard-meet-add-dialog" class="meet-dialog">
+        <form id="dashboard-meet-add-form">
+          <h3 style="margin-top: 0">Add leave</h3>
+          <p class="date-fieldset-hint" id="dashboard-meet-dlg-sub"></p>
+          <input type="hidden" name="year" id="dashboard-meet-dlg-year" />
+          <input type="hidden" name="month" id="dashboard-meet-dlg-month" />
+          <input type="hidden" name="employee_name" id="dashboard-meet-dlg-emp" />
+          <input type="hidden" name="work_date" id="dashboard-meet-dlg-date" />
+          <div class="field">
+            <label for="dashboard-meet-dlg-reason">Leave type</label>
+            <select id="dashboard-meet-dlg-reason" name="reason" required>
+              {% for value, label in reasons %}
+                <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label for="dashboard-meet-dlg-dur">Duration</label>
+            <select id="dashboard-meet-dlg-dur" name="duration_type" required>
+              {% for value, label in durations %}
+                {% if value != "multi" %}
+                  <option value="{{ value }}">{{ label }}</option>
+                {% endif %}
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn">Save</button>
+            <button type="button" class="btn secondary" id="dashboard-meet-dlg-cancel">Cancel</button>
+          </div>
+        </form>
+      </dialog>
+
+      <input type="hidden" id="dashboard-worksheet-csrf" value="{{ csrf_token() }}" />
+      <input type="hidden" id="dashboard-meet-quick-url" value="{{ url_for('dashboard_api_leave_tracker_meet_quick_leave') }}" />
+      <input type="hidden" id="dashboard-meet-approve-url" value="{{ url_for('dashboard_api_leave_tracker_meet_approve_day') }}" />
+      <input type="hidden" id="dashboard-meet-remove-url" value="{{ url_for('dashboard_api_leave_tracker_meet_remove_day') }}" />
+      <script>
+        (function () {
+          var csrfEl = document.getElementById("dashboard-worksheet-csrf");
+          var quickEl = document.getElementById("dashboard-meet-quick-url");
+          var apprEl = document.getElementById("dashboard-meet-approve-url");
+          var remEl = document.getElementById("dashboard-meet-remove-url");
+          if (!csrfEl || !quickEl || !apprEl || !remEl) return;
+          var csrf = csrfEl.value;
+          var quickUrl = quickEl.value;
+          var approveUrl = apprEl.value;
+          var removeUrl = remEl.value;
+
+          function postForm(url, data) {
+            var fd = new FormData();
+            Object.keys(data).forEach(function (k) {
+              fd.append(k, data[k]);
+            });
+            fd.append("csrf_token", csrf);
+            return fetch(url, { method: "POST", body: fd, credentials: "same-origin" }).then(function (r) {
+              return r.json();
+            });
+          }
+
+          var dlg = document.getElementById("dashboard-meet-add-dialog");
+          var sub = document.getElementById("dashboard-meet-dlg-sub");
+          if (!dlg || !sub) return;
+
+          document.querySelectorAll("td.ws-cell-interactive-add").forEach(function (td) {
+            td.addEventListener("click", function () {
+              document.getElementById("dashboard-meet-dlg-emp").value = td.getAttribute("data-emp") || "";
+              document.getElementById("dashboard-meet-dlg-date").value = td.getAttribute("data-work-date") || "";
+              document.getElementById("dashboard-meet-dlg-year").value = td.getAttribute("data-year") || "";
+              document.getElementById("dashboard-meet-dlg-month").value = td.getAttribute("data-month") || "";
+              sub.textContent =
+                (td.getAttribute("data-emp") || "") + " · " + (td.getAttribute("data-work-date") || "");
+              dlg.showModal();
+            });
+          });
+
+          document.querySelectorAll("td.ws-cell-interactive[data-leave-id]").forEach(function (td) {
+            var timer = null;
+            td.addEventListener("click", function (ev) {
+              if (ev.detail !== 1) return;
+              timer = window.setTimeout(function () {
+                timer = null;
+                postForm(approveUrl, {
+                  leave_id: td.getAttribute("data-leave-id"),
+                  work_date: td.getAttribute("data-work-date"),
+                  year: td.getAttribute("data-year"),
+                  month: td.getAttribute("data-month"),
+                }).then(function (j) {
+                  if (j && j.ok) location.reload();
+                });
+              }, 280);
+            });
+            td.addEventListener("dblclick", function (ev) {
+              ev.preventDefault();
+              if (timer) {
+                window.clearTimeout(timer);
+                timer = null;
+              }
+              postForm(removeUrl, {
+                leave_id: td.getAttribute("data-leave-id"),
+                work_date: td.getAttribute("data-work-date"),
+                year: td.getAttribute("data-year"),
+                month: td.getAttribute("data-month"),
+              }).then(function (j) {
+                if (j && j.ok) location.reload();
+              });
+            });
+          });
+
+          var cancel = document.getElementById("dashboard-meet-dlg-cancel");
+          if (cancel) cancel.addEventListener("click", function () { dlg.close(); });
+
+          var form = document.getElementById("dashboard-meet-add-form");
+          if (form) {
+            form.addEventListener("submit", function (ev) {
+              ev.preventDefault();
+              var fd = new FormData(ev.target);
+              fd.append("csrf_token", csrf);
+              fetch(quickUrl, { method: "POST", body: fd, credentials: "same-origin" })
+                .then(function (r) { return r.json(); })
+                .then(function (j) {
+                  if (j && j.ok) {
+                    dlg.close();
+                    location.reload();
+                  }
+                });
+            });
+          }
+        })();
+      </script>
     </section>
 
     <section class="card">
@@ -250,9 +422,22 @@
 
     <section class="card">
       <h3 class="section-subheading">All records</h3>
+      <div class="dashboard-all-records-filter">
+        <label class="dashboard-all-records-filter-label" for="dashboard-all-leaves-name-filter">Filter by name</label>
+        <input
+          type="search"
+          id="dashboard-all-leaves-name-filter"
+          class="dashboard-all-records-filter-input"
+          placeholder="Type part of a name…"
+          autocomplete="off"
+          value="{{ all_records_filter_q|default('', true)|e }}"
+          {% if not all_leaves %}disabled aria-disabled="true"{% else %}aria-controls="dashboard-all-leaves-table"{% endif %}
+        />
+      </div>
       {% if all_leaves %}
+        <p id="dashboard-all-leaves-no-matches" class="empty-state" hidden>No rows match this filter.</p>
         <div class="table-scroll">
-        <table>
+        <table id="dashboard-all-leaves-table" class="dashboard-all-leaves-table">
           <thead>
             <tr>
               <th>ID</th>
@@ -266,7 +451,7 @@
           </thead>
           <tbody>
             {% for row in all_leaves %}
-              <tr>
+              <tr data-employee="{{ row['employee_name']|e }}">
                 <td>{{ row["id"] }}</td>
                 <td>{{ row["employee_name"] }}</td>
                 <td>{{ row["start_date"] }} — {{ row["end_date"] }}</td>
@@ -281,6 +466,65 @@
           </tbody>
         </table>
         </div>
+        <script>
+          (function () {
+            var inp = document.getElementById("dashboard-all-leaves-name-filter");
+            var tbl = document.getElementById("dashboard-all-leaves-table");
+            var emptyMsg = document.getElementById("dashboard-all-leaves-no-matches");
+            if (!inp || inp.disabled) return;
+            var storageKey = "dashboardAllRecordsNameFilter_{{ year|int }}_{{ month|int }}";
+            function apply() {
+              var raw = inp.value || "";
+              var q = raw.trim().toLowerCase();
+              try {
+                sessionStorage.setItem(storageKey, raw);
+              } catch (e) {}
+              try {
+                var u = new URL(window.location.href);
+                var rt = raw.trim();
+                if (rt) u.searchParams.set("records_q", rt.slice(0, 120));
+                else u.searchParams.delete("records_q");
+                history.replaceState({}, "", u.pathname + u.search);
+              } catch (e2) {}
+              if (!tbl) return;
+              var rows = tbl.querySelectorAll("tbody tr");
+              var anyVisible = false;
+              rows.forEach(function (tr) {
+                var name = (tr.getAttribute("data-employee") || "").toLowerCase();
+                var show = !q || name.indexOf(q) !== -1;
+                tr.style.display = show ? "" : "none";
+                if (show) anyVisible = true;
+              });
+              if (emptyMsg) emptyMsg.hidden = anyVisible || !q;
+            }
+            try {
+              if (!String(inp.value || "").trim()) {
+                var saved = sessionStorage.getItem(storageKey);
+                if (saved) inp.value = saved;
+              }
+            } catch (e3) {}
+            apply();
+            inp.addEventListener("input", apply);
+            inp.addEventListener("search", apply);
+            document.addEventListener(
+              "click",
+              function (e) {
+                var a = e.target.closest("a[href]");
+                if (!a) return;
+                var href = a.getAttribute("href") || "";
+                if (href.indexOf("/dashboard/leave/") === -1 || href.indexOf("/edit") === -1) return;
+                var v = (inp.value || "").trim();
+                if (!v) return;
+                try {
+                  var u = new URL(a.href, window.location.origin);
+                  u.searchParams.set("records_q", v.slice(0, 120));
+                  a.setAttribute("href", u.pathname + u.search);
+                } catch (err) {}
+              },
+              true
+            );
+          })();
+        </script>
       {% else %}
         <p class="empty-state">None.</p>
       {% endif %}

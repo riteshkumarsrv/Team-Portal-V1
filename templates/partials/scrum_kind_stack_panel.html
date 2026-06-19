@@ -1,0 +1,99 @@
+<aside
+  class="scrum-team-kind-stack{% if kind_stack_horizontal|default(false) %} scrum-team-kind-stack--horizontal{% endif %}"
+  aria-label="Estimated versus burnt hours by task type"
+>
+  {% if kind_stack_has_chart %}
+    <div class="scrum-bd-head">
+      <div class="scrum-bd-stats">
+        <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Est. (by type)</span> <strong>{{ "%.1f"|format(kind_stack_total_est) }}h</strong></span>
+        <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Burnt (by type)</span> <strong>{{ "%.1f"|format(kind_stack_total_burnt) }}h</strong></span>
+      </div>
+      <h3 class="scrum-bd-title">Type stack</h3>
+      <div class="scrum-bd-legend scrum-kst-legend">
+        <span class="scrum-bd-leg scrum-kst-leg-burnt"><i></i>Burnt ≤ est.</span>
+        <span class="scrum-bd-leg scrum-kst-leg-over"><i></i>Burnt over est.</span>
+        <span class="scrum-bd-leg scrum-kst-leg-rem"><i></i>Est. remaining</span>
+      </div>
+    </div>
+    <div class="scrum-bd-chart-wrap{% if kind_stack_horizontal|default(false) %} scrum-bd-chart-wrap--h-kind{% endif %}">
+      {% if kind_stack_horizontal|default(false) %}
+        <svg
+          class="scrum-bd-svg scrum-hst-svg"
+          viewBox="0 0 {{ kind_stack_svg_w }} {{ kind_stack_svg_h }}"
+          preserveAspectRatio="xMinYMid meet"
+          role="img"
+          aria-label="Horizontal stacked bars: estimated versus burnt hours per task type for this sprint"
+        >
+          {% for t in kind_stack_x_ticks %}
+            <line
+              class="scrum-bd-grid"
+              x1="{{ t.x }}"
+              y1="{{ kind_stack_chart_y0 }}"
+              x2="{{ t.x }}"
+              y2="{{ kind_stack_chart_y1 }}"
+            />
+          {% endfor %}
+          {% for b in kind_stack_bars %}
+            <text class="scrum-hst-row-label" x="{{ b.row_label_x }}" y="{{ b.row_label_y }}" text-anchor="start">{{ b.label_short }}</text>
+            <g class="scrum-kst-bar-group">
+              <title>{{ b.title }}</title>
+              {% for s in b.segments %}
+                <rect
+                  class="scrum-kst-rect"
+                  x="{{ s.x }}"
+                  y="{{ s.y }}"
+                  width="{{ s.w }}"
+                  height="{{ s.h }}"
+                  fill="{{ s.fill }}"
+                  rx="3"
+                  ry="3"
+                />
+              {% endfor %}
+            </g>
+          {% endfor %}
+          {% for t in kind_stack_x_ticks %}
+            <text class="scrum-bd-x-label scrum-hst-x-tick" x="{{ t.x }}" y="{{ kind_stack_x_axis_y }}" text-anchor="middle">{{ t.label }}</text>
+          {% endfor %}
+          <text class="scrum-bd-axis-title" x="{{ kind_stack_svg_w / 2 }}" y="{{ kind_stack_svg_h - 1 }}" text-anchor="middle">{{ kind_stack_axis_label }}</text>
+        </svg>
+      {% else %}
+        <svg
+          class="scrum-bd-svg"
+          viewBox="0 0 {{ kind_stack_svg_w }} {{ kind_stack_svg_h }}"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label="Stacked bars: estimated versus burnt hours per task type for this sprint"
+        >
+          {% for t in kind_stack_y_ticks %}
+            <line class="scrum-bd-grid" x1="46" y1="{{ t.y }}" x2="{{ kind_stack_svg_w - 12 }}" y2="{{ t.y }}" />
+            <text class="scrum-bd-y-label" x="4" y="{{ t.y + 4 }}">{{ t.label }}</text>
+          {% endfor %}
+          {% for b in kind_stack_bars %}
+            <g class="scrum-kst-bar-group">
+              <title>{{ b.title }}</title>
+              {% for s in b.segments %}
+                <rect
+                  class="scrum-kst-rect"
+                  x="{{ s.x }}"
+                  y="{{ s.y }}"
+                  width="{{ s.w }}"
+                  height="{{ s.h }}"
+                  fill="{{ s.fill }}"
+                  rx="3"
+                  ry="3"
+                />
+              {% endfor %}
+            </g>
+          {% endfor %}
+          {% for b in kind_stack_bars %}
+            <text class="scrum-bd-x-label" x="{{ b.cx }}" y="{{ kind_stack_svg_h - 8 }}" text-anchor="middle">{{ b.label_short }}</text>
+          {% endfor %}
+          <text class="scrum-bd-axis-title" x="{{ kind_stack_svg_w / 2 }}" y="{{ kind_stack_svg_h - 1 }}" text-anchor="middle">{{ kind_stack_axis_label }}</text>
+        </svg>
+      {% endif %}
+    </div>
+  {% else %}
+    <h3 class="scrum-bd-title">Type stack</h3>
+    <p class="scrum-bd-empty">{{ kind_stack_message }}</p>
+  {% endif %}
+</aside>

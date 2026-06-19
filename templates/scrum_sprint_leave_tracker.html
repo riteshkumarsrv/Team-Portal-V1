@@ -20,11 +20,12 @@
     </div>
 
     {% if days and grid_rows %}
-      <div class="worksheet-wrap">
+      <div class="worksheet-wrap ws-month-fit" style="--ws-days: {{ days|length }};">
         <table class="ws-table" role="grid" aria-label="Sprint leave tracker grid">
           <thead>
             <tr>
               <th class="ws-name" rowspan="2">Name</th>
+              <th class="ws-total-col" rowspan="2" title="Sum of leave day-units in this sprint window (full day = 1, half = 0.5).">Total</th>
               {% for d in days %}
                 <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
               {% endfor %}
@@ -38,7 +39,8 @@
           <tbody>
             {% for row in grid_rows %}
               <tr>
-                <td class="ws-name">{{ row.employee }}</td>
+                <td class="ws-name" title="{{ row.employee }}">{{ row.employee }}</td>
+                <td class="ws-total-col" title="Leave day-units in sprint window">{{ row.leave_days_total }}</td>
                 {% for cell in row.cells %}
                   {% set wk = days[loop.index0].is_weekend %}
                   {% if cell %}
@@ -58,7 +60,8 @@
         <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
         <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
         <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
-        <span class="ws-legend-note">½ = half day · dashed = pending</span>
+        <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
+        <span class="ws-legend-note">Total = leave day-units in this window (1 = full day, 0.5 = half) · ½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved</span>
       </div>
     {% else %}
       <p class="flash error" role="alert">No roster members or no days in this sprint window — nothing to show.</p>

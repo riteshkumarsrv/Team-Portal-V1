@@ -15,4 +15,4 @@ Start-Process powershell -ArgumentList @(
     "Start-Sleep -Seconds 2; if (Get-Command Start-Process -ErrorAction SilentlyContinue) { Start-Process '$url' }"
 ) | Out-Null
 
-python app.py
+python main.py

@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% block title %}Team overview detailed — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
+{% block body_class %}page-scrum-board{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=41) }}" />
+{% endblock %}
+{% block content %}
+  <section class="card scrum-team-detail-hero">
+    <p class="scrum-hero-back">
+      <a href="{{ url_for('scrum_sprint_team', sprint_id=sprint_id) }}">← Team overview</a>
+      ·
+      <a href="{{ url_for('scrum') }}">Sprint hub</a>
+    </p>
+    <h2 class="page-heading scrum-team-detail-page-title">{{ sprint_name }}</h2>
+    <p class="scrum-team-detail-dates">{{ sprint_start }} — {{ sprint_end }}</p>
+    <p class="scrum-team-detail-summary-line" id="scrum-team-detail-summary">{{ summary_one_liner }}</p>
+    {% if sprint_team_capacity_hours is not none %}
+      <p class="scrum-team-detail-cap-live meet-hint" id="sprint-capacity-line-detailed"
+         data-start="{{ sprint_start }}"
+         data-end="{{ sprint_end }}"
+         data-capacity-url="{{ url_for('scrum_api_sprint_team_capacity') }}">
+        Live sprint capacity: <strong><span id="sprint-team-capacity-live-detailed">{{ "%.1f"|format(sprint_team_capacity_hours) }}</span> h</strong> net (refreshes like the main team page when the sprint is open).
+      </p>
+    {% endif %}
+    {% if (portal_proposals_pending|default(0)) > 0 %}
+      <div class="scrum-team-pending-banner" role="status">
+        <strong>{{ portal_proposals_pending }}</strong> portal change(s) for this sprint are pending —
+        <a href="{{ url_for('scrum_portal_proposals') }}">Review requests</a>
+      </div>
+    {% endif %}
+    <form method="get" class="scrum-team-detail-member-filter" action="{{ url_for('scrum_sprint_team_detailed', sprint_id=sprint_id) }}">
+      <label for="scrum-team-detail-member-select">Show tasks for</label>
+      <select
+        id="scrum-team-detail-member-select"
+        name="member"
+        class="scrum-team-detail-member-select"
+        aria-label="Filter by team member"
+        onchange="this.form.submit()"
+      >
+        <option value="" {% if not member_filter %}selected{% endif %}>All members</option>
+        {% for n in team_detailed_roster_names %}
+          <option value="{{ n|e }}" {% if n == member_filter %}selected{% endif %}>{{ n }}</option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit" class="btn secondary small">Apply</button></noscript>
+    </form>
+  </section>
+
+  <section class="card scrum-team-detail-body">
+    {% for m in members %}
+      <article class="scrum-team-detail-member" id="member-detail-{{ loop.index0 }}">
+        <header class="scrum-team-detail-member-head">
+          <h3 class="scrum-team-detail-member-name">{{ m.name }}</h3>
+          <p class="scrum-team-detail-member-oneline">
+            {% if m.task_count > 0 and m.progress_pct is not none %}
+              <strong>{{ "%.0f"|format(m.progress_pct) }}%</strong> Sprint burnt ({{ "%.1f"|format(m.committed_total_hours) }}/{{ "%.1f"|format(m.est_total_hours) }}h)
+              · Cap bar scale {{ "%.1f"|format(m.effort_scale_max) }}h
+              · Queue B{{ m.counts.backlog }}·D{{ m.counts.do }}·Dg{{ m.counts.doing }}·Dn{{ m.counts.done }}
+            {% elif m.task_count > 0 %}
+              Sprint burnt needs a positive total estimate · {{ m.task_count }} sticky/stickies
+            {% else %}
+              No stickies this sprint
+            {% endif %}
+            {% if m.pending_portal %}
+              · <span class="scrum-member-peek-pend">{{ (m.pending_portal or [])|length }} portal pending</span>
+            {% endif %}
+          </p>
+        </header>
+
+        {% if m.stickies %}
+          <div class="scrum-team-detail-sticky-list">
+            {% for s in m.stickies %}
+              <div class="scrum-team-detail-sticky" data-item-id="{{ s.id }}">
+                <div class="scrum-team-detail-sticky-top">
+                  <span
+                    class="scrum-team-detail-kind-pill"
+                    style="{% if s.kind_color_hex %}--kind-color: {{ s.kind_color_hex }}; border-color: {{ s.kind_color_hex }};{% endif %}"
+                  >{{ s.kind_label }}</span>
+                  <span class="scrum-team-detail-sticky-title">{{ s.title or "—" }}</span>
+                  <span class="scrum-team-detail-sticky-meta">
+                    {{ s.kanban_column_label }}
+                    · workflow <strong>{{ s.workflow_status or "—" }}</strong>
+                    · est <strong>{{ "%.1f"|format(s.estimate_hours or 0) }}h</strong>
+                    · logged <strong>{{ "%.1f"|format(s.committed_logged_hours or 0) }}h</strong>
+                    {% if s.burn_pct is not none %}
+                      · <strong>{{ "%.0f"|format(s.burn_pct) }}%</strong> of estimate
+                    {% endif %}
+                  </span>
+                </div>
+                {% if s.area %}
+                  <p class="scrum-team-detail-sticky-area">Area: {{ s.area }}</p>
+                {% endif %}
+                {% if s.notes_display or s.notes %}
+                  <p class="scrum-team-detail-sticky-notes"><span class="label">Notes:</span> {{ (s.notes_display or s.notes)|e }}</p>
+                {% endif %}
+                <div class="scrum-team-detail-sticky-split">
+                  <div class="scrum-team-detail-sticky-col scrum-team-detail-sticky-col--left">
+                    <details class="scrum-sticky-attachments scrum-team-detail-sticky-attachments">
+                      <summary class="scrum-sticky-attachments-summary">
+                        Attachments{% if s.attachments %} ({{ s.attachments|length }}){% endif %}
+                      </summary>
+                      {% if s.attachments %}
+                        <ul class="scrum-sticky-attachment-list scrum-team-detail-att-list">
+                          {% for att in s.attachments %}
+                            {% set fn = (att.original_filename or '')|lower %}
+                            {% if fn.endswith('.pdf') %}
+                              {% set preview_kind = 'pdf' %}
+                            {% elif fn.endswith('.png') or fn.endswith('.jpg') or fn.endswith('.jpeg') or fn.endswith('.gif') or fn.endswith('.webp') %}
+                              {% set preview_kind = 'image' %}
+                            {% elif fn.endswith('.xlsx') or fn.endswith('.xlsm') or fn.endswith('.xltx') or fn.endswith('.csv') %}
+                              {% set preview_kind = 'sheet' %}
+                            {% else %}
+                              {% set preview_kind = 'other' %}
+                            {% endif %}
+                            <li class="scrum-sticky-attachment-row scrum-team-detail-att-row">
+                              <button
+                                type="button"
+                                class="scrum-sticky-attachment-name scrum-detail-att-preview-trigger"
+                                data-preview-url="{{ url_for('scrum_sprint_item_attachment_download', attachment_id=att.id) }}?inline=1"
+                                data-preview-kind="{{ preview_kind }}"
+                                {% if preview_kind == 'sheet' %}
+                                  data-preview-html-url="{{ url_for('scrum_sprint_item_attachment_preview_html', attachment_id=att.id) }}"
+                                {% endif %}
+                                data-download-url="{{ url_for('scrum_sprint_item_attachment_download', attachment_id=att.id) }}"
+                              >{{ att.original_filename|e }}</button>
+                              <a
+                                class="scrum-team-detail-att-dl"
+                                href="{{ url_for('scrum_sprint_item_attachment_download', attachment_id=att.id) }}"
+                              >Download</a>
+                              <span class="scrum-sticky-attachment-size">{{ (att.size_bytes / 1024)|round(1) }} KB</span>
+                              {% if not sprint_readonly %}
+                                <form
+                                  method="post"
+                                  action="{{ kb_form_urls.attachment_delete }}"
+                                  class="inline-form scrum-sticky-attachment-del"
+                                  onclick="event.stopPropagation();"
+                                  onmousedown="event.stopPropagation();"
+                                  onsubmit="return confirm('Remove this attachment?');"
+                                >
+                                  {% include "partials/csrf.html" %}
+                                  <input type="hidden" name="attachment_id" value="{{ att.id }}" />
+                                  <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                                  <input type="hidden" name="assignee" value="{{ m.name }}" />
+                                  <input type="hidden" name="return_to" value="team_detailed" />
+                                  <button type="submit" class="btn secondary small danger-ghost">Remove</button>
+                                </form>
+                              {% endif %}
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      {% endif %}
+                      {% if not sprint_readonly %}
+                        <form
+                          class="scrum-sticky-attachment-upload"
+                          method="post"
+                          action="{{ kb_form_urls.attachment_upload }}"
+                          enctype="multipart/form-data"
+                          onclick="event.stopPropagation();"
+                          onmousedown="event.stopPropagation();"
+                        >
+                          {% include "partials/csrf.html" %}
+                          <input type="hidden" name="return_to" value="team_detailed" />
+                          <input type="hidden" name="item_id" value="{{ s.id }}" />
+                          <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                          <input type="hidden" name="assignee" value="{{ m.name }}" />
+                          <label class="scrum-sticky-attachment-file-label">
+                            Add file(s)
+                            <input type="file" name="files" class="scrum-sticky-attachment-file" multiple required />
+                          </label>
+                          <button type="submit" class="btn secondary small">Upload</button>
+                        </form>
+                        <p class="scrum-sticky-attachment-hint">
+                          Select one or more files (Ctrl/Cmd+click). Same types as before (e.g. PDF, PNG, XLSX). Max 10 MB per file, up to 20 files per sticky. Remove any file with the button beside its name.
+                        </p>
+                      {% elif sprint_readonly and not s.attachments %}
+                        <p class="scrum-sticky-attachment-hint">No attachments on this sticky.</p>
+                      {% endif %}
+                    </details>
+                    <div class="scrum-detail-att-preview" data-preview-root>
+                      <p class="scrum-detail-att-preview-label">Preview</p>
+                      <div class="scrum-detail-att-preview-frame-wrap">
+                        <iframe class="scrum-detail-att-preview-iframe" title="Attachment preview" hidden></iframe>
+                        <img class="scrum-detail-att-preview-img" alt="" hidden />
+                        <p class="scrum-detail-att-preview-empty">
+                          Select a file name above to preview here (PDF, images, Excel .xlsx/.csv first sheet or table — legacy .xls: Download only).
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="scrum-team-detail-sticky-col scrum-team-detail-sticky-col--right">
+                    {% if s.standup_updates %}
+                      <h4 class="scrum-team-detail-subh">In progress updates (stand-up)</h4>
+                      <ul class="scrum-team-detail-activity">
+                        {% for u in s.standup_updates %}
+                          <li>
+                            <span class="scrum-team-detail-act-ts">{{ u.created_at_display }}</span>
+                            {% if u.committed_hours and u.committed_hours > 0 %}
+                              <span class="scrum-team-detail-act-h">+{{ "%.1f"|format(u.committed_hours) }}h</span>
+                            {% endif %}
+                            {% if u.body %}<span class="scrum-team-detail-act-body">{{ u.body|e }}</span>{% endif %}
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    {% endif %}
+
+                    <h4 class="scrum-team-detail-subh">All task activity</h4>
+                    {% if s.activity_log %}
+                      <ul class="scrum-team-detail-activity">
+                        {% for a in s.activity_log %}
+                          <li>
+                            <span class="scrum-team-detail-act-ts">{{ a.created_at_display }}</span>
+                            <span class="scrum-team-detail-act-move">{{ a.from_label }} → {{ a.to_label }}</span>
+                            {% if a.kind_label %}<span class="scrum-team-detail-act-kind">({{ a.kind_label }})</span>{% endif %}
+                            {% if a.committed_hours is not none and a.committed_hours > 0 %}
+                              <span class="scrum-team-detail-act-h">+{{ "%.1f"|format(a.committed_hours) }}h</span>
+                            {% endif %}
+                            {% if a.body %}<span class="scrum-team-detail-act-body">{{ a.body|e }}</span>{% endif %}
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    {% else %}
+                      <p class="scrum-team-detail-empty">No activity rows yet.</p>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="scrum-team-detail-empty">No stickies for this member in this sprint.</p>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      var capLine = document.getElementById("sprint-capacity-line-detailed");
+      var capSpan = document.getElementById("sprint-team-capacity-live-detailed");
+      if (!capLine || !capSpan) return;
+      var url = capLine.getAttribute("data-capacity-url");
+      var start = capLine.getAttribute("data-start");
+      var end = capLine.getAttribute("data-end");
+      if (!url || !start || !end) return;
+      function refresh() {
+        var u = url + "?start_date=" + encodeURIComponent(start) + "&end_date=" + encodeURIComponent(end);
+        fetch(u, { credentials: "same-origin" })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            if (j && typeof j.hours === "number") capSpan.textContent = j.hours.toFixed(1);
+          })
+          .catch(function () {});
+      }
+      refresh();
+      setInterval(refresh, 120000);
+    })();
+
+    (function initTeamDetailAttachmentPreview() {
+      document.querySelectorAll(".scrum-team-detail-sticky").forEach(function (card) {
+        var root = card.querySelector("[data-preview-root]");
+        if (!root) return;
+        var iframe = root.querySelector(".scrum-detail-att-preview-iframe");
+        var img = root.querySelector(".scrum-detail-att-preview-img");
+        var empty = root.querySelector(".scrum-detail-att-preview-empty");
+        if (!iframe || !img || !empty) return;
+        var emptyDefault = empty.textContent;
+
+        card.querySelectorAll(".scrum-detail-att-preview-trigger").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var url = btn.getAttribute("data-preview-url") || "";
+            var kind = (btn.getAttribute("data-preview-kind") || "other").toLowerCase();
+            card.querySelectorAll(".scrum-detail-att-preview-trigger").forEach(function (b) {
+              b.classList.toggle("is-selected", b === btn);
+            });
+            if (kind === "pdf" && url) {
+              empty.textContent = emptyDefault;
+              img.hidden = true;
+              img.removeAttribute("src");
+              iframe.hidden = false;
+              iframe.setAttribute("src", url);
+              empty.hidden = true;
+            } else if (kind === "image" && url) {
+              empty.textContent = emptyDefault;
+              iframe.hidden = true;
+              iframe.removeAttribute("src");
+              img.hidden = false;
+              img.setAttribute("src", url);
+              empty.hidden = true;
+            } else if (kind === "sheet") {
+              var sheetUrl = btn.getAttribute("data-preview-html-url") || "";
+              empty.textContent = emptyDefault;
+              img.hidden = true;
+              img.removeAttribute("src");
+              if (sheetUrl) {
+                iframe.hidden = false;
+                iframe.setAttribute("src", sheetUrl);
+                empty.hidden = true;
+              } else {
+                iframe.hidden = true;
+                iframe.removeAttribute("src");
+                empty.hidden = false;
+                empty.textContent =
+                  "Preview is not available for this file type. Use Download.";
+              }
+            } else {
+              iframe.hidden = true;
+              iframe.removeAttribute("src");
+              img.hidden = true;
+              img.removeAttribute("src");
+              empty.hidden = false;
+              empty.textContent =
+                "Preview is not available for this file type (for example Office documents). Use Download.";
+            }
+          });
+        });
+      });
+    })();
+  </script>
+{% endblock %}

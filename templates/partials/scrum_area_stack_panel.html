@@ -1,0 +1,28 @@
+<aside
+  class="scrum-team-area-stack"
+  aria-label="Estimated versus burnt hours by task area{% if assignee is defined and assignee %} for {{ assignee }}{% endif %}"
+>
+  {% if area_stack_has_chart %}
+    <div class="scrum-bd-head">
+      <div class="scrum-bd-stats">
+        <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Est. (by area)</span> <strong>{{ "%.1f"|format(area_stack_total_est) }}h</strong></span>
+        <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Burnt (by area)</span> <strong>{{ "%.1f"|format(area_stack_total_burnt) }}h</strong></span>
+      </div>
+      <div class="scrum-area-stack-title-block">
+        <h3 class="scrum-bd-title">Area stack</h3>
+        <p class="scrum-area-stack-axis-caption">{{ area_stack_axis_label }}</p>
+      </div>
+      <div class="scrum-bd-legend scrum-kst-legend">
+        <span class="scrum-bd-leg scrum-kst-leg-burnt"><i></i>Burnt ≤ est.</span>
+        <span class="scrum-bd-leg scrum-kst-leg-over"><i></i>Burnt over est.</span>
+        <span class="scrum-bd-leg scrum-kst-leg-rem"><i></i>Est. remaining</span>
+      </div>
+    </div>
+    <div class="scrum-bd-chart-wrap scrum-area-stack-chart-wrap">
+      {% include "partials/scrum_area_stack_svg.html" %}
+    </div>
+  {% else %}
+    <h3 class="scrum-bd-title">Area stack</h3>
+    <p class="scrum-bd-empty">{{ area_stack_message }}</p>
+  {% endif %}
+</aside>

@@ -3,20 +3,80 @@
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=6) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=39) }}" />
+  <script defer src="{{ url_for('static', filename='scrum_area_autocomplete.js', v=1) }}"></script>
 {% endblock %}
 {% block content %}
   {% set col_labels = {'backlog': 'Backlog', 'do': 'Do', 'doing': 'In progress', 'done': 'Done'} %}
   {% set _portal = portal_kanban|default(false) %}
   {% set sprint_readonly = sprint_readonly|default(false) %}
+  {% set sprint_freeze_mode = sprint_freeze_mode|default(none) %}
+  {% macro scrum_standup_readonly(card) -%}
+    {% if card.standup_updates %}
+      <div class="scrum-standup-history-readonly" aria-label="Stand-up history">
+        <p class="scrum-activity-section-title">Stand-up updates (history)</p>
+        <ul class="scrum-standup-list scrum-standup-list--readonly">
+          {% for u in card.standup_updates %}
+            <li class="scrum-standup-item" data-activity-id="{{ u.id }}">
+              <div class="scrum-standup-item-content">
+                <div class="scrum-standup-item-head">
+                  <time class="scrum-standup-time" datetime="{{ u.created_at }}">{{ u.created_at_display }}</time>
+                  {% if u.committed_hours is not none %}
+                    <span class="scrum-standup-hrs">+{{ "%.1f"|format(u.committed_hours) }}h</span>
+                  {% endif %}
+                </div>
+                {% if u.body %}
+                  <p class="scrum-standup-body">{{ u.body }}</p>
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  {%- endmacro %}
+  {% macro scrum_task_burn_widget(card, with_notes_display) -%}
+    <div class="scrum-doing-burn" title="Logged hours on this sticky vs its estimate (all moves + stand-ups)">
+      <div class="scrum-doing-burn-head">
+        {% if card.burn_pct is not none %}
+          <span class="scrum-doing-burn-pct"><strong>{{ "%.0f"|format(card.burn_pct) }}%</strong> Task burn</span>
+        {% else %}
+          <span class="scrum-doing-burn-pct scrum-doing-burn-muted">Task burn needs a positive estimate</span>
+        {% endif %}
+        <span class="scrum-doing-burn-meta">{{ "%.1f"|format(card.committed_logged_hours|default(0)) }}h logged · {{ "%.1f"|format(card.estimate_hours) }}h est.</span>
+      </div>
+      <div class="scrum-bar-label scrum-bar-label-compact">Estimate (scale max {{ "%.1f"|format(card.effort_scale_max|default(0)) }}h)</div>
+      <div class="scrum-bar-track scrum-bar-track-compact">
+        <div class="scrum-bar-fill scrum-bar-est" style="width: {{ card.pct_est_bar|default(0) }}%;"></div>
+      </div>
+      <div class="scrum-bar-label scrum-bar-label-compact scrum-bar-label-tight">Burnt (red = stretch)</div>
+      <div class="scrum-bar-track scrum-bar-track-compact scrum-bar-split">
+        {% if (card.pct_committed_regular_bar|default(0)) > 0 or (card.pct_stretch_bar|default(0)) > 0 %}
+          <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ card.pct_committed_regular_bar|default(0) }}%;"></div>
+          {% if (card.pct_stretch_bar|default(0)) > 0.01 %}
+            <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ card.pct_stretch_bar }}%;"></div>
+          {% endif %}
+        {% else %}
+          <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
+        {% endif %}
+      </div>
+    </div>
+    {% if with_notes_display and card.notes_display %}
+      <div class="scrum-sticky-details scrum-sticky-details-context">{{ card.notes_display }}</div>
+    {% endif %}
+  {%- endmacro %}
   <section class="card scrum-board-hero scrum-kb-hero">
     <p class="scrum-hero-back">
       <a href="{{ kb_back_url }}">← {% if kb_back_label|default('') %}{{ kb_back_label }}{% elif _portal %}My sprint work{% else %}{{ sprint_name }} · Team{% endif %}</a>
     </p>
-    <h2 class="page-heading scrum-hero-title">Sticky board · {{ assignee }}</h2>
+    <h2 class="page-heading scrum-hero-title scrum-kb-hero-title">Sticky board · {{ assignee }}</h2>
     {% if sprint_readonly %}
       <p class="scrum-kb-readonly-banner" role="status">
-        This sprint is <strong>closed</strong> — view only. A manager can click <strong>Open sprint</strong> on the sprint team page to allow edits again.
+        {% if sprint_freeze_mode == 'sprint_closed' %}
+        This sprint is <strong>closed</strong> — view only. A manager can click <strong>Open sprint</strong> on the sprint team page to clear the closed flag (the board stays read-only if the sprint end date has already passed).
+        {% else %}
+        This sprint’s <strong>end date has passed</strong> — view only. Burndown counts logged work through the last sprint day only; create or open a new sprint for new work.
+        {% endif %}
       </p>
     {% endif %}
     {% if not _portal %}
@@ -24,13 +84,11 @@
         <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
       </p>
     {% endif %}
+    {% if _portal %}
       <p class="scrum-hero-hint">
-        {% if _portal %}
-        <strong>Manager approval:</strong> moves, stand-up notes, new stickies, edits, and deletes are <strong>queued</strong> for your manager. The board does not change until they approve from <em>Sprint hub → Employee change requests</em>. You can still drag and submit — the page reloads with your previous state until approval.
-        {% else %}
-        New work: use <strong>Add in Do</strong> in the Do column (estimate required). Each sticky has type <strong>NDY</strong>, <strong>CODE</strong>, <strong>FSY</strong>, <strong>Improvement</strong>, or <strong>Process&amp;Tools</strong>. Drag between columns; each move logs <strong>Burnt hours</strong> and a note. Moving to <strong>Done</strong> lets you attach optional <strong>artifact links</strong> (PRs, builds, docs). Moving from <strong>Do</strong> to <strong>In progress</strong> clears all prior Burnt hours on that sticky; leave <strong>Burnt hours</strong> empty for that move unless you are logging time now (empty is stored as unset, not zero). Moving from <strong>In progress</strong> back to <strong>Do</strong> asks for confirmation, then clears all Burnt hours on that sticky to <strong>0</strong>. Stand-up updates in <strong>In progress</strong> can log hours too.
-        {% endif %}
+        <strong>Manager approval:</strong> moves, stand-up notes, new stickies, edits, and deletes are <strong>queued</strong> for your manager. The board does not change until they approve from <em>Sprint hub → Employee change requests</em>. You can still drag and submit — the page reloads with your previous state until approval. <strong>Remove</strong> is only available while a sticky is still in <strong>Do</strong>.
       </p>
+    {% endif %}
     <input type="hidden" id="kb-csrf" value="{{ csrf_token() }}" />
     <script type="application/json" id="kb-cfg">{{ {"sprintId": sprint_id, "assignee": assignee, "readOnly": sprint_readonly}|tojson }}</script>
     <script type="application/json" id="kb-kinds">{{ task_kinds_rows|tojson }}</script>
@@ -47,6 +105,7 @@
           <span>Leave applied <strong>−{{ kb_capacity_leave_hours }}h</strong></span>
           <span>Available <strong>{{ kb_capacity_available_hours }}h</strong></span>
           <span>Assigned (est.) <strong>{{ kb_capacity_assigned_hours }}h</strong></span>
+          <span>Total burnt <strong>{{ kb_capacity_burnt_hours }}h</strong></span>
         </div>
         {% if kb_capacity_stretch %}
           <span class="scrum-kb-capacity-stretch-badge" title="Total sticky estimates exceed available hours after leave">Stretch</span>
@@ -65,6 +124,14 @@
             <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ kb_capacity_pct_assigned_stretch_bar }}%;" title="Assigned over available"></div>
           {% endif %}
           {% if kb_capacity_pct_assigned_within_bar <= 0.01 and kb_capacity_pct_assigned_stretch_bar <= 0.01 %}
+            <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
+          {% endif %}
+        </div>
+        <div class="scrum-bar-label scrum-bar-label-compact scrum-bar-label-tight">Total burnt (all stickies, same scale)</div>
+        <div class="scrum-bar-track scrum-kb-capacity-track scrum-bar-track-compact">
+          {% if kb_capacity_pct_burnt_bar > 0.01 %}
+            <div class="scrum-bar-fill scrum-bar-cap-burnt" style="width: {{ kb_capacity_pct_burnt_bar }}%;" title="Sum of committed hours on this sprint’s stickies for {{ kb_assignee }}"></div>
+          {% else %}
             <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
           {% endif %}
         </div>
@@ -113,7 +180,8 @@
       <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
       <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
       <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
-      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends)</span>
+      <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
+      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends)</span>
     </div>
   </section>
 
@@ -135,7 +203,7 @@
                 draggable="true"
                 data-item-id="{{ card.id }}"
                 data-from-column="{{ col }}"
-                data-logged-hours="{% if col == 'doing' %}{{ '%.2f'|format(card.committed_logged_hours) }}{% else %}0{% endif %}"
+                data-logged-hours="{% if col in ('doing', 'done') %}{{ '%.2f'|format(card.committed_logged_hours|default(0)) }}{% else %}0{% endif %}"
               >
                 <div class="scrum-sticky-corner">
                   {% if ((card.appreciation_count|default(0))|int > 0) or (not _portal and not sprint_readonly) %}
@@ -176,6 +244,105 @@
                 </div>
                 {% if card.area %}
                   <p class="scrum-sticky-area" title="{{ card.area }}">{{ card.area }}</p>
+                {% endif %}
+                <details
+                  class="scrum-sticky-attachments"
+                  draggable="false"
+                  onclick="event.stopPropagation();"
+                  onmousedown="event.stopPropagation();"
+                >
+                  <summary class="scrum-sticky-attachments-summary">
+                    Attachments{% if card.attachments %} ({{ card.attachments|length }}){% endif %}
+                  </summary>
+                  {% if card.attachments %}
+                    <ul class="scrum-sticky-attachment-list">
+                      {% for a in card.attachments %}
+                        <li class="scrum-sticky-attachment-row">
+                          <a
+                            class="scrum-sticky-attachment-name"
+                            href="{% if _portal %}{{ url_for('portal_scrum_item_attachment_download', attachment_id=a.id) }}{% else %}{{ url_for('scrum_sprint_item_attachment_download', attachment_id=a.id) }}{% endif %}"
+                          >{{ a.original_filename|e }}</a>
+                          <span class="scrum-sticky-attachment-size">{{ (a.size_bytes / 1024)|round(1) }} KB</span>
+                          {% if not sprint_readonly %}
+                            <form
+                              method="post"
+                              action="{{ kb_form_urls.attachment_delete }}"
+                              class="inline-form scrum-sticky-attachment-del"
+                              onclick="event.stopPropagation();"
+                              onmousedown="event.stopPropagation();"
+                              onsubmit="return confirm('Remove this attachment?');"
+                            >
+                              {% include "partials/csrf.html" %}
+                              <input type="hidden" name="attachment_id" value="{{ a.id }}" />
+                              <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                              <input type="hidden" name="assignee" value="{{ assignee }}" />
+                              <button type="submit" class="btn secondary small danger-ghost">Remove</button>
+                            </form>
+                          {% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                  {% if not sprint_readonly %}
+                    <form
+                      class="scrum-sticky-attachment-upload"
+                      method="post"
+                      action="{{ kb_form_urls.attachment_upload }}"
+                      enctype="multipart/form-data"
+                      onclick="event.stopPropagation();"
+                      onmousedown="event.stopPropagation();"
+                    >
+                      {% include "partials/csrf.html" %}
+                      <input type="hidden" name="item_id" value="{{ card.id }}" />
+                      <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                      <input type="hidden" name="assignee" value="{{ assignee }}" />
+                      <label class="scrum-sticky-attachment-file-label">
+                        Add file(s)
+                        <input type="file" name="files" class="scrum-sticky-attachment-file" multiple required />
+                      </label>
+                      <button type="submit" class="btn secondary small">Upload</button>
+                    </form>
+                    <p class="scrum-sticky-attachment-hint">
+                      Select one or more files (Ctrl/Cmd+click). Same types as before (e.g. PDF, PNG, XLSX). Max 10 MB per file, up to 20 files per sticky. Remove any file with the button beside its name.
+                    </p>
+                  {% elif sprint_readonly and _portal and not card.attachments %}
+                    <p class="scrum-sticky-attachment-hint">No attachments on this sticky.</p>
+                  {% endif %}
+                </details>
+                {% if col == 'doing' and not sprint_readonly %}
+                  <details class="scrum-do-edit scrum-doing-est-edit">
+                    <summary class="scrum-do-edit-summary">Adjust plan estimate</summary>
+                    <form
+                      method="post"
+                      action="{{ kb_form_urls.item_update }}"
+                      class="scrum-do-edit-form scrum-doing-est-form"
+                      draggable="false"
+                      onclick="event.stopPropagation();"
+                      onmousedown="event.stopPropagation();"
+                    >
+                      {% include "partials/csrf.html" %}
+                      <input type="hidden" name="item_id" value="{{ card.id }}" />
+                      <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                      <div class="field">
+                        <label for="doing-est-{{ card.id }}">Estimated hours <span class="req">*</span></label>
+                        <input
+                          id="doing-est-{{ card.id }}"
+                          name="estimate_hours"
+                          type="text"
+                          inputmode="decimal"
+                          required
+                          value="{{ '%.2f'|format(card.estimate_hours) }}"
+                          autocomplete="off"
+                        />
+                      </div>
+                      <p class="scrum-doing-est-hint">
+                        Changes the plan hours for task burn on this sticky. Logged stand-up / move hours are unchanged.
+                      </p>
+                      <div class="scrum-do-edit-actions">
+                        <button type="submit" class="btn secondary small">Save estimate</button>
+                      </div>
+                    </form>
+                  </details>
                 {% endif %}
                 {% if col == 'do' and card.dod %}
                   <p class="scrum-sticky-dod-preview" title="Definition of done">{{ card.dod }}</p>
@@ -228,35 +395,11 @@
                     </form>
                   </details>
                 {% endif %}
+                {% if col in ('backlog', 'do') %}
+                  {{ scrum_standup_readonly(card) }}
+                {% endif %}
                 {% if col == 'doing' %}
-                  <div class="scrum-doing-burn" title="Logged hours on this sticky vs its estimate (all moves + stand-ups)">
-                    <div class="scrum-doing-burn-head">
-                      {% if card.burn_pct is not none %}
-                        <span class="scrum-doing-burn-pct"><strong>{{ "%.0f"|format(card.burn_pct) }}%</strong> Task burn</span>
-                      {% else %}
-                        <span class="scrum-doing-burn-pct scrum-doing-burn-muted">Task burn needs a positive estimate</span>
-                      {% endif %}
-                      <span class="scrum-doing-burn-meta">{{ "%.1f"|format(card.committed_logged_hours) }}h logged · {{ "%.1f"|format(card.estimate_hours) }}h est.</span>
-                    </div>
-                    <div class="scrum-bar-label scrum-bar-label-compact">Estimate (scale max {{ "%.1f"|format(card.effort_scale_max) }}h)</div>
-                    <div class="scrum-bar-track scrum-bar-track-compact">
-                      <div class="scrum-bar-fill scrum-bar-est" style="width: {{ card.pct_est_bar }}%;"></div>
-                    </div>
-                    <div class="scrum-bar-label scrum-bar-label-compact scrum-bar-label-tight">Burnt (red = stretch)</div>
-                    <div class="scrum-bar-track scrum-bar-track-compact scrum-bar-split">
-                      {% if card.pct_committed_regular_bar > 0 or card.pct_stretch_bar > 0 %}
-                        <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ card.pct_committed_regular_bar }}%;"></div>
-                        {% if card.pct_stretch_bar > 0.01 %}
-                          <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ card.pct_stretch_bar }}%;"></div>
-                        {% endif %}
-                      {% else %}
-                        <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
-                      {% endif %}
-                    </div>
-                  </div>
-                  {% if card.notes_display %}
-                    <div class="scrum-sticky-details scrum-sticky-details-context">{{ card.notes_display }}</div>
-                  {% endif %}
+                  {{ scrum_task_burn_widget(card, true) }}
                   {% if card.standup_updates %}
                     <ul class="scrum-standup-list" aria-label="Stand-up history">
                       {% for u in card.standup_updates %}
@@ -296,6 +439,7 @@
                     </ul>
                   {% endif %}
                 {% elif col == 'done' %}
+                  {{ scrum_task_burn_widget(card, false) }}
                   {% if card.done_artifacts %}
                     <ul class="scrum-sticky-artifacts" aria-label="Artifacts">
                       {% for a in card.done_artifacts %}
@@ -307,6 +451,30 @@
                   {% endif %}
                   {% if card.notes %}
                     <div class="scrum-sticky-details">{{ card.notes }}</div>
+                  {% endif %}
+                  {% if card.activity_log|default([]) %}
+                    <details class="scrum-done-activity scrum-activity-log-wrap">
+                      <summary class="scrum-done-activity-summary">Activity &amp; stand-up log</summary>
+                      <ol class="scrum-activity-log">
+                        {% for row in card.activity_log %}
+                          <li class="scrum-activity-log-item" data-activity-id="{{ row.id }}">
+                            <div class="scrum-activity-log-head">
+                              <time class="scrum-activity-log-time" datetime="{{ row.created_at }}">{{ row.created_at_display }}</time>
+                              <span class="scrum-activity-log-badge">{{ row.kind_label }}</span>
+                              {% if row.kind_label == 'Move' %}
+                                <span class="scrum-activity-log-route">{{ row.from_label }} → {{ row.to_label }}</span>
+                              {% endif %}
+                              {% if row.committed_hours is not none and row.committed_hours > 0.001 %}
+                                <span class="scrum-activity-log-hrs">+{{ "%.1f"|format(row.committed_hours) }}h</span>
+                              {% endif %}
+                            </div>
+                            {% if row.body %}
+                              <p class="scrum-activity-log-body">{{ row.body }}</p>
+                            {% endif %}
+                          </li>
+                        {% endfor %}
+                      </ol>
+                    </details>
                   {% endif %}
                   <details class="scrum-done-edit">
                     <summary class="scrum-done-edit-summary">Edit details &amp; artifacts</summary>
@@ -345,14 +513,6 @@
                 {% elif card.notes %}
                   <div class="scrum-sticky-details">{{ card.notes }}</div>
                 {% endif %}
-                <div class="scrum-sticky-actions" draggable="false" onmousedown="event.stopPropagation();">
-                  <form method="post" action="{{ kb_form_urls.item_delete }}" class="inline-form" onsubmit="return confirm('Delete this sticky?');" draggable="false" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
-                    {% include "partials/csrf.html" %}
-                    <input type="hidden" name="item_id" value="{{ card.id }}" />
-                    <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                    <button type="submit" class="btn scrum-sticky-del">Remove</button>
-                  </form>
-                </div>
                 {% if col == 'doing' %}
                   <div class="scrum-doing-note" draggable="false" onmousedown="event.stopPropagation();">
                     <label class="scrum-doing-label" for="dn-{{ card.id }}">Stand-up update</label>
@@ -369,6 +529,24 @@
                     {% endif %}
                     <button type="button" class="btn secondary small kb-add-note scrum-note-save" data-item-id="{{ card.id }}">Save update</button>
                   </div>
+                {% endif %}
+                {% if col == 'do' %}
+                <div class="scrum-sticky-actions scrum-sticky-actions-footer" draggable="false" onmousedown="event.stopPropagation();">
+                  <form
+                    method="post"
+                    action="{{ kb_form_urls.item_delete }}"
+                    class="inline-form scrum-sticky-delete-form"
+                    draggable="false"
+                    onclick="event.stopPropagation();"
+                    onmousedown="event.stopPropagation();"
+                    data-sticky-title="{{ card.title|e }}"
+                  >
+                    {% include "partials/csrf.html" %}
+                    <input type="hidden" name="item_id" value="{{ card.id }}" />
+                    <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+                    <button type="submit" class="btn scrum-sticky-del">Remove</button>
+                  </form>
+                </div>
                 {% endif %}
               </div>
             {% endfor %}
@@ -422,7 +600,7 @@
       </div>
       <div class="field">
         <label for="kb-add-area">Area</label>
-        <input id="kb-add-area" type="text" maxlength="500" autocomplete="off" placeholder="e.g. component or stream" />
+        <input id="kb-add-area" name="area" type="text" maxlength="500" autocomplete="off" placeholder="e.g. component or stream" />
       </div>
       <div class="scrum-add-dialog-actions">
         <button type="submit" class="btn scrum-add-submit" id="kb-add-submit">Create in Do</button>
@@ -487,6 +665,22 @@
           el.setAttribute("draggable", "false");
         });
       }
+      document.addEventListener("submit", function (ev) {
+        var form = ev.target;
+        if (!form || !form.classList.contains("scrum-sticky-delete-form")) return;
+        var title = (form.getAttribute("data-sticky-title") || "").trim() || "this sticky";
+        var first =
+          'Delete the sticky "' + title + '"?\n\nThis cannot be undone after you confirm.';
+        if (!confirm(first)) {
+          ev.preventDefault();
+          return;
+        }
+        var second =
+          'Second confirmation: permanently remove "' + title + '" from this board?';
+        if (!confirm(second)) {
+          ev.preventDefault();
+        }
+      });
       var dlg = document.getElementById("kb-move-dialog");
       var addDlg = document.getElementById("kb-add-dialog");
       var doingResetDlg = document.getElementById("kb-doing-reset-dialog");
@@ -528,7 +722,10 @@
         if (code === "bad_artifacts") return "Artifact links must be a list of URLs or label|url lines.";
         if (code === "missing_comment") return "Please enter an appreciation comment.";
         if (code === "sprint_closed") {
-          return "This sprint is closed (read-only). Open it from the sprint team page to edit.";
+          return "This sprint is closed (read-only). Open it from the sprint team page if the sprint window is still active.";
+        }
+        if (code === "sprint_ended") {
+          return "This sprint’s end date has passed — the board is read-only. Start a new sprint for new work.";
         }
         return "Request failed (" + code + ").";
       }
@@ -544,6 +741,88 @@
             return { ok: r.ok && j.ok, j: j, status: r.status };
           });
         });
+      }
+
+      /** After editing stand-up hours, refresh sticky burn totals without a full reload (manager API returns `burn`). */
+      function applyKanbanBurnToCard(card, burn) {
+        if (!card || !burn) return;
+        card.setAttribute("data-logged-hours", Number(burn.committed_logged_hours || 0).toFixed(2));
+        var meta = card.querySelector(".scrum-doing-burn-meta");
+        if (meta) {
+          meta.textContent =
+            Number(burn.committed_logged_hours || 0).toFixed(1) +
+            "h logged · " +
+            Number(burn.estimate_hours || 0).toFixed(1) +
+            "h est.";
+        }
+        var pctWrap = card.querySelector(".scrum-doing-burn-head .scrum-doing-burn-pct");
+        if (pctWrap) {
+          var bp = burn.burn_pct;
+          if (bp !== null && bp !== undefined && !isNaN(bp)) {
+            pctWrap.classList.remove("scrum-doing-burn-muted");
+            pctWrap.innerHTML = "<strong>" + String(Math.round(Number(bp))) + "%</strong> Task burn";
+          } else {
+            pctWrap.classList.add("scrum-doing-burn-muted");
+            pctWrap.textContent = "Task burn needs a positive estimate";
+          }
+        }
+        var labels = card.querySelectorAll(".scrum-doing-burn .scrum-bar-label-compact");
+        if (labels.length) {
+          labels[0].textContent =
+            "Estimate (scale max " + Number(burn.effort_scale_max || 0).toFixed(1) + "h)";
+        }
+        var tracks = card.querySelectorAll(".scrum-doing-burn .scrum-bar-track-compact");
+        if (tracks.length >= 1) {
+          var estBar = tracks[0].querySelector(".scrum-bar-est");
+          if (estBar) estBar.style.width = (Number(burn.pct_est_bar) || 0) + "%";
+        }
+        if (tracks.length >= 2) {
+          var split = tracks[1];
+          var pr = Number(burn.pct_committed_regular_bar) || 0;
+          var ps = Number(burn.pct_stretch_bar) || 0;
+          var logged = split.querySelector(".scrum-bar-logged");
+          var stretch = split.querySelector(".scrum-bar-stretch");
+          var empty = split.querySelector(".scrum-bar-empty");
+          if (pr > 0.01 || ps > 0.01) {
+            if (empty) empty.style.display = "none";
+            if (!logged) {
+              logged = document.createElement("div");
+              logged.className = "scrum-bar-fill scrum-bar-logged";
+              split.insertBefore(logged, split.firstChild);
+            }
+            logged.style.display = "";
+            logged.style.width = pr + "%";
+            if (ps > 0.01) {
+              if (!stretch) {
+                stretch = document.createElement("div");
+                stretch.className = "scrum-bar-fill scrum-bar-stretch";
+                split.appendChild(stretch);
+              }
+              stretch.style.display = "";
+              stretch.style.width = ps + "%";
+            } else if (stretch) {
+              stretch.style.display = "none";
+              stretch.style.width = "0%";
+            }
+          } else {
+            if (logged) {
+              logged.style.display = "none";
+              logged.style.width = "0%";
+            }
+            if (stretch) {
+              stretch.style.display = "none";
+              stretch.style.width = "0%";
+            }
+            var emp = empty || split.querySelector(".scrum-bar-empty");
+            if (!emp) {
+              emp = document.createElement("div");
+              emp.className = "scrum-bar-empty scrum-bar-empty-compact";
+              emp.textContent = "—";
+              split.appendChild(emp);
+            }
+            emp.style.display = "";
+          }
+        }
       }
 
       function sendKanbanMove(moveBody) {
@@ -725,6 +1004,7 @@
             var err = res.j && res.j.error ? res.j.error : "Could not create sticky";
             if (err === "estimate_required") err = "Estimated hours must be greater than zero.";
             if (err === "sprint_closed") err = "This sprint is closed (read-only).";
+            if (err === "sprint_ended") err = "This sprint’s end date has passed — the board is read-only.";
             alert(err);
           }
         });
@@ -1006,7 +1286,7 @@
           var txt = li.querySelector(".scrum-standup-edit-body").value;
           var hrsRaw = li.querySelector(".scrum-standup-edit-hrs").value;
           var card = li.closest(".scrum-sticky");
-          var itemId = card.getAttribute("data-id");
+          var itemId = card.getAttribute("data-item-id");
 
           var payload = {
             item_id: parseInt(itemId, 10),
@@ -1017,9 +1297,50 @@
             committed_hours: hrsRaw
           };
 
-          postJson(apiUrls.item_activity_update, payload).then(function(res) {
+          postJson(apiUrls.item_activity_update, payload).then(function (res) {
             if (res.ok) {
-              window.location.reload();
+              if (res.j && res.j.pending_approval) {
+                window.location.reload();
+                return;
+              }
+              if (res.j && res.j.burn) {
+                applyKanbanBurnToCard(card, res.j.burn);
+                var chSaved =
+                  res.j && typeof res.j.activity_committed_hours === "number"
+                    ? res.j.activity_committed_hours
+                    : parseFloat(String(hrsRaw).replace(",", ".")) || 0;
+                var head = li.querySelector(".scrum-standup-item-head");
+                var hrSpan = head ? head.querySelector(".scrum-standup-hrs") : null;
+                if (chSaved > 0.001) {
+                  if (!hrSpan && head) {
+                    hrSpan = document.createElement("span");
+                    hrSpan.className = "scrum-standup-hrs";
+                    var editBtn = head.querySelector(".scrum-standup-edit-btn");
+                    if (editBtn) head.insertBefore(hrSpan, editBtn);
+                    else head.appendChild(hrSpan);
+                  }
+                  if (hrSpan) {
+                    hrSpan.textContent = "+" + chSaved.toFixed(1) + "h";
+                    hrSpan.style.display = "";
+                  }
+                } else if (hrSpan) {
+                  hrSpan.remove();
+                }
+                var bodyP = li.querySelector(".scrum-standup-body");
+                if (bodyP) {
+                  bodyP.textContent = txt;
+                  bodyP.setAttribute("data-raw-body", txt);
+                  bodyP.style.display = txt.trim() ? "" : "none";
+                }
+                var editForm = li.querySelector(".scrum-standup-edit-form");
+                var viewBlock = li.querySelector(".scrum-standup-item-content");
+                if (editForm) editForm.style.display = "none";
+                if (viewBlock) viewBlock.style.display = "block";
+                var editHrsEl = li.querySelector(".scrum-standup-edit-hrs");
+                if (editHrsEl) editHrsEl.value = chSaved > 0.001 ? chSaved.toFixed(1) : "";
+              } else {
+                window.location.reload();
+              }
             } else {
               alert(res.j && res.j.error ? res.j.error : "Could not update activity");
             }

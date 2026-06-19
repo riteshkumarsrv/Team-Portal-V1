@@ -216,7 +216,8 @@ def build_sprint_hub_snapshot_png_bytes(
             ch = float(note.get("committed_hours") or 0)
             tit = (note.get("title") or "").strip()
             body = (note.get("body") or "").strip().replace("\n", " ")[:80]
-            tx(cx, cy, f"{ts}  +{ch:.1f}h  {tit}  — {body}", fill=_SUB, font=small_font)
+            snippet = body if body else tit
+            tx(cx, cy, f"{ts}  +{ch:.1f}h  {snippet}", fill=_SUB, font=small_font)
             cy += 18
         y += row_h
 

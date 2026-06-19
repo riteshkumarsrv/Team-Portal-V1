@@ -4,8 +4,14 @@ __pycache__/
 venv/
 data/*.db
 *.db
+# Large local SQL dumps / recovery copies (do not push to Gerrit)
+data/**/*.sql
+data/**/*.sql.*
 .env
 .pytest_cache/
+
+# Local DB snapshots (auto backup every N hours while app runs; see team_tracker_backup.py)
+Backup/
 
 # Cursor / local IDE (not part of the app)
 terminals/
