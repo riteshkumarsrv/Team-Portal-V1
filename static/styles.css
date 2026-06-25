@@ -84,10 +84,10 @@ a:hover {
 
 header.site {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem 1.5rem;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0.75rem;
   margin-bottom: 1.5rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--surface2);
@@ -105,48 +105,101 @@ header.site h1 {
 
 .brand {
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
   min-width: 0;
+  width: 100%;
+}
+
+.brand h1 {
+  margin: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-self: center;
 }
 
 .userbar {
-  margin: 0;
+  margin: 0 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  align-self: flex-start;
+  gap: 0.45rem;
   font-size: 0.8125rem;
   color: var(--muted);
+  text-align: right;
+  flex-shrink: 0;
 }
 
 .userbar-status {
   font-weight: 600;
   color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  max-width: min(16rem, 42vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .userbar .inline-form {
   margin: 0;
 }
 
+@media (max-width: 520px) {
+  .brand {
+    flex-wrap: wrap;
+  }
+
+  .userbar {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-end;
+    align-self: flex-end;
+  }
+}
+
 .main-nav {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.2rem;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  padding: 0;
   background: var(--bg);
   border: 1px solid var(--surface2);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.main-nav > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.main-nav > * + * {
+  border-left: 1px solid var(--surface2);
 }
 
 .main-nav a {
-  padding: 0.75rem 1.25rem;
-  border-radius: 999px;
-  font-size: 0.8125rem;
-  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0.65rem 0.35rem;
+  border-radius: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
   color: var(--muted);
   text-decoration: none;
+  white-space: nowrap;
 }
 
 .main-nav a:hover {
@@ -161,28 +214,45 @@ header.site h1 {
   text-decoration: none;
 }
 
+.main-nav > :first-child {
+  border-top-left-radius: calc(var(--radius-sm) - 1px);
+  border-bottom-left-radius: calc(var(--radius-sm) - 1px);
+}
+
+.main-nav > *:last-child {
+  border-top-right-radius: calc(var(--radius-sm) - 1px);
+  border-bottom-right-radius: calc(var(--radius-sm) - 1px);
+}
+
 .nav-team-cluster {
   display: flex;
-  align-items: center;
-  margin-left: 0.25rem;
-  padding-left: 0.75rem;
-  border-left: 1px solid var(--surface2);
+  align-items: stretch;
+  justify-content: center;
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
+  min-width: 5.5rem;
 }
 
 .nav-team-trigger {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.08rem;
-  padding: 0.32rem 0.75rem 0.38rem 0.85rem;
-  border-radius: 999px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: 100%;
+  min-height: 2.65rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 0;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
   cursor: pointer;
   font: inherit;
-  text-align: left;
-  max-width: 12.5rem;
+  text-align: center;
+  max-width: none;
+  white-space: nowrap;
   transition:
     background 0.15s ease,
     border-color 0.15s ease;
@@ -190,7 +260,7 @@ header.site h1 {
 
 .nav-team-trigger:hover {
   background: var(--surface2);
-  border-color: var(--surface2);
+  border-color: transparent;
 }
 
 .nav-team-trigger:focus-visible {
@@ -199,7 +269,8 @@ header.site h1 {
 }
 
 .nav-team-trigger-label {
-  font-size: 0.65rem;
+  flex-shrink: 0;
+  font-size: 0.62rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -209,17 +280,19 @@ header.site h1 {
 .nav-team-trigger-row {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
   min-width: 0;
+  flex: 1 1 auto;
+  justify-content: center;
 }
 
 .nav-team-trigger-value {
-  font-size: 0.8125rem;
+  font-size: 0.72rem;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 9rem;
+  max-width: none;
 }
 
 .nav-team-trigger-chev {
@@ -895,7 +968,8 @@ body.portal-body .site-portal {
 }
 
 body.portal-body .site-portal .brand {
-  align-items: center;
+  align-items: flex-start;
+  justify-content: space-between;
 }
 
 .portal-page {

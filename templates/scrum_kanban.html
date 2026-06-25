@@ -3,11 +3,11 @@
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=39) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=50) }}" />
   <script defer src="{{ url_for('static', filename='scrum_area_autocomplete.js', v=1) }}"></script>
 {% endblock %}
 {% block content %}
-  {% set col_labels = {'backlog': 'Backlog', 'do': 'Do', 'doing': 'In progress', 'done': 'Done'} %}
+  {% set col_labels = {'backlog': 'Backlog', 'do': 'To DO', 'doing': 'In progress', 'done': 'Done'} %}
   {% set _portal = portal_kanban|default(false) %}
   {% set sprint_readonly = sprint_readonly|default(false) %}
   {% set sprint_freeze_mode = sprint_freeze_mode|default(none) %}
@@ -65,38 +65,53 @@
       <div class="scrum-sticky-details scrum-sticky-details-context">{{ card.notes_display }}</div>
     {% endif %}
   {%- endmacro %}
-  <section class="card scrum-board-hero scrum-kb-hero">
-    <p class="scrum-hero-back">
-      <a href="{{ kb_back_url }}">← {% if kb_back_label|default('') %}{{ kb_back_label }}{% elif _portal %}My sprint work{% else %}{{ sprint_name }} · Team{% endif %}</a>
+  <div class="scrum-kb-page-head">
+    <div class="scrum-kb-board-top">
+      <h2
+        class="scrum-kb-hero-single"
+        aria-label="{% if _portal %}My sprint board{% else %}Sticky board{% endif %} — {{ assignee }}"
+      >
+        <span class="scrum-kb-hero-name">{{ assignee }}</span>
+      </h2>
+      {% if sprint_readonly %}
+        <p class="scrum-kb-readonly-banner" role="status">
+          {% if sprint_freeze_mode == 'sprint_closed' %}
+          This sprint is <strong>closed</strong> — view only. A manager can click <strong>Open sprint</strong> on the sprint team page to clear the closed flag (the board stays read-only if the sprint end date has already passed).
+          {% else %}
+          This sprint’s <strong>end date has passed</strong> — view only. Burndown counts logged work through the last sprint day only; create or open a new sprint for new work.
+          {% endif %}
+        </p>
+      {% endif %}
+      {% if _portal %}
+        <p class="scrum-hero-hint">
+          <strong>Manager approval:</strong> moves, stand-up notes, new stickies, edits, and deletes are <strong>queued</strong> for your manager. The board does not change until they approve from <em>Sprint hub → Employee change requests</em>. You can still drag and submit — the page reloads with your previous state until approval. <strong>Remove</strong> is only available while a sticky is still in <strong>To DO</strong>.
+        </p>
+      {% endif %}
+      <input type="hidden" id="kb-csrf" value="{{ csrf_token() }}" />
+      <script type="application/json" id="kb-cfg">{{ {"sprintId": sprint_id, "assignee": assignee, "readOnly": sprint_readonly}|tojson }}</script>
+      <script type="application/json" id="kb-kinds">{{ task_kinds_rows|tojson }}</script>
+      <script type="application/json" id="kb-api-urls">{{ kb_api_urls|tojson }}</script>
+    </div>
+    <p class="scrum-kb-back-below">
+      <a class="scrum-kb-hero-back" href="{{ kb_back_url }}"
+        >← {% if kb_back_label|default('') %}{{ kb_back_label }}{% else %}{{ sprint_name }}{% endif %}</a
+      >
     </p>
-    <h2 class="page-heading scrum-hero-title scrum-kb-hero-title">Sticky board · {{ assignee }}</h2>
-    {% if sprint_readonly %}
-      <p class="scrum-kb-readonly-banner" role="status">
-        {% if sprint_freeze_mode == 'sprint_closed' %}
-        This sprint is <strong>closed</strong> — view only. A manager can click <strong>Open sprint</strong> on the sprint team page to clear the closed flag (the board stays read-only if the sprint end date has already passed).
-        {% else %}
-        This sprint’s <strong>end date has passed</strong> — view only. Burndown counts logged work through the last sprint day only; create or open a new sprint for new work.
-        {% endif %}
-      </p>
-    {% endif %}
-    {% if not _portal %}
-      <p class="scrum-sprint-leave-view">
-        <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
-      </p>
-    {% endif %}
-    {% if _portal %}
-      <p class="scrum-hero-hint">
-        <strong>Manager approval:</strong> moves, stand-up notes, new stickies, edits, and deletes are <strong>queued</strong> for your manager. The board does not change until they approve from <em>Sprint hub → Employee change requests</em>. You can still drag and submit — the page reloads with your previous state until approval. <strong>Remove</strong> is only available while a sticky is still in <strong>Do</strong>.
-      </p>
-    {% endif %}
-    <input type="hidden" id="kb-csrf" value="{{ csrf_token() }}" />
-    <script type="application/json" id="kb-cfg">{{ {"sprintId": sprint_id, "assignee": assignee, "readOnly": sprint_readonly}|tojson }}</script>
-    <script type="application/json" id="kb-kinds">{{ task_kinds_rows|tojson }}</script>
-    <script type="application/json" id="kb-api-urls">{{ kb_api_urls|tojson }}</script>
-  </section>
+  </div>
 
   <section class="card scrum-kb-leave-card" aria-label="Sprint capacity and leave">
-    <h3 class="scrum-kb-leave-title">Sprint capacity · {{ kb_assignee }}</h3>
+    <div class="scrum-kb-leave-head">
+      <h3 class="scrum-kb-leave-title">Sprint capacity · {{ kb_assignee }}</h3>
+      <div
+        class="scrum-kb-leave-burnt-tab"
+        title="{% if kb_capacity_burn_pct_of_estimate is not none %}Burnt hours as % of total estimate ({{ kb_capacity_assigned_hours }}h est. across stickies){% else %}Total committed hours on this sprint’s stickies{% endif %}"
+      >
+        <span class="scrum-kb-leave-burnt-label">Total burnt <strong>{{ kb_capacity_burnt_hours }}h</strong></span>
+        {% if kb_capacity_burn_pct_of_estimate is not none %}
+          <span class="scrum-kb-burn-pct-badge">{{ kb_capacity_burn_pct_of_estimate }}%</span>
+        {% endif %}
+      </div>
+    </div>
     <p class="scrum-kb-leave-sub">{{ kb_leave_range_label }} · same leave rules as the <strong>Leave tracker</strong> worksheet (pending dashed, Meet day overrides).</p>
     <div class="scrum-kb-capacity">
       <div class="scrum-kb-capacity-head">
@@ -105,38 +120,52 @@
           <span>Leave applied <strong>−{{ kb_capacity_leave_hours }}h</strong></span>
           <span>Available <strong>{{ kb_capacity_available_hours }}h</strong></span>
           <span>Assigned (est.) <strong>{{ kb_capacity_assigned_hours }}h</strong></span>
-          <span>Total burnt <strong>{{ kb_capacity_burnt_hours }}h</strong></span>
         </div>
         {% if kb_capacity_stretch %}
           <span class="scrum-kb-capacity-stretch-badge" title="Total sticky estimates exceed available hours after leave">Stretch</span>
         {% endif %}
       </div>
       <div class="scrum-kb-capacity-bars">
-        <div class="scrum-bar-label scrum-bar-label-compact">Available vs assigned (scale max {{ kb_capacity_scale_max }}h)</div>
-        <div class="scrum-bar-track scrum-kb-capacity-track scrum-bar-track-compact">
-          <div class="scrum-bar-fill scrum-bar-cap-avail" style="width: {{ kb_capacity_pct_available_bar }}%;" title="Available hours"></div>
+        <div class="scrum-bar-label scrum-bar-label-compact scrum-kb-capacity-stack-legend">
+          Available · assigned · burnt <span class="scrum-kb-cap-scale-note">(max {{ kb_capacity_scale_max }}h)</span>
         </div>
-        <div class="scrum-bar-track scrum-kb-capacity-track scrum-bar-track-compact scrum-bar-split">
-          {% if kb_capacity_pct_assigned_within_bar > 0.01 %}
-            <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ kb_capacity_pct_assigned_within_bar }}%;" title="Assigned within available"></div>
-          {% endif %}
-          {% if kb_capacity_pct_assigned_stretch_bar > 0.01 %}
-            <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ kb_capacity_pct_assigned_stretch_bar }}%;" title="Assigned over available"></div>
-          {% endif %}
-          {% if kb_capacity_pct_assigned_within_bar <= 0.01 and kb_capacity_pct_assigned_stretch_bar <= 0.01 %}
-            <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
-          {% endif %}
-        </div>
-        <div class="scrum-bar-label scrum-bar-label-compact scrum-bar-label-tight">Total burnt (all stickies, same scale)</div>
-        <div class="scrum-bar-track scrum-kb-capacity-track scrum-bar-track-compact">
-          {% if kb_capacity_pct_burnt_bar > 0.01 %}
-            <div class="scrum-bar-fill scrum-bar-cap-burnt" style="width: {{ kb_capacity_pct_burnt_bar }}%;" title="Sum of committed hours on this sprint’s stickies for {{ kb_assignee }}"></div>
-          {% else %}
-            <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
-          {% endif %}
+        <div
+          class="scrum-kb-capacity-stack"
+          role="img"
+          aria-label="Available, assigned, and burnt hours versus scale max {{ kb_capacity_scale_max }} hours"
+        >
+          <div
+            class="scrum-bar-track scrum-kb-capacity-track scrum-kb-capacity-stack-row scrum-bar-track-compact"
+            title="Available hours"
+          >
+            <div class="scrum-bar-fill scrum-bar-cap-avail" style="width: {{ kb_capacity_pct_available_bar }}%;"></div>
+          </div>
+          <div
+            class="scrum-bar-track scrum-kb-capacity-track scrum-kb-capacity-stack-row scrum-bar-track-compact scrum-bar-split"
+            title="Assigned estimate (within available + stretch)"
+          >
+            {% if kb_capacity_pct_assigned_within_bar > 0.01 %}
+              <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ kb_capacity_pct_assigned_within_bar }}%;"></div>
+            {% endif %}
+            {% if kb_capacity_pct_assigned_stretch_bar > 0.01 %}
+              <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ kb_capacity_pct_assigned_stretch_bar }}%;"></div>
+            {% endif %}
+            {% if kb_capacity_pct_assigned_within_bar <= 0.01 and kb_capacity_pct_assigned_stretch_bar <= 0.01 %}
+              <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
+            {% endif %}
+          </div>
+          <div
+            class="scrum-bar-track scrum-kb-capacity-track scrum-kb-capacity-stack-row scrum-bar-track-compact"
+            title="Burnt hours on stickies ({{ kb_assignee }})"
+          >
+            {% if kb_capacity_pct_burnt_bar > 0.01 %}
+              <div class="scrum-bar-fill scrum-bar-cap-burnt" style="width: {{ kb_capacity_pct_burnt_bar }}%;"></div>
+            {% else %}
+              <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
+            {% endif %}
+          </div>
         </div>
       </div>
-      <p class="scrum-kb-capacity-foot">Each Mon–Fri in the sprint window counts as <strong>8h</strong> capacity; approved or pending leave (and half-days) reduces availability the same way as the worksheet. <strong>Daily totals</strong> under each date are <strong>burnt hours</strong> logged on the sticky board that calendar day (moves and in-progress updates), including <strong>weekends and holidays</strong>.</p>
     </div>
     <div class="worksheet-wrap scrum-kb-leave-sheet" style="--kb-ws-days: {{ kb_leave_days|length }};">
       <table class="ws-table scrum-kb-ws-table" role="grid" aria-label="Leave across sprint dates">
@@ -193,7 +222,7 @@
           <div class="scrum-kb-col-body" data-drop-column="{{ col }}">
             {% if col == 'do' %}
               <button type="button" class="scrum-kb-do-add" id="scrum-open-add-do" aria-haspopup="dialog">
-                + Add sticky in Do…
+                + Add sticky in To DO…
               </button>
             {% endif %}
             {% for card in cards_by_col[col] %}
@@ -203,6 +232,7 @@
                 draggable="true"
                 data-item-id="{{ card.id }}"
                 data-from-column="{{ col }}"
+                data-estimate-hours="{{ card.estimate_hours }}"
                 data-logged-hours="{% if col in ('doing', 'done') %}{{ '%.2f'|format(card.committed_logged_hours|default(0)) }}{% else %}0{% endif %}"
               >
                 <div class="scrum-sticky-corner">
@@ -576,8 +606,8 @@
 
   <dialog id="kb-add-dialog" class="scrum-add-dialog">
     <form method="dialog" class="scrum-add-dialog-inner" id="kb-add-form">
-      <h3 class="scrum-add-dialog-title">New sticky in Do</h3>
-      <p class="scrum-add-dialog-lede">Estimate is required. Items start in <strong>Do</strong>; drag to Backlog, In progress, or Done.</p>
+      <h3 class="scrum-add-dialog-title">New sticky in To DO</h3>
+      <p class="scrum-add-dialog-lede">Estimate is required. Items start in <strong>To DO</strong>; drag to Backlog, In progress, or Done.</p>
       <div class="field">
         <label for="kb-add-title">Title</label>
         <input id="kb-add-title" type="text" required maxlength="500" autocomplete="off" />
@@ -603,7 +633,7 @@
         <input id="kb-add-area" name="area" type="text" maxlength="500" autocomplete="off" placeholder="e.g. component or stream" />
       </div>
       <div class="scrum-add-dialog-actions">
-        <button type="submit" class="btn scrum-add-submit" id="kb-add-submit">Create in Do</button>
+        <button type="submit" class="btn scrum-add-submit" id="kb-add-submit">Create in To DO</button>
         <button type="button" class="btn secondary" id="kb-add-cancel">Cancel</button>
       </div>
     </form>
@@ -611,24 +641,32 @@
 
   <dialog id="kb-move-dialog" class="scrum-move-dialog">
     <div class="scrum-move-dialog-inner">
-      <h3 class="scrum-move-dialog-title">Log this move</h3>
+      <h3 class="scrum-move-dialog-title" id="kb-move-dialog-title">Log this move</h3>
       <p class="scrum-move-dialog-lede" id="kb-move-summary"></p>
       <p class="scrum-move-dialog-note is-hidden" id="kb-move-reset-hint" aria-live="polite"></p>
-      <div class="field">
-        <label for="kb-move-hrs">Burnt hours</label>
-        <input id="kb-move-hrs" type="text" inputmode="decimal" placeholder="e.g. 2" />
+      <div id="kb-move-fields-bl2do" class="is-hidden">
+        <div class="field">
+          <label for="kb-move-est">Estimated hours (To DO plan)</label>
+          <input id="kb-move-est" type="text" inputmode="decimal" placeholder="e.g. 8" />
+        </div>
       </div>
-      <div class="field">
-        <label for="kb-move-note">Note</label>
-        <textarea id="kb-move-note" rows="3" maxlength="2000" placeholder="Outcome, risk, or handoff…"></textarea>
+      <div id="kb-move-fields-standard">
+        <div class="field">
+          <label for="kb-move-hrs">Burnt hours</label>
+          <input id="kb-move-hrs" type="text" inputmode="decimal" placeholder="e.g. 2" />
+        </div>
+        <div class="field">
+          <label for="kb-move-note">Note</label>
+          <textarea id="kb-move-note" rows="3" maxlength="2000" placeholder="Outcome, risk, or handoff…"></textarea>
+        </div>
+        {% if _portal %}
+        <div class="field" id="kb-move-verify-wrap">
+          <label for="kb-move-verify">Proof / screenshot URLs (optional)</label>
+          <textarea id="kb-move-verify" rows="2" maxlength="2400" placeholder="https://… one per line (for manager review)"></textarea>
+          <p class="scrum-move-artifacts-hint">Shown to your manager when they approve this move.</p>
+        </div>
+        {% endif %}
       </div>
-      {% if _portal %}
-      <div class="field" id="kb-move-verify-wrap">
-        <label for="kb-move-verify">Proof / screenshot URLs (optional)</label>
-        <textarea id="kb-move-verify" rows="2" maxlength="2400" placeholder="https://… one per line (for manager review)"></textarea>
-        <p class="scrum-move-artifacts-hint">Shown to your manager when they approve this move.</p>
-      </div>
-      {% endif %}
       <div class="field is-hidden" id="kb-move-artifacts-wrap">
         <label for="kb-move-artifacts">Artifact links (optional)</label>
         <textarea id="kb-move-artifacts" rows="4" maxlength="8000" placeholder="One https URL per line, or:&#10;My PR | https://github.com/org/repo/pull/1"></textarea>
@@ -643,7 +681,7 @@
 
   <dialog id="kb-doing-reset-dialog" class="scrum-move-dialog">
     <div class="scrum-move-dialog-inner">
-      <h3 class="scrum-move-dialog-title">Return sticky to Do?</h3>
+      <h3 class="scrum-move-dialog-title">Return sticky to To DO?</h3>
       <p class="scrum-move-dialog-lede" id="kb-doing-reset-msg"></p>
       <div class="scrum-move-dialog-actions">
         <button type="button" class="btn" id="kb-doing-reset-ok">OK</button>
@@ -656,7 +694,14 @@
     (function () {
       var cfg = JSON.parse(document.getElementById("kb-cfg").textContent);
       var kinds = JSON.parse(document.getElementById("kb-kinds").textContent);
-      var csrf = document.getElementById("kb-csrf").value;
+      // Always read fresh from the meta tag so stale page-load tokens don't break POSTs.
+      function getCsrf() {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        if (meta) return meta.getAttribute("content") || "";
+        var el = document.getElementById("kb-csrf");
+        return el ? el.value : "";
+      }
+      var csrf = getCsrf();
       var readOnly = !!cfg.readOnly;
       if (readOnly) {
         var addBtnRo = document.getElementById("scrum-open-add-do");
@@ -682,6 +727,24 @@
         }
       });
       var dlg = document.getElementById("kb-move-dialog");
+      var KB_MOVE_DEFAULT_TITLE = "Log this move";
+      function setKbMoveBl2doMode(on) {
+        var titleEl = document.getElementById("kb-move-dialog-title");
+        var bl = document.getElementById("kb-move-fields-bl2do");
+        var st = document.getElementById("kb-move-fields-standard");
+        var est = document.getElementById("kb-move-est");
+        if (!bl || !st) return;
+        if (on) {
+          if (titleEl) titleEl.textContent = "Confirm plan for To DO";
+          bl.classList.remove("is-hidden");
+          st.classList.add("is-hidden");
+        } else {
+          if (titleEl) titleEl.textContent = KB_MOVE_DEFAULT_TITLE;
+          bl.classList.add("is-hidden");
+          st.classList.remove("is-hidden");
+          if (est) est.value = "";
+        }
+      }
       var addDlg = document.getElementById("kb-add-dialog");
       var doingResetDlg = document.getElementById("kb-doing-reset-dialog");
       var apiUrls = JSON.parse(document.getElementById("kb-api-urls").textContent);
@@ -721,6 +784,7 @@
         if (code === "bad_artifact_url") return "Each artifact line needs a valid http(s) URL after the label (if any).";
         if (code === "bad_artifacts") return "Artifact links must be a list of URLs or label|url lines.";
         if (code === "missing_comment") return "Please enter an appreciation comment.";
+        if (code === "estimate_required") return "Estimated hours must be greater than zero.";
         if (code === "sprint_closed") {
           return "This sprint is closed (read-only). Open it from the sprint team page if the sprint window is still active.";
         }
@@ -731,10 +795,12 @@
       }
 
       function postJson(url, body) {
-        body.csrf_token = csrf;
+        var token = getCsrf();
+        body.csrf_token = token;
         return fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-CSRFToken": csrf },
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": token },
           body: JSON.stringify(body),
         }).then(function (r) {
           return r.json().then(function (j) {
@@ -872,7 +938,7 @@
           var msgEl = document.getElementById("kb-doing-reset-msg");
           if (msgEl) {
             msgEl.textContent =
-              "Moving this sticky from In progress back to Do will reset all Burnt hours on it to 0 " +
+              "Moving this sticky from In progress back to To DO will reset all Burnt hours on it to 0 " +
               "(moves and stand-up updates are cleared). This task currently has " +
               shown +
               " h logged on the board. Choose OK to move, or Cancel to keep it in In progress.";
@@ -880,7 +946,7 @@
           pendingDoingToDo = { data: data };
           if (doingResetDlg && typeof doingResetDlg.showModal === "function") {
             doingResetDlg.showModal();
-          } else if (window.confirm((msgEl && msgEl.textContent) || "Reset Burnt hours to 0 and move to Do?")) {
+          } else if (window.confirm((msgEl && msgEl.textContent) || "Reset Burnt hours to 0 and move to To DO?")) {
             pendingDoingToDo = null;
             sendKanbanMove({
               item_id: parseInt(data.itemId, 10),
@@ -896,34 +962,58 @@
           return;
         }
 
-        pending = { itemId: data.itemId, from: fromCol, to: toCol };
+        pending = { itemId: data.itemId, from: fromCol, to: toCol, mode: "standard" };
+        var bl2do = fromCol === "backlog" && toCol === "do";
+        if (bl2do) pending.mode = "bl2do";
         document.getElementById("kb-move-summary").textContent =
           "Card #" + data.itemId + ": " + fromCol + " → " + toCol + ".";
         var hint = document.getElementById("kb-move-reset-hint");
-        if (hint) {
-          if (fromCol === "do" && toCol === "doing") {
-            hint.textContent =
-              "Prior Burnt hours on this sticky are cleared when you leave Do for In progress. Leave Burnt hours empty unless you are logging time for this move (empty is not stored as zero).";
-            hint.classList.remove("is-hidden");
-          } else {
+        var artWrap = document.getElementById("kb-move-artifacts-wrap");
+        var artTa = document.getElementById("kb-move-artifacts");
+        if (bl2do) {
+          setKbMoveBl2doMode(true);
+          if (hint) {
             hint.textContent = "";
             hint.classList.add("is-hidden");
           }
-        }
-        document.getElementById("kb-move-hrs").value =
-          fromCol === "do" && toCol === "doing" ? "" : "0";
-        document.getElementById("kb-move-note").value = "";
-        var verTa = document.getElementById("kb-move-verify");
-        if (verTa) verTa.value = "";
-        var artWrap = document.getElementById("kb-move-artifacts-wrap");
-        var artTa = document.getElementById("kb-move-artifacts");
-        if (artWrap && artTa) {
-          if (toCol === "done") {
-            artWrap.classList.remove("is-hidden");
-            artTa.value = "";
-          } else {
+          if (artWrap && artTa) {
             artWrap.classList.add("is-hidden");
             artTa.value = "";
+          }
+          var estEl = document.getElementById("kb-move-est");
+          if (estEl) {
+            var re = data.estimateHours;
+            if (re !== undefined && re !== null && String(re).trim() !== "" && !isNaN(Number(re))) {
+              estEl.value = String(Number(re));
+            } else {
+              estEl.value = "";
+            }
+          }
+        } else {
+          setKbMoveBl2doMode(false);
+          if (hint) {
+            if (fromCol === "do" && toCol === "doing") {
+              hint.textContent =
+                "Prior Burnt hours on this sticky are cleared when you leave To DO for In progress. Leave Burnt hours empty unless you are logging time for this move (empty is not stored as zero).";
+              hint.classList.remove("is-hidden");
+            } else {
+              hint.textContent = "";
+              hint.classList.add("is-hidden");
+            }
+          }
+          document.getElementById("kb-move-hrs").value =
+            fromCol === "do" && toCol === "doing" ? "" : "0";
+          document.getElementById("kb-move-note").value = "";
+          var verTa = document.getElementById("kb-move-verify");
+          if (verTa) verTa.value = "";
+          if (artWrap && artTa) {
+            if (toCol === "done") {
+              artWrap.classList.remove("is-hidden");
+              artTa.value = "";
+            } else {
+              artWrap.classList.add("is-hidden");
+              artTa.value = "";
+            }
           }
         }
         if (typeof dlg.showModal === "function") dlg.showModal();
@@ -1080,7 +1170,18 @@
               ? 0
               : parseFloat(String(rawLh).replace(",", "."));
           if (isNaN(loggedHours)) loggedHours = 0;
-          var dragJson = JSON.stringify({ itemId: id, from: from, loggedHours: loggedHours });
+          var rawEst = el.getAttribute("data-estimate-hours");
+          var estimateHours = null;
+          if (rawEst !== null && String(rawEst).trim() !== "") {
+            var pe = parseFloat(String(rawEst).replace(",", "."));
+            estimateHours = isNaN(pe) ? null : pe;
+          }
+          var dragJson = JSON.stringify({
+            itemId: id,
+            from: from,
+            loggedHours: loggedHours,
+            estimateHours: estimateHours,
+          });
           e.dataTransfer.setData("application/json", dragJson);
           e.dataTransfer.setData("text/plain", dragJson);
           e.dataTransfer.effectAllowed = "move";
@@ -1091,6 +1192,7 @@
 
       document.getElementById("kb-move-cancel").addEventListener("click", function () {
         pending = null;
+        setKbMoveBl2doMode(false);
         var hint = document.getElementById("kb-move-reset-hint");
         if (hint) {
           hint.textContent = "";
@@ -1105,6 +1207,24 @@
 
       document.getElementById("kb-move-confirm").addEventListener("click", function () {
         if (!pending) return;
+        if (pending.mode === "bl2do") {
+          var estRaw = (document.getElementById("kb-move-est").value || "").trim();
+          var estNum = parseFloat(String(estRaw).replace(",", "."));
+          if (!estRaw || isNaN(estNum) || estNum <= 0) {
+            alert("Estimated hours must be greater than zero.");
+            return;
+          }
+          sendKanbanMove({
+            item_id: parseInt(pending.itemId, 10),
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+            to_column: pending.to,
+            note: "",
+            committed_hours: "0",
+            estimate_hours: estRaw,
+          });
+          return;
+        }
         var hrsRaw = (document.getElementById("kb-move-hrs").value || "").trim();
         var note = document.getElementById("kb-move-note").value || "";
         var moveBody = {

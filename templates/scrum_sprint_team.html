@@ -2,11 +2,11 @@
 {% block title %}Sprint — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=31) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=50) }}" />
 {% endblock %}
 {% block content %}
   {% macro scrum_col_label(c) -%}
-    {%- if c == 'doing' -%}In progress{%- elif c == 'do' -%}Do{%- elif c == 'backlog' -%}Backlog{%- elif c == 'done' -%}Done{%- else -%}{{ c }}{%- endif -%}
+    {%- if c == 'doing' -%}In progress{%- elif c == 'do' -%}To DO{%- elif c == 'backlog' -%}Backlog{%- elif c == 'done' -%}Done{%- else -%}{{ c }}{%- endif -%}
   {%- endmacro %}
   <section class="card scrum-board-hero scrum-team-hero">
     <div class="scrum-team-hero-layout">
@@ -27,7 +27,6 @@
                 <span class="scrum-cap-sep" aria-hidden="true">·</span>
                 <span class="scrum-cap-label">Sprint capacity</span>
                 <span class="scrum-cap-value-wrap"> <span id="sprint-team-capacity-live">{{ "%.1f"|format(sprint_team_capacity_hours) }}</span><span class="scrum-cap-unit"> h</span></span>
-                <span class="scrum-cap-sublabel">net, weekdays after leave</span>
               </span>
             {% endif %}
           </h2>
@@ -62,49 +61,46 @@
             </div>
           </form>
         </div>
-        <div class="scrum-team-hero-actions" role="group" aria-label="Sprint status, links, and lifecycle">
-          <div class="scrum-team-hero-actions-meta">
-            <div class="scrum-team-hero-actions-status">
-              {% if sprint_status_label == 'CLOSED' %}
-                <span class="scrum-sprint-status-pill scrum-sprint-status-pill-closed" title="Manually closed">CLOSED</span>
-              {% elif sprint_status_label == 'ENDED' %}
-                <span class="scrum-sprint-status-pill scrum-sprint-status-pill-closed scrum-sprint-status-pill-ended" title="Sprint window ended — board frozen at last day">ENDED</span>
-              {% else %}
-                <span class="scrum-sprint-status-pill scrum-sprint-status-pill-open" title="Sprint accepts edits">OPEN</span>
-              {% endif %}
-            </div>
-            <nav class="scrum-team-hero-actions-links" aria-label="Sprint views">
-              <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
-              <a class="scrum-sprint-hppm-link" href="{{ url_for('scrum_sprint_hppm_view', sprint_id=sprint_id) }}">HPPM view</a>
-            </nav>
-          </div>
-          <div class="scrum-team-hero-actions-lifecycle">
+        <div class="scrum-team-hero-actions" role="group" aria-label="Sprint lifecycle and leave view">
+          <div class="scrum-team-hero-lifecycle-pills" role="group" aria-label="Sprint lifecycle">
             {% if sprint_manually_closed %}
-              <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form scrum-team-hero-lifecycle-form">
+              <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form scrum-team-hero-lifecycle-pill-form">
                 {% include "partials/csrf.html" %}
                 <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                <button type="submit" class="btn secondary small scrum-team-hero-lifecycle-btn">Open sprint</button>
+                <button type="submit" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--open">OPEN</button>
               </form>
+            {% elif sprint_status_label == 'ENDED' %}
+              <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--ended" title="Sprint window ended — board frozen at last day" role="status">OPEN</span>
             {% else %}
-              <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form scrum-team-hero-lifecycle-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
+              <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--open-active" title="Sprint accepts edits" role="status">OPEN</span>
+            {% endif %}
+
+            {% if sprint_manually_closed %}
+              <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--disabled" title="Sprint is closed — use OPEN to edit again">CLOSE</span>
+            {% else %}
+              <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form scrum-team-hero-lifecycle-pill-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
                 {% include "partials/csrf.html" %}
                 <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                <button type="submit" class="btn secondary small scrum-team-hero-lifecycle-btn">Close sprint</button>
+                <button type="submit" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--close">CLOSE</button>
               </form>
             {% endif %}
+
             <form
               id="scrum-sprint-delete-form"
               method="post"
               action="{{ url_for('scrum_sprint_delete') }}"
-              class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline scrum-team-hero-lifecycle-form"
+              class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline scrum-team-hero-lifecycle-pill-form"
             >
               {% include "partials/csrf.html" %}
               <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-              <button type="button" class="btn secondary small danger-ghost scrum-team-hero-lifecycle-btn" id="scrum-delete-sprint-open" title="Permanently delete this sprint and all stickies (works for closed or ended sprints too)">
-                Delete sprint
+              <button type="button" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--delete" id="scrum-delete-sprint-open" title="Permanently delete this sprint and all stickies (works for closed or ended sprints too)">
+                DELETE
               </button>
             </form>
           </div>
+          <p class="scrum-team-hero-leave-below">
+            <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
+          </p>
         </div>
 
         {% if (portal_proposals_pending|default(0)) > 0 %}
@@ -576,14 +572,14 @@
               <td class="scrum-td-queue scrum-td-expandable">
                 <div class="scrum-td-collapsed-summary">
                   <div class="scrum-cl-line"><span class="scrum-cl-k">B</span> {{ m.counts["backlog"] }} backlog</div>
-                  <div class="scrum-cl-line"><span class="scrum-cl-k">D</span> {{ m.counts["do"] }} in Do</div>
+                  <div class="scrum-cl-line"><span class="scrum-cl-k">D</span> {{ m.counts["do"] }} in To DO</div>
                   <div class="scrum-cl-line"><span class="scrum-cl-k">Dg</span> {{ m.counts["doing"] }} in progress</div>
                   <div class="scrum-cl-line"><span class="scrum-cl-k">Dn</span> {{ m.counts["done"] }} done</div>
                 </div>
                 <div class="scrum-td-expanded-body">
-                  <div class="scrum-queue-mini" aria-label="Backlog {{ m.counts['backlog'] }}, Do {{ m.counts['do'] }}, In progress {{ m.counts['doing'] }}, Done {{ m.counts['done'] }}">
+                  <div class="scrum-queue-mini" aria-label="Backlog {{ m.counts['backlog'] }}, To DO {{ m.counts['do'] }}, In progress {{ m.counts['doing'] }}, Done {{ m.counts['done'] }}">
                     <span class="qm qm-bl" title="Backlog"><abbr>B</abbr><b>{{ m.counts['backlog'] }}</b></span>
-                    <span class="qm qm-do" title="Do"><abbr>D</abbr><b>{{ m.counts['do'] }}</b></span>
+                    <span class="qm qm-do" title="To DO"><abbr>D</abbr><b>{{ m.counts['do'] }}</b></span>
                     <span class="qm qm-dg" title="In progress"><abbr>Dg</abbr><b>{{ m.counts['doing'] }}</b></span>
                     <span class="qm qm-dn" title="Done"><abbr>Dn</abbr><b>{{ m.counts['done'] }}</b></span>
                   </div>

@@ -2,7 +2,7 @@
 {% block title %}HPPM view — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=35) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=48) }}" />
 {% endblock %}
 {% block content %}
   <section class="card scrum-board-hero scrum-team-hero scrum-hppm-hero">
@@ -45,14 +45,14 @@
     <h3 class="scrum-hppm-section-title">HPPM summary (estimate &amp; burnt by work type)</h3>
     {% if hppm_team_capacity_gross_hours is not none %}
       <p class="scrum-hppm-cap-footnote scrum-hppm-cap-footnote--pct">
-        <strong>% Team Sprint Estimate</strong> = that row’s estimate hours ÷ <strong>total estimate hours</strong> in this table (the Total row shows <strong>100%</strong>). <strong>% Team Burnt</strong> = <strong>100 × burnt ÷ estimate</strong> for that row; the Total row is <strong>100 × (sum burnt ÷ sum estimate)</strong>.
+        <strong>% Team Sprint Estimate</strong> = that row’s estimate hours ÷ <strong>total estimate hours</strong> in this table (the Total row shows <strong>100%</strong>). <strong>% Team Burnt</strong> = that row’s burnt hours ÷ <strong>total burnt hours</strong> in this table (same idea as % Team Sprint Estimate; the Total row shows <strong>100%</strong>).
       </p>
       <p class="scrum-hppm-cap-footnote">
         Reference — <strong>gross</strong> team sprint capacity: <strong>{{ "%.1f"|format(hppm_team_capacity_gross_hours) }}h</strong> (Mon–Fri × roster × 8h, before leave). <strong>Net</strong> after leave: {% if hppm_team_capacity_net_hours is not none %}<strong>{{ "%.1f"|format(hppm_team_capacity_net_hours) }}h</strong>{% else %}<strong>—</strong>{% endif %}.
       </p>
     {% else %}
       <p class="scrum-hppm-cap-footnote">
-        <strong>% Team Sprint Estimate</strong> is each row’s share of total estimate hours (Total = 100%). <strong>% Team Burnt</strong> is burnt ÷ estimate × 100 per row (Total = total burnt ÷ total estimate × 100). Gross/net team capacity is unavailable without roster and sprint dates.
+        <strong>% Team Sprint Estimate</strong> is each row’s share of total estimate hours (Total = 100%). <strong>% Team Burnt</strong> is each row’s share of total burnt hours (Total = 100%). Gross/net team capacity is unavailable without roster and sprint dates.
       </p>
     {% endif %}
     <div class="scrum-hppm-table-wrap">
@@ -103,40 +103,363 @@
 
     <h3 class="scrum-hppm-section-title">All stickies (HPPM work type &amp; burnt)</h3>
     <div class="scrum-hppm-table-wrap scrum-hppm-table-scroll">
-      <table class="scrum-hppm-table scrum-hppm-tasks-table">
+      <table id="scrum-hppm-tasks-table" class="scrum-hppm-table scrum-hppm-tasks-table">
         <thead>
           <tr>
-            <th scope="col">Pool name</th>
-            <th scope="col">Work type</th>
-            <th scope="col">Area type</th>
+            <th scope="col" class="{% if hppm_task_rows %}scrum-hppm-th-filterable{% endif %}">
+              {% if hppm_task_rows %}
+                <div class="scrum-hppm-th-inner">
+                  <span class="scrum-hppm-th-label">Area type</span>
+                  <div class="scrum-hppm-filter-inline" title="Filter by area type">
+                    <span id="scrum-hppm-filter-area-disp" class="scrum-hppm-filter-display">All</span><span class="scrum-hppm-filter-chevron" aria-hidden="true">▾</span>
+                    <select id="scrum-hppm-filter-area" class="scrum-hppm-header-filter-native"></select>
+                  </div>
+                </div>
+              {% else %}
+                Area type
+              {% endif %}
+            </th>
+            <th scope="col" class="{% if hppm_task_rows %}scrum-hppm-th-filterable{% endif %}">
+              {% if hppm_task_rows %}
+                <div class="scrum-hppm-th-inner">
+                  <span class="scrum-hppm-th-label">Work type</span>
+                  <div class="scrum-hppm-filter-inline" title="Filter by work type">
+                    <span id="scrum-hppm-filter-work-disp" class="scrum-hppm-filter-display">All</span><span class="scrum-hppm-filter-chevron" aria-hidden="true">▾</span>
+                    <select id="scrum-hppm-filter-work" class="scrum-hppm-header-filter-native"></select>
+                  </div>
+                </div>
+              {% else %}
+                Work type
+              {% endif %}
+            </th>
             <th scope="col">Title</th>
-            <th scope="col">Assignee</th>
+            <th scope="col" class="{% if hppm_task_rows %}scrum-hppm-th-filterable{% endif %}">
+              {% if hppm_task_rows %}
+                <div class="scrum-hppm-th-inner">
+                  <span class="scrum-hppm-th-label">Assignee</span>
+                  <div class="scrum-hppm-filter-inline" title="Filter by assignee">
+                    <span id="scrum-hppm-filter-assignee-disp" class="scrum-hppm-filter-display">All</span><span class="scrum-hppm-filter-chevron" aria-hidden="true">▾</span>
+                    <select id="scrum-hppm-filter-assignee" class="scrum-hppm-header-filter-native"></select>
+                  </div>
+                </div>
+              {% else %}
+                Assignee
+              {% endif %}
+            </th>
             <th scope="col" class="scrum-hppm-num-col">Est. (h)</th>
             <th scope="col" class="scrum-hppm-num-col">Burnt (h)</th>
             <th scope="col" class="scrum-hppm-num-col scrum-hppm-pct-col">Burnt %</th>
+            <th
+              scope="col"
+              class="scrum-hppm-num-col scrum-hppm-total-col{% if hppm_task_rows %} scrum-hppm-th-total-head{% endif %}"
+              title="{% if hppm_task_rows %}Per area: sum of burnt in that area. Header line: sum of burnt (h) for all stickies matching the filters above.{% else %}Sum of burnt hours for stickies in this area (one merged cell per area group).{% endif %}"
+            >
+              {% if hppm_task_rows %}
+                <div class="scrum-hppm-th-inner scrum-hppm-th-inner--right">
+                  <span class="scrum-hppm-th-label">Total burnt (h)</span>
+                  <span
+                    id="scrum-hppm-tasks-grand-total-burnt"
+                    class="scrum-hppm-th-grand-burnt"
+                    title="Sum of Burnt (h) for all stickies matching current filters"
+                  >—</span>
+                </div>
+              {% else %}
+                Total burnt (h)
+              {% endif %}
+            </th>
           </tr>
         </thead>
+        {% if not hppm_task_rows %}
         <tbody>
-          {% for t in hppm_task_rows %}
-            <tr>
-              <td>{{ t.pool_name }}</td>
-              <td>{{ t.work_type }}</td>
-              <td class="scrum-hppm-area-type-cell">{{ t.area_type }}</td>
-              <td class="scrum-hppm-title-cell">{{ t.title }}</td>
-              <td>{{ t.assignee }}</td>
-              <td class="scrum-hppm-num-col">{{ "%.2f"|format(t.estimate_hours) }}</td>
-              <td class="scrum-hppm-num-col">{{ "%.4f"|format(t.burnt_hours) }}</td>
-              <td class="scrum-hppm-num-col scrum-hppm-pct-col">
-                {% if t.burnt_pct is not none %}{{ "%.2f"|format(t.burnt_pct) }}%{% else %}—{% endif %}
-              </td>
-            </tr>
-          {% else %}
-            <tr>
-              <td colspan="8" class="scrum-hppm-empty-row">No stickies in this sprint yet.</td>
-            </tr>
-          {% endfor %}
+          <tr>
+            <td colspan="8" class="scrum-hppm-empty-row">No stickies in this sprint yet.</td>
+          </tr>
         </tbody>
+        {% endif %}
       </table>
     </div>
   </section>
+{% endblock %}
+{% block scripts %}
+{% if hppm_task_rows %}
+<script type="application/json" id="scrum-hppm-tasks-json">{{ hppm_task_rows | tojson }}</script>
+<script>
+(function () {
+  var jsonEl = document.getElementById("scrum-hppm-tasks-json");
+  var tbl = document.getElementById("scrum-hppm-tasks-table");
+  var selArea = document.getElementById("scrum-hppm-filter-area");
+  var selWork = document.getElementById("scrum-hppm-filter-work");
+  var selAsg = document.getElementById("scrum-hppm-filter-assignee");
+  if (!jsonEl || !tbl || !selArea || !selWork || !selAsg) return;
+
+  var hppmTasksTable = tbl;
+  if (hppmTasksTable && !hppmTasksTable.dataset.hppmAreaToggleBound) {
+    hppmTasksTable.dataset.hppmAreaToggleBound = "1";
+    hppmTasksTable.addEventListener("click", function (ev) {
+      var btn = ev.target.closest(".scrum-hppm-area-toggle");
+      if (!btn || !hppmTasksTable.contains(btn)) return;
+      ev.preventDefault();
+      var tbody = btn.closest("tbody.scrum-hppm-area-group");
+      if (!tbody) return;
+      var open = tbody.getAttribute("data-expanded") !== "false";
+      var nextOpen = !open;
+      tbody.setAttribute("data-expanded", nextOpen ? "true" : "false");
+      btn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+      var chev = btn.querySelector(".scrum-hppm-area-chevron");
+      if (chev) chev.textContent = nextOpen ? "▾" : "▸";
+    });
+  }
+
+  function safeAreaGroupId(ak) {
+    var s = String(ak || "area")
+      .replace(/[^a-zA-Z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!s) s = "area";
+    return s.slice(0, 72);
+  }
+
+  var EMPTY = "__EMPTY__";
+  var ALL = [];
+  try {
+    ALL = JSON.parse(jsonEl.textContent || "[]");
+  } catch (e) {
+    return;
+  }
+
+  function normStr(v) {
+    return v == null ? "" : String(v);
+  }
+
+  function matchDim(val, selected) {
+    if (selected === "") return true;
+    if (selected === EMPTY) return normStr(val).trim() === "";
+    return normStr(val) === selected;
+  }
+
+  function escHtml(s) {
+    var d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  function fmtPct(p) {
+    if (p == null || p === "") return "—";
+    return Number(p).toFixed(2) + "%";
+  }
+
+  function uniques(getter) {
+    var hasEmpty = false;
+    var set = {};
+    ALL.forEach(function (r) {
+      var v = normStr(getter(r)).trim();
+      if (v === "") hasEmpty = true;
+      else set[v] = true;
+    });
+    var keys = Object.keys(set).sort(function (a, b) {
+      return a.localeCompare(b, undefined, { sensitivity: "base" });
+    });
+    return { keys: keys, hasEmpty: hasEmpty };
+  }
+
+  function fillSelect(sel, getter) {
+    var prev = sel.value;
+    var u = uniques(getter);
+    sel.innerHTML = "";
+    var o0 = document.createElement("option");
+    o0.value = "";
+    o0.textContent = "All";
+    sel.appendChild(o0);
+    if (u.hasEmpty) {
+      var oe = document.createElement("option");
+      oe.value = EMPTY;
+      oe.textContent = "(empty)";
+      sel.appendChild(oe);
+    }
+    u.keys.forEach(function (k) {
+      var op = document.createElement("option");
+      op.value = k;
+      op.textContent = k;
+      sel.appendChild(op);
+    });
+    if (prev && Array.prototype.some.call(sel.options, function (x) { return x.value === prev; })) {
+      sel.value = prev;
+    }
+  }
+
+  function syncFilterUi() {
+    function one(sel, name, dispId) {
+      var v = sel.value;
+      var cur = v === "" ? "All" : v === EMPTY ? "(empty)" : v;
+      sel.setAttribute("aria-label", name + " filter · " + cur);
+      var disp = document.getElementById(dispId);
+      if (disp) {
+        disp.textContent = cur;
+      }
+    }
+    one(selArea, "Area type", "scrum-hppm-filter-area-disp");
+    one(selWork, "Work type", "scrum-hppm-filter-work-disp");
+    one(selAsg, "Assignee", "scrum-hppm-filter-assignee-disp");
+  }
+
+  function onFilterChange() {
+    render();
+    syncFilterUi();
+  }
+
+  function clearTaskTbodies() {
+    while (tbl.tBodies.length) {
+      tbl.removeChild(tbl.tBodies[0]);
+    }
+  }
+
+  function setGrandTotalBurntHeader(rows) {
+    var el = document.getElementById("scrum-hppm-tasks-grand-total-burnt");
+    if (!el) return;
+    if (!rows.length) {
+      el.textContent = "—";
+      return;
+    }
+    var t = rows.reduce(function (s, r) {
+      return s + Number(r.burnt_hours || 0);
+    }, 0);
+    el.textContent = t.toFixed(4);
+  }
+
+  function render() {
+    var fa = selArea.value;
+    var fw = selWork.value;
+    var fn = selAsg.value;
+    var rows = ALL.filter(function (r) {
+      return matchDim(r.area_type, fa) && matchDim(r.work_type, fw) && matchDim(r.assignee, fn);
+    });
+    setGrandTotalBurntHeader(rows);
+    clearTaskTbodies();
+    if (rows.length === 0) {
+      var tbEmpty = document.createElement("tbody");
+      var tr0 = document.createElement("tr");
+      tr0.innerHTML =
+        '<td colspan="8" class="scrum-hppm-empty-row">No stickies match the current filters.</td>';
+      tbEmpty.appendChild(tr0);
+      tbl.appendChild(tbEmpty);
+      return;
+    }
+    var byArea = new Map();
+    rows.forEach(function (r) {
+      var k = normStr(r.area_type);
+      if (!byArea.has(k)) byArea.set(k, []);
+      byArea.get(k).push(r);
+    });
+    function sumBurntForArea(key) {
+      var g = byArea.get(key) || [];
+      return g.reduce(function (s, x) {
+        return s + Number(x.burnt_hours || 0);
+      }, 0);
+    }
+    var areaKeys = Array.from(byArea.keys()).sort(function (a, b) {
+      var d = sumBurntForArea(b) - sumBurntForArea(a);
+      if (d !== 0) return d;
+      return a.localeCompare(b, undefined, { sensitivity: "base" });
+    });
+    areaKeys.forEach(function (ak) {
+      var grp = byArea
+        .get(ak)
+        .slice()
+        .sort(function (a, b) {
+          var db = Number(b.burnt_hours || 0) - Number(a.burnt_hours || 0);
+          if (db !== 0) return db;
+          var u = normStr(a.assignee).localeCompare(normStr(b.assignee), undefined, { sensitivity: "base" });
+          if (u !== 0) return u;
+          return normStr(a.title).localeCompare(normStr(b.title), undefined, { sensitivity: "base" });
+        });
+      var sumB = grp.reduce(function (s, x) {
+        return s + Number(x.burnt_hours || 0);
+      }, 0);
+      var sumEst = grp.reduce(function (s, x) {
+        return s + Number(x.estimate_hours || 0);
+      }, 0);
+      var grpBurntPct =
+        sumEst > 0 ? (sumB / sumEst) * 100 : null;
+      var band = grp[0].area_band_idx != null ? grp[0].area_band_idx : 0;
+      var gid = "hppm-grp-" + safeAreaGroupId(ak);
+      var btnId = gid + "-toggle";
+
+      var tbody = document.createElement("tbody");
+      tbody.className = "scrum-hppm-area-group";
+      tbody.setAttribute("data-expanded", "false");
+      tbody.id = gid;
+
+      var trToggle = document.createElement("tr");
+      trToggle.className =
+        "scrum-hppm-area-toggle-row scrum-hppm-area-band scrum-hppm-area-band--" + band;
+      var nStick = grp.length;
+      var stickLabel = nStick === 1 ? "1 sticky" : String(nStick) + " stickies";
+      trToggle.innerHTML =
+        '<td class="scrum-hppm-area-toggle-cell">' +
+        '<button type="button" class="scrum-hppm-area-toggle" id="' +
+        btnId +
+        '" aria-expanded="false">' +
+        '<span class="scrum-hppm-area-chevron" aria-hidden="true">▸</span>' +
+        "</button>" +
+        ' <span class="scrum-hppm-area-toggle-name">' +
+        escHtml(ak) +
+        "</span></td>" +
+        '<td class="scrum-hppm-area-toggle-meta scrum-hppm-dim-cell">—</td>' +
+        '<td class="scrum-hppm-area-toggle-meta scrum-hppm-area-toggle-count">' +
+        stickLabel +
+        "</td>" +
+        '<td class="scrum-hppm-area-toggle-meta scrum-hppm-dim-cell">—</td>' +
+        '<td class="scrum-hppm-num-col scrum-hppm-area-toggle-sum">' +
+        sumEst.toFixed(2) +
+        "</td>" +
+        '<td class="scrum-hppm-num-col scrum-hppm-area-toggle-sum">' +
+        sumB.toFixed(4) +
+        "</td>" +
+        '<td class="scrum-hppm-num-col scrum-hppm-pct-col scrum-hppm-area-toggle-sum">' +
+        fmtPct(grpBurntPct) +
+        "</td>" +
+        '<td class="scrum-hppm-num-col scrum-hppm-total-col scrum-hppm-total-merged">' +
+        sumB.toFixed(4) +
+        "</td>";
+      var btnEl = trToggle.querySelector(".scrum-hppm-area-toggle");
+      if (btnEl) btnEl.setAttribute("aria-label", "Expand or collapse stickies for " + ak);
+      tbody.appendChild(trToggle);
+
+      grp.forEach(function (r) {
+        var tr = document.createElement("tr");
+        tr.className =
+          "scrum-hppm-task-row scrum-hppm-area-detail scrum-hppm-area-band scrum-hppm-area-band--" +
+          band;
+        var h = "";
+        h += '<td class="scrum-hppm-area-type-cell scrum-hppm-area-detail-placeholder"></td>';
+        h += "<td>" + escHtml(r.work_type) + "</td>";
+        h += '<td class="scrum-hppm-title-cell">' + escHtml(r.title) + "</td>";
+        h += "<td>" + escHtml(r.assignee) + "</td>";
+        h += '<td class="scrum-hppm-num-col">' + Number(r.estimate_hours || 0).toFixed(2) + "</td>";
+        h += '<td class="scrum-hppm-num-col">' + Number(r.burnt_hours || 0).toFixed(4) + "</td>";
+        h += '<td class="scrum-hppm-num-col scrum-hppm-pct-col">' + fmtPct(r.burnt_pct) + "</td>";
+        h += '<td class="scrum-hppm-num-col scrum-hppm-total-placeholder scrum-hppm-dim-cell">—</td>';
+        tr.innerHTML = h;
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+    });
+  }
+
+  fillSelect(selArea, function (r) {
+    return r.area_type;
+  });
+  fillSelect(selWork, function (r) {
+    return r.work_type;
+  });
+  fillSelect(selAsg, function (r) {
+    return r.assignee;
+  });
+  syncFilterUi();
+  selArea.addEventListener("change", onFilterChange);
+  selWork.addEventListener("change", onFilterChange);
+  selAsg.addEventListener("change", onFilterChange);
+  render();
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -2,7 +2,7 @@
 {% block title %}Team overview detailed — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=41) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=50) }}" />
 {% endblock %}
 {% block content %}
   <section class="card scrum-team-detail-hero">
@@ -72,19 +72,28 @@
             {% for s in m.stickies %}
               <div class="scrum-team-detail-sticky" data-item-id="{{ s.id }}">
                 <div class="scrum-team-detail-sticky-top">
-                  <span
-                    class="scrum-team-detail-kind-pill"
-                    style="{% if s.kind_color_hex %}--kind-color: {{ s.kind_color_hex }}; border-color: {{ s.kind_color_hex }};{% endif %}"
-                  >{{ s.kind_label }}</span>
-                  <span class="scrum-team-detail-sticky-title">{{ s.title or "—" }}</span>
+                  <div class="scrum-team-detail-sticky-top-row1">
+                    <div class="scrum-team-detail-sticky-top-left">
+                      <span
+                        class="scrum-team-detail-kind-pill"
+                        style="{% if s.kind_color_hex %}--kind-color: {{ s.kind_color_hex }}; border-color: {{ s.kind_color_hex }};{% endif %}"
+                      >{{ s.kind_label }}</span>
+                      <span class="scrum-team-detail-sticky-title">{{ s.title or "—" }}</span>
+                    </div>
+                    <div class="scrum-team-detail-sticky-progress" aria-label="Burnt hours versus estimate">
+                      <div class="scrum-team-detail-sticky-progress-main">
+                        <span class="scrum-team-detail-sticky-progress-burnt">{{ "%.1f"|format(s.committed_logged_hours or 0) }}h</span>
+                        <span class="scrum-team-detail-sticky-progress-sep" aria-hidden="true">/</span>
+                        <span class="scrum-team-detail-sticky-progress-est">{{ "%.1f"|format(s.estimate_hours or 0) }}h</span>
+                      </div>
+                      {% if s.burn_pct is not none %}
+                        <div class="scrum-team-detail-sticky-progress-pct">{{ "%.0f"|format(s.burn_pct) }}% of estimate</div>
+                      {% endif %}
+                    </div>
+                  </div>
                   <span class="scrum-team-detail-sticky-meta">
                     {{ s.kanban_column_label }}
                     · workflow <strong>{{ s.workflow_status or "—" }}</strong>
-                    · est <strong>{{ "%.1f"|format(s.estimate_hours or 0) }}h</strong>
-                    · logged <strong>{{ "%.1f"|format(s.committed_logged_hours or 0) }}h</strong>
-                    {% if s.burn_pct is not none %}
-                      · <strong>{{ "%.0f"|format(s.burn_pct) }}%</strong> of estimate
-                    {% endif %}
                   </span>
                 </div>
                 {% if s.area %}
@@ -95,101 +104,59 @@
                 {% endif %}
                 <div class="scrum-team-detail-sticky-split">
                   <div class="scrum-team-detail-sticky-col scrum-team-detail-sticky-col--left">
-                    <details class="scrum-sticky-attachments scrum-team-detail-sticky-attachments">
-                      <summary class="scrum-sticky-attachments-summary">
-                        Attachments{% if s.attachments %} ({{ s.attachments|length }}){% endif %}
-                      </summary>
-                      {% if s.attachments %}
-                        <ul class="scrum-sticky-attachment-list scrum-team-detail-att-list">
-                          {% for att in s.attachments %}
-                            {% set fn = (att.original_filename or '')|lower %}
-                            {% if fn.endswith('.pdf') %}
-                              {% set preview_kind = 'pdf' %}
-                            {% elif fn.endswith('.png') or fn.endswith('.jpg') or fn.endswith('.jpeg') or fn.endswith('.gif') or fn.endswith('.webp') %}
-                              {% set preview_kind = 'image' %}
-                            {% elif fn.endswith('.xlsx') or fn.endswith('.xlsm') or fn.endswith('.xltx') or fn.endswith('.csv') %}
-                              {% set preview_kind = 'sheet' %}
-                            {% else %}
-                              {% set preview_kind = 'other' %}
-                            {% endif %}
-                            <li class="scrum-sticky-attachment-row scrum-team-detail-att-row">
-                              <button
-                                type="button"
-                                class="scrum-sticky-attachment-name scrum-detail-att-preview-trigger"
-                                data-preview-url="{{ url_for('scrum_sprint_item_attachment_download', attachment_id=att.id) }}?inline=1"
-                                data-preview-kind="{{ preview_kind }}"
-                                {% if preview_kind == 'sheet' %}
-                                  data-preview-html-url="{{ url_for('scrum_sprint_item_attachment_preview_html', attachment_id=att.id) }}"
-                                {% endif %}
-                                data-download-url="{{ url_for('scrum_sprint_item_attachment_download', attachment_id=att.id) }}"
-                              >{{ att.original_filename|e }}</button>
-                              <a
-                                class="scrum-team-detail-att-dl"
-                                href="{{ url_for('scrum_sprint_item_attachment_download', attachment_id=att.id) }}"
-                              >Download</a>
-                              <span class="scrum-sticky-attachment-size">{{ (att.size_bytes / 1024)|round(1) }} KB</span>
-                              {% if not sprint_readonly %}
-                                <form
-                                  method="post"
-                                  action="{{ kb_form_urls.attachment_delete }}"
-                                  class="inline-form scrum-sticky-attachment-del"
-                                  onclick="event.stopPropagation();"
-                                  onmousedown="event.stopPropagation();"
-                                  onsubmit="return confirm('Remove this attachment?');"
-                                >
-                                  {% include "partials/csrf.html" %}
-                                  <input type="hidden" name="attachment_id" value="{{ att.id }}" />
-                                  <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                                  <input type="hidden" name="assignee" value="{{ m.name }}" />
-                                  <input type="hidden" name="return_to" value="team_detailed" />
-                                  <button type="submit" class="btn secondary small danger-ghost">Remove</button>
-                                </form>
-                              {% endif %}
-                            </li>
-                          {% endfor %}
-                        </ul>
-                      {% endif %}
-                      {% if not sprint_readonly %}
-                        <form
-                          class="scrum-sticky-attachment-upload"
-                          method="post"
-                          action="{{ kb_form_urls.attachment_upload }}"
-                          enctype="multipart/form-data"
-                          onclick="event.stopPropagation();"
-                          onmousedown="event.stopPropagation();"
-                        >
-                          {% include "partials/csrf.html" %}
-                          <input type="hidden" name="return_to" value="team_detailed" />
-                          <input type="hidden" name="item_id" value="{{ s.id }}" />
-                          <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                          <input type="hidden" name="assignee" value="{{ m.name }}" />
-                          <label class="scrum-sticky-attachment-file-label">
-                            Add file(s)
-                            <input type="file" name="files" class="scrum-sticky-attachment-file" multiple required />
-                          </label>
-                          <button type="submit" class="btn secondary small">Upload</button>
-                        </form>
-                        <p class="scrum-sticky-attachment-hint">
-                          Select one or more files (Ctrl/Cmd+click). Same types as before (e.g. PDF, PNG, XLSX). Max 10 MB per file, up to 20 files per sticky. Remove any file with the button beside its name.
-                        </p>
-                      {% elif sprint_readonly and not s.attachments %}
-                        <p class="scrum-sticky-attachment-hint">No attachments on this sticky.</p>
-                      {% endif %}
-                    </details>
-                    <div class="scrum-detail-att-preview" data-preview-root>
-                      <p class="scrum-detail-att-preview-label">Preview</p>
-                      <div class="scrum-detail-att-preview-frame-wrap">
-                        <iframe class="scrum-detail-att-preview-iframe" title="Attachment preview" hidden></iframe>
-                        <img class="scrum-detail-att-preview-img" alt="" hidden />
-                        <p class="scrum-detail-att-preview-empty">
-                          Select a file name above to preview here (PDF, images, Excel .xlsx/.csv first sheet or table — legacy .xls: Download only).
-                        </p>
+                    {# ── Task Checklist ── #}
+                    <div class="scrum-checklist-wrap"
+                         data-item-id="{{ s.id }}"
+                         data-sprint-id="{{ sprint_id }}"
+                         data-url-add="{{ url_for('scrum_api_item_checklist_add') }}"
+                         data-url-update="{{ url_for('scrum_api_item_checklist_update') }}"
+                         data-url-delete="{{ url_for('scrum_api_item_checklist_delete') }}">
+                      <div class="scrum-checklist-header">
+                        <h4 class="scrum-team-detail-subh scrum-checklist-title">Task Checklist</h4>
+                        {% if not sprint_readonly %}
+                          <button type="button" class="btn secondary small scrum-checklist-add-btn">+ Add row</button>
+                        {% endif %}
                       </div>
+                      <div class="scrum-checklist-frame">
+                        <table class="scrum-checklist-table">
+                          <thead>
+                            <tr>
+                              <th>Items</th>
+                              <th>Status</th>
+                              <th>LE</th>
+                              <th>Comments</th>
+                              {% if not sprint_readonly %}<th class="scrum-checklist-del-col"></th>{% endif %}
+                            </tr>
+                          </thead>
+                          <tbody class="scrum-checklist-tbody">
+                            {% for row in s.checklist %}
+                              <tr data-row-id="{{ row.id }}">
+                                <td class="scrum-checklist-cell" data-field="items_to_finish" contenteditable="{{ 'true' if not sprint_readonly else 'false' }}" spellcheck="false">{{ row.items_to_finish|e }}</td>
+                                <td class="scrum-checklist-cell scrum-checklist-cell--status" data-field="status" contenteditable="{{ 'true' if not sprint_readonly else 'false' }}" spellcheck="false">{{ row.status|e }}</td>
+                                <td class="scrum-checklist-cell" data-field="le_to_complete" contenteditable="{{ 'true' if not sprint_readonly else 'false' }}" spellcheck="false">{{ row.le_to_complete|e }}</td>
+                                <td class="scrum-checklist-cell scrum-checklist-cell--done scrum-checklist-cell--textarea" data-field="done_till_date"><textarea class="scrum-checklist-textarea" {% if sprint_readonly %}readonly{% endif %} rows="2" spellcheck="false">{{ row.done_till_date|e }}</textarea></td>
+                                {% if not sprint_readonly %}
+                                  <td class="scrum-checklist-del-col">
+                                    <button type="button" class="scrum-checklist-del-btn" title="Remove row">✕</button>
+                                  </td>
+                                {% endif %}
+                              </tr>
+                            {% endfor %}
+                            {% if not s.checklist %}
+                              <tr class="scrum-checklist-empty-row">
+                                <td colspan="{{ 5 if not sprint_readonly else 4 }}" class="scrum-checklist-empty-msg">No checklist items.{% if not sprint_readonly %} Click "+ Add row".{% endif %}</td>
+                              </tr>
+                            {% endif %}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p class="scrum-checklist-err-msg" hidden></p>
                     </div>
                   </div>
                   <div class="scrum-team-detail-sticky-col scrum-team-detail-sticky-col--right">
+                    <h4 class="scrum-team-detail-subh">All task activity</h4>
                     {% if s.standup_updates %}
-                      <h4 class="scrum-team-detail-subh">In progress updates (stand-up)</h4>
+                      <h5 class="scrum-team-detail-subh2">In progress updates (stand-up)</h5>
                       <ul class="scrum-team-detail-activity">
                         {% for u in s.standup_updates %}
                           <li>
@@ -202,8 +169,6 @@
                         {% endfor %}
                       </ul>
                     {% endif %}
-
-                    <h4 class="scrum-team-detail-subh">All task activity</h4>
                     {% if s.activity_log %}
                       <ul class="scrum-team-detail-activity">
                         {% for a in s.activity_log %}
@@ -221,6 +186,7 @@
                     {% else %}
                       <p class="scrum-team-detail-empty">No activity rows yet.</p>
                     {% endif %}
+
                   </div>
                 </div>
               </div>
@@ -258,6 +224,79 @@
     })();
 
     (function initTeamDetailAttachmentPreview() {
+      function getCsrfMeta() {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        if (meta) return meta.getAttribute("content") || "";
+        var inp = document.querySelector('input[name="csrf_token"]');
+        return inp ? inp.value : "";
+      }
+
+      function toEmbedUrl(rawUrl) {
+        try {
+          var u = rawUrl.trim();
+          // Google Docs/Sheets/Slides — convert edit/view links to preview/embed
+          var gDocsM = u.match(/https:\/\/docs\.google\.com\/(document|spreadsheets|presentation)\/d\/([^/]+)/);
+          if (gDocsM) {
+            return "https://docs.google.com/" + gDocsM[1] + "/d/" + gDocsM[2] + "/preview";
+          }
+          // OneDrive personal share links (1drv.ms) — wrap with Office Online viewer
+          if (/1drv\.ms|onedrive\.live\.com/.test(u)) {
+            return "https://view.officeapps.live.com/op/embed.aspx?src=" + encodeURIComponent(u);
+          }
+          // SharePoint direct file links ending in office formats — wrap with Office Online viewer
+          if (/sharepoint\.com.*\.(xlsx?|docx?|pptx?)(\?|$)/i.test(u)) {
+            return "https://view.officeapps.live.com/op/embed.aspx?src=" + encodeURIComponent(u);
+          }
+          return u;
+        } catch (e) { return rawUrl; }
+      }
+
+      function isImageUrl(u) {
+        return /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u);
+      }
+
+      function showPreview(root, iframe, img, empty, url, kind) {
+        if (kind === "pdf" && url) {
+          img.hidden = true; img.removeAttribute("src");
+          iframe.hidden = false; iframe.setAttribute("src", url);
+          empty.hidden = true;
+        } else if (kind === "image" && url) {
+          iframe.hidden = true; iframe.removeAttribute("src");
+          img.hidden = false; img.setAttribute("src", url);
+          empty.hidden = true;
+        } else if (kind === "sheet") {
+          var sheetUrl = root._activeSheetUrl || "";
+          img.hidden = true; img.removeAttribute("src");
+          if (sheetUrl) {
+            iframe.hidden = false; iframe.setAttribute("src", sheetUrl);
+            empty.hidden = true;
+          } else {
+            iframe.hidden = true; iframe.removeAttribute("src");
+            empty.hidden = false;
+            empty.textContent = "Preview is not available for this file type. Use Download.";
+          }
+        } else if ((kind === "link" || kind === "proxy") && url) {
+          img.hidden = true; img.removeAttribute("src");
+          if (isImageUrl(url)) {
+            iframe.hidden = true; iframe.removeAttribute("src");
+            img.hidden = false; img.setAttribute("src", url);
+          } else if (kind === "proxy") {
+            // Proxy endpoint returns the raw file — open in Office Online viewer wrapped around our proxy URL
+            iframe.hidden = false;
+            iframe.setAttribute("src", "https://view.officeapps.live.com/op/embed.aspx?src=" + encodeURIComponent(window.location.origin + url));
+          } else {
+            var embedUrl = toEmbedUrl(url);
+            iframe.hidden = false; iframe.setAttribute("src", embedUrl);
+          }
+          empty.hidden = true;
+        } else {
+          iframe.hidden = true; iframe.removeAttribute("src");
+          img.hidden = true; img.removeAttribute("src");
+          empty.hidden = false;
+          empty.textContent = "Preview is not available for this file type. Use the ↗ link to open it.";
+        }
+      }
+
       document.querySelectorAll(".scrum-team-detail-sticky").forEach(function (card) {
         var root = card.querySelector("[data-preview-root]");
         if (!root) return;
@@ -265,7 +304,6 @@
         var img = root.querySelector(".scrum-detail-att-preview-img");
         var empty = root.querySelector(".scrum-detail-att-preview-empty");
         if (!iframe || !img || !empty) return;
-        var emptyDefault = empty.textContent;
 
         card.querySelectorAll(".scrum-detail-att-preview-trigger").forEach(function (btn) {
           btn.addEventListener("click", function () {
@@ -274,46 +312,413 @@
             card.querySelectorAll(".scrum-detail-att-preview-trigger").forEach(function (b) {
               b.classList.toggle("is-selected", b === btn);
             });
-            if (kind === "pdf" && url) {
-              empty.textContent = emptyDefault;
-              img.hidden = true;
-              img.removeAttribute("src");
-              iframe.hidden = false;
-              iframe.setAttribute("src", url);
-              empty.hidden = true;
-            } else if (kind === "image" && url) {
-              empty.textContent = emptyDefault;
-              iframe.hidden = true;
-              iframe.removeAttribute("src");
-              img.hidden = false;
-              img.setAttribute("src", url);
-              empty.hidden = true;
-            } else if (kind === "sheet") {
-              var sheetUrl = btn.getAttribute("data-preview-html-url") || "";
-              empty.textContent = emptyDefault;
-              img.hidden = true;
-              img.removeAttribute("src");
-              if (sheetUrl) {
-                iframe.hidden = false;
-                iframe.setAttribute("src", sheetUrl);
-                empty.hidden = true;
-              } else {
-                iframe.hidden = true;
-                iframe.removeAttribute("src");
-                empty.hidden = false;
-                empty.textContent =
-                  "Preview is not available for this file type. Use Download.";
-              }
-            } else {
-              iframe.hidden = true;
-              iframe.removeAttribute("src");
-              img.hidden = true;
-              img.removeAttribute("src");
-              empty.hidden = false;
-              empty.textContent =
-                "Preview is not available for this file type (for example Office documents). Use Download.";
+            if (kind === "sheet") {
+              root._activeSheetUrl = btn.getAttribute("data-preview-html-url") || "";
             }
+            showPreview(root, iframe, img, empty, url, kind);
           });
+        });
+      });
+
+      // ── Linked files interaction ──────────────────────────────────────────
+      function apiPostLF(url, body) {
+        var token = getCsrfMeta();
+        body.csrf_token = token;
+        return fetch(url, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": token },
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) { return r.json().catch(function () { return { ok: false, error: "http_" + r.status }; }); }
+          return r.json();
+        });
+      }
+
+      function wireLinkedFileRow(li, details) {
+        var lfId = parseInt(li.getAttribute("data-lf-id"), 10);
+        var itemId = parseInt(details.getAttribute("data-lf-item-id"), 10);
+        var urlAdd = details.getAttribute("data-lf-url-update");
+        var urlDel = details.getAttribute("data-lf-url-delete");
+
+        // Preview trigger already wired by the main loop above (it runs after wireLinkedFileRow
+        // in init — but we re-wire new rows added dynamically via the trigger event below).
+        var nameBtn = li.querySelector(".scrum-lf-name");
+        if (nameBtn) {
+          nameBtn.addEventListener("click", function () {
+            var card = details.closest(".scrum-team-detail-sticky");
+            if (!card) return;
+            var root = card.querySelector("[data-preview-root]");
+            if (!root) return;
+            var iframeEl = root.querySelector(".scrum-detail-att-preview-iframe");
+            var imgEl = root.querySelector(".scrum-detail-att-preview-img");
+            var emptyEl = root.querySelector(".scrum-detail-att-preview-empty");
+            if (!iframeEl || !imgEl || !emptyEl) return;
+            card.querySelectorAll(".scrum-detail-att-preview-trigger").forEach(function (b) {
+              b.classList.toggle("is-selected", b === nameBtn);
+            });
+            showPreview(root, iframeEl, imgEl, emptyEl, nameBtn.getAttribute("data-preview-url") || "", "link");
+          });
+        }
+
+        var editBtn = li.querySelector(".scrum-lf-edit-btn");
+        var editForm = li.querySelector(".scrum-lf-edit-form");
+        var cancelBtn = li.querySelector(".scrum-lf-edit-cancel");
+        var saveBtn = li.querySelector(".scrum-lf-edit-save");
+        var editName = li.querySelector(".scrum-lf-edit-name");
+        var editUrl = li.querySelector(".scrum-lf-edit-url");
+        var editAuthUser = li.querySelector(".scrum-lf-edit-auth-user");
+        var editAuthPass = li.querySelector(".scrum-lf-edit-auth-pass");
+
+        if (editBtn && editForm) {
+          editBtn.addEventListener("click", function () {
+            editForm.hidden = false;
+            editBtn.hidden = true;
+          });
+        }
+        if (cancelBtn && editForm) {
+          cancelBtn.addEventListener("click", function () {
+            editForm.hidden = true;
+            if (editBtn) editBtn.hidden = false;
+          });
+        }
+        if (saveBtn && editName && editUrl) {
+          saveBtn.addEventListener("click", function () {
+            var newName = editName.value.trim();
+            var newUrl = editUrl.value.trim();
+            if (!newUrl) return;
+            var payload = { id: lfId, item_id: itemId, display_name: newName, url: newUrl };
+            // Only include credentials if the user has the cred fields open
+            if (editAuthUser) {
+              payload.auth_user = editAuthUser.value.trim();
+              // send password only if user typed something; empty = keep existing
+              if (editAuthPass && editAuthPass.value.length > 0) {
+                payload.auth_pass = editAuthPass.value;
+              } else if (payload.auth_user === "") {
+                // clearing username → also clear password
+                payload.auth_pass = "";
+              }
+            }
+            saveBtn.disabled = true;
+            apiPostLF(urlAdd, payload)
+              .then(function (j) {
+                saveBtn.disabled = false;
+                if (!j.ok) return;
+                // determine whether credentials are now set
+                var hasAuth = j.has_auth !== null && j.has_auth !== undefined ? j.has_auth : (payload.auth_user ? true : (li.getAttribute("data-lf-has-auth") === "true"));
+                li.setAttribute("data-lf-has-auth", hasAuth ? "true" : "false");
+                if (editAuthUser) li.setAttribute("data-lf-auth-user", payload.auth_user || "");
+                if (editAuthPass) editAuthPass.value = "";
+                // Update the cred summary text
+                var credSummary = li.querySelector(".scrum-lf-cred-summary");
+                if (credSummary) credSummary.textContent = hasAuth ? "🔒 Credentials saved — click to change" : "+ SharePoint / Windows credentials (optional)";
+                if (nameBtn) {
+                  // Keep or update lock icon
+                  var lockSpan = nameBtn.querySelector(".scrum-lf-auth-icon");
+                  if (hasAuth && !lockSpan) {
+                    var span = document.createElement("span");
+                    span.className = "scrum-lf-auth-icon";
+                    span.title = "Uses stored credentials";
+                    span.textContent = "🔒";
+                    nameBtn.insertBefore(span, nameBtn.firstChild);
+                  } else if (!hasAuth && lockSpan) {
+                    lockSpan.remove();
+                  }
+                  // Update text without touching lock span
+                  var textNode = Array.from(nameBtn.childNodes).find(function (n) { return n.nodeType === 3; });
+                  var newLabel = newName || newUrl.slice(0, 60);
+                  if (textNode) textNode.nodeValue = newLabel;
+                  else nameBtn.appendChild(document.createTextNode(newLabel));
+                  // proxy URL vs raw URL
+                  var proxyBase = details.getAttribute("data-lf-url-proxy-base") || "";
+                  var previewUrl = hasAuth && proxyBase ? (proxyBase + lfId) : newUrl;
+                  nameBtn.setAttribute("data-preview-url", previewUrl);
+                  nameBtn.setAttribute("data-preview-kind", hasAuth ? "proxy" : "link");
+                  nameBtn.setAttribute("title", newUrl);
+                }
+                var openLink = li.querySelector(".scrum-lf-open");
+                if (openLink) openLink.href = newUrl;
+                if (editForm) editForm.hidden = true;
+                if (editBtn) editBtn.hidden = false;
+              })
+              .catch(function () { saveBtn.disabled = false; });
+          });
+        }
+
+        var delBtn = li.querySelector(".scrum-lf-del-btn");
+        if (delBtn) {
+          delBtn.addEventListener("click", function () {
+            if (!confirm("Remove this linked file?")) return;
+            apiPostLF(urlDel, { id: lfId, item_id: itemId }).then(function (j) {
+              if (!j.ok) return;
+              li.remove();
+              var list = details.querySelector("[data-lf-list]");
+              if (list && !list.querySelector("[data-lf-id]")) {
+                var emp = list.querySelector("[data-lf-empty]");
+                if (!emp) {
+                  var emptyLi = document.createElement("li");
+                  emptyLi.className = "scrum-lf-empty";
+                  emptyLi.setAttribute("data-lf-empty", "");
+                  emptyLi.textContent = "No linked files yet.";
+                  list.appendChild(emptyLi);
+                }
+              }
+            });
+          });
+        }
+      }
+
+      document.querySelectorAll(".scrum-sticky-attachments[data-lf-item-id]").forEach(function (details) {
+        details.querySelectorAll(".scrum-lf-row[data-lf-id]").forEach(function (li) {
+          wireLinkedFileRow(li, details);
+        });
+
+        var addWrap = details.querySelector(".scrum-lf-add-wrap");
+        if (!addWrap) return;
+        var addUrlInput = addWrap.querySelector(".scrum-lf-add-url");
+        var addNameInput = addWrap.querySelector(".scrum-lf-add-name");
+        var addAuthUserInput = addWrap.querySelector(".scrum-lf-add-auth-user");
+        var addAuthPassInput = addWrap.querySelector(".scrum-lf-add-auth-pass");
+        var addBtn = addWrap.querySelector(".scrum-lf-add-btn");
+        var urlAddEndpoint = details.getAttribute("data-lf-url-add");
+        var proxyBase = details.getAttribute("data-lf-url-proxy-base") || "";
+        var itemId = parseInt(details.getAttribute("data-lf-item-id"), 10);
+
+        // Error hint element (reuse the hint paragraph or create one).
+        var hintEl = details.querySelector(".scrum-lf-hint");
+
+        function showLfErr(msg) {
+          if (!hintEl) return;
+          if (msg) {
+            hintEl.textContent = msg;
+            hintEl.style.color = "#fb7185";
+          } else {
+            hintEl.textContent = "Paste a share link (Google Docs/Sheets, OneDrive, SharePoint). The file opens in the preview panel below.";
+            hintEl.style.color = "";
+          }
+        }
+
+        addBtn.addEventListener("click", function () {
+          var url = (addUrlInput.value || "").trim();
+          var name = (addNameInput.value || "").trim();
+          if (!url) { addUrlInput.focus(); showLfErr("Please paste a URL first."); return; }
+          var authUser = addAuthUserInput ? addAuthUserInput.value.trim() : "";
+          var authPass = addAuthPassInput ? addAuthPassInput.value : "";
+          addBtn.disabled = true;
+          showLfErr(null);
+          var payload = { item_id: itemId, url: url, display_name: name };
+          if (authUser) { payload.auth_user = authUser; payload.auth_pass = authPass; }
+          apiPostLF(urlAddEndpoint, payload)
+            .then(function (j) {
+              addBtn.disabled = false;
+              if (!j || !j.ok) {
+                showLfErr("Could not link file: " + (j && j.error ? j.error : "unknown error"));
+                return;
+              }
+              showLfErr(null);
+              addUrlInput.value = "";
+              addNameInput.value = "";
+              if (addAuthUserInput) addAuthUserInput.value = "";
+              if (addAuthPassInput) addAuthPassInput.value = "";
+              // close cred details if open
+              var credDetails = addWrap.querySelector(".scrum-lf-cred-details");
+              if (credDetails) credDetails.removeAttribute("open");
+              var hasAuth = j.has_auth || false;
+              var previewUrl = hasAuth && proxyBase ? (proxyBase + j.id) : url;
+              var previewKind = hasAuth ? "proxy" : "link";
+              var list = details.querySelector("[data-lf-list]");
+              var empRow = list && list.querySelector("[data-lf-empty]");
+              if (empRow) empRow.remove();
+              var li = document.createElement("li");
+              li.className = "scrum-lf-row";
+              li.setAttribute("data-lf-id", j.id);
+              li.setAttribute("data-lf-has-auth", hasAuth ? "true" : "false");
+              li.setAttribute("data-lf-auth-user", authUser || "");
+              var displayName = j.display_name || url.slice(0, 60);
+              var lockHtml = hasAuth ? '<span class="scrum-lf-auth-icon" title="Uses stored credentials">🔒</span>' : '';
+              var credSummaryTxt = hasAuth ? "🔒 Credentials saved — click to change" : "+ SharePoint / Windows credentials (optional)";
+              li.innerHTML =
+                '<button type="button" class="scrum-lf-name scrum-detail-att-preview-trigger" data-preview-url="' + previewUrl.replace(/"/g, "&quot;") + '" data-preview-kind="' + previewKind + '" title="' + url.replace(/"/g, "&quot;") + '">' + lockHtml + displayName.replace(/</g, "&lt;") + '</button>' +
+                '<a class="scrum-lf-open" href="' + url.replace(/"/g, "&quot;") + '" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>' +
+                '<button type="button" class="scrum-lf-edit-btn" title="Edit">✎</button>' +
+                '<button type="button" class="scrum-lf-del-btn" title="Remove">✕</button>' +
+                '<div class="scrum-lf-edit-form" hidden>' +
+                '<input type="text" class="scrum-lf-edit-name" value="' + displayName.replace(/"/g, "&quot;") + '" placeholder="Display name" maxlength="300" />' +
+                '<input type="url" class="scrum-lf-edit-url" value="' + url.replace(/"/g, "&quot;") + '" placeholder="https://…" maxlength="2000" />' +
+                '<details class="scrum-lf-cred-details"><summary class="scrum-lf-cred-summary">' + credSummaryTxt + '</summary>' +
+                '<div class="scrum-lf-cred-fields">' +
+                '<input type="text" class="scrum-lf-edit-auth-user" value="' + authUser.replace(/"/g, "&quot;") + '" placeholder="Domain\\Username or user@domain" maxlength="200" autocomplete="username" />' +
+                '<input type="password" class="scrum-lf-edit-auth-pass" value="" placeholder="Password (leave blank to keep current)" maxlength="200" autocomplete="current-password" />' +
+                '<small class="scrum-lf-cred-note">Credentials stored on server for private SharePoint preview. Leave password blank to keep existing. Clear both to remove.</small>' +
+                '</div></details>' +
+                '<button type="button" class="btn secondary small scrum-lf-edit-save">Save</button>' +
+                '<button type="button" class="btn secondary small scrum-lf-edit-cancel">Cancel</button>' +
+                '</div>';
+              if (list) list.appendChild(li);
+              wireLinkedFileRow(li, details);
+            })
+            .catch(function (err) {
+              addBtn.disabled = false;
+              showLfErr("Network error: " + (err && err.message ? err.message : String(err)));
+            });
+        });
+
+        addUrlInput.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") { e.preventDefault(); addBtn.click(); }
+        });
+      });
+    })();
+
+    (function initTaskChecklist() {
+      // Use the meta CSRF token so we don't depend on {{ csrf_token() }} rendering inside JS.
+      function getCsrfToken() {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        if (meta) return meta.getAttribute("content") || "";
+        // Fallback: read from the hidden input rendered anywhere on the page.
+        var inp = document.querySelector('input[name="csrf_token"]');
+        return inp ? inp.value : "";
+      }
+
+      function apiPost(url, body) {
+        var token = getCsrfToken();
+        body.csrf_token = token;
+        return fetch(url, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": token },
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) { return r.json().catch(function () { return { ok: false, error: "http_" + r.status }; }); }
+          return r.json();
+        });
+      }
+
+      function showErr(wrap, msg) {
+        var p = wrap.querySelector(".scrum-checklist-err-msg");
+        if (!p) return;
+        p.textContent = msg || "";
+        p.hidden = !msg;
+      }
+
+      function saveTimer(td, wrap, rowId, field) {
+        if (td._saveTimer) clearTimeout(td._saveTimer);
+        td._saveTimer = setTimeout(function () {
+          var ta = td.querySelector(".scrum-checklist-textarea");
+          var value = ta ? ta.value.trim() : td.textContent.trim();
+          var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
+          var url = wrap.getAttribute("data-url-update");
+          td.classList.add("scrum-checklist-saving");
+          apiPost(url, { id: rowId, item_id: itemId, field: field, value: value })
+            .then(function (j) {
+              td.classList.remove("scrum-checklist-saving");
+              if (!j || !j.ok) {
+                td.classList.add("scrum-checklist-err");
+                showErr(wrap, "Save failed: " + (j && j.error ? j.error : "unknown"));
+              } else {
+                td.classList.remove("scrum-checklist-err");
+                showErr(wrap, null);
+              }
+            })
+            .catch(function (e) {
+              td.classList.remove("scrum-checklist-saving");
+              showErr(wrap, "Network error saving cell.");
+            });
+        }, 700);
+      }
+
+      function wireRow(tr, wrap) {
+        var rowId = parseInt(tr.getAttribute("data-row-id"), 10);
+        // Wire contenteditable cells (all except Comments/textarea)
+        tr.querySelectorAll(".scrum-checklist-cell[contenteditable='true']").forEach(function (td) {
+          var field = td.getAttribute("data-field");
+          td.addEventListener("input", function () { saveTimer(td, wrap, rowId, field); });
+          td.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") { e.preventDefault(); td.blur(); }
+            if (e.key === "Tab") { e.preventDefault(); var cells = Array.from(tr.querySelectorAll(".scrum-checklist-cell")); var idx = cells.indexOf(td); var next = cells[idx + 1]; if (next) { var ta = next.querySelector(".scrum-checklist-textarea"); if (ta) ta.focus(); else next.focus(); } }
+          });
+        });
+        // Wire the Comments textarea separately
+        var commentsTd = tr.querySelector(".scrum-checklist-cell--textarea");
+        var commentsTa = commentsTd && commentsTd.querySelector(".scrum-checklist-textarea");
+        if (commentsTa && !commentsTa.readOnly) {
+          commentsTa.addEventListener("input", function () { saveTimer(commentsTd, wrap, rowId, "done_till_date"); });
+        }
+        var delBtn = tr.querySelector(".scrum-checklist-del-btn");
+        if (delBtn) {
+          delBtn.addEventListener("click", function () {
+            if (!confirm("Remove this checklist row?")) return;
+            var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
+            var url = wrap.getAttribute("data-url-delete");
+            apiPost(url, { id: rowId, item_id: itemId }).then(function (j) {
+              if (j && j.ok) {
+                tr.remove();
+                var tbody = wrap.querySelector(".scrum-checklist-tbody");
+                if (tbody && !tbody.querySelector("tr[data-row-id]")) {
+                  var et = document.createElement("tr");
+                  et.className = "scrum-checklist-empty-row";
+                  et.innerHTML = '<td colspan="5" class="scrum-checklist-empty-msg">No checklist items. Click "+ Add row".</td>';
+                  tbody.appendChild(et);
+                }
+              } else {
+                showErr(wrap, "Delete failed: " + (j && j.error ? j.error : "unknown"));
+              }
+            }).catch(function () { showErr(wrap, "Network error deleting row."); });
+          });
+        }
+      }
+
+      document.querySelectorAll(".scrum-checklist-wrap").forEach(function (wrap) {
+        // Wire existing rows.
+        wrap.querySelectorAll("tr[data-row-id]").forEach(function (tr) { wireRow(tr, wrap); });
+
+        var addBtn = wrap.querySelector(".scrum-checklist-add-btn");
+        if (!addBtn) return;
+
+        addBtn.addEventListener("click", function () {
+          // Ask for the item name before creating the row.
+          var itemName = window.prompt("Item name:");
+          if (itemName === null) return;          // user cancelled
+          itemName = (itemName || "").trim();
+
+          var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
+          if (isNaN(itemId)) { showErr(wrap, "Invalid item id."); return; }
+          var url = wrap.getAttribute("data-url-add");
+          addBtn.disabled = true;
+          showErr(wrap, null);
+
+          apiPost(url, { item_id: itemId, items_to_finish: itemName })
+            .then(function (j) {
+              addBtn.disabled = false;
+              if (!j || !j.ok) {
+                showErr(wrap, "Could not add row: " + (j && j.error ? j.error : "unknown error"));
+                return;
+              }
+              // Remove empty-state row if present.
+              var tbody = wrap.querySelector(".scrum-checklist-tbody");
+              var emptyRow = tbody && tbody.querySelector(".scrum-checklist-empty-row");
+              if (emptyRow) emptyRow.remove();
+
+              var tr = document.createElement("tr");
+              tr.setAttribute("data-row-id", j.id);
+              tr.innerHTML =
+                '<td class="scrum-checklist-cell" data-field="items_to_finish" contenteditable="true" spellcheck="false">' + (itemName.replace(/</g, "&lt;").replace(/>/g, "&gt;")) + '</td>' +
+                '<td class="scrum-checklist-cell scrum-checklist-cell--status" data-field="status" contenteditable="true" spellcheck="false"></td>' +
+                '<td class="scrum-checklist-cell" data-field="le_to_complete" contenteditable="true" spellcheck="false"></td>' +
+                '<td class="scrum-checklist-cell scrum-checklist-cell--done scrum-checklist-cell--textarea" data-field="done_till_date"><textarea class="scrum-checklist-textarea" rows="2" spellcheck="false"></textarea></td>' +
+                '<td class="scrum-checklist-del-col"><button type="button" class="scrum-checklist-del-btn" title="Remove row">✕</button></td>';
+              if (tbody) { tbody.appendChild(tr); tbody.scrollTop = tbody.scrollHeight; }
+              wireRow(tr, wrap);
+
+              // If the user typed a name, immediately save the items_to_finish field.
+              if (itemName) {
+                var firstCell = tr.querySelector("[data-field='items_to_finish']");
+                if (firstCell) saveTimer(firstCell, wrap, j.id, "items_to_finish");
+              }
+            })
+            .catch(function (err) {
+              addBtn.disabled = false;
+              showErr(wrap, "Network error: " + (err && err.message ? err.message : String(err)));
+            });
         });
       });
     })();

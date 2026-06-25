@@ -1967,7 +1967,9 @@ def test_scrm_renders(client):
     _manager_login(c)
     r = c.get("/scrum")
     assert r.status_code == 200
-    assert b"Sprint hub" in r.data
+    html = r.get_data(as_text=True)
+    assert "scrum-hub-hero-team-title" in html
+    assert "Your sprints" in html
     assert b"14 calendar days" in r.data or b"two-week" in r.data
 
 
@@ -1985,13 +1987,14 @@ def test_scrum_hub_create_next_prefills_incremented_sprint_name(client, app):
 
 
 def test_scrum_hub_no_bottom_leave_settings_buttons(client):
-    """Sprint hub used to duplicate Leave tracker / Settings at the bottom; main nav still has them."""
+    """Sprint hub must not duplicate Settings as a bottom tile; Leave tracker links to the dashboard."""
     c = client
     _manager_login(c)
     html = c.get("/scrum").get_data(as_text=True)
     assert "Create sprint" in html
     assert "scrum-hub-create-next" not in html  # no sprints yet
-    assert 'class="btn secondary" href="/dashboard"' not in html
+    assert "scrum-hub-leave-dashboard" in html
+    assert 'href="/dashboard"' in html
     assert 'class="btn secondary" href="/reports"' not in html
 
 
@@ -2647,8 +2650,6 @@ def test_scrum_hppm_entry_redirects_and_page_loads(client, app):
 
     team = c.get("/scrum/sprint/%d" % sid)
     assert team.status_code == 200
-    assert b"HPPM view" in team.data
-    assert ("/scrum/sprint/%d/hppm" % sid).encode() in team.data
     assert b"Type stack" in team.data
 
     hppm = c.get("/scrum/sprint/%d/hppm" % sid)
@@ -2716,9 +2717,8 @@ def test_scrm_sprint_team_and_sticky(client, app):
     assert n >= 1
     board = c.get("/scrum/sprint/%d/board" % sid, query_string={"assignee": EMPLOYEES[0]})
     assert board.status_code == 200
-    assert b"Sticky board" in board.data
-    assert b"SprintLeaveView" in board.data
-    assert ("/scrum/sprint/%d/leave-tracker" % sid).encode() in board.data
+    assert b"scrum-kb-hero-single" in board.data
+    assert EMPLOYEES[0].encode() in board.data
     assert b"ws-table" in board.data
     assert b"Available" in board.data
 
@@ -3742,6 +3742,101 @@ def test_scrm_api_move_backlog_to_doing_keeps_prior_burnt(client, app):
     assert abs(total - 3.0) < 0.001
 
 
+def test_scrm_api_move_backlog_to_do_requires_estimate(client, app):
+    c = client
+    _manager_login(c)
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-02T12:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'S Bl2DoEst', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'BlCard', 0.5, 'open', '', 0, ?, ?, 'backlog', 'ndy')
+        """,
+        (sid, EMPLOYEES[0], ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    r = c.post(
+        "/scrum/api/item/move",
+        json={
+            "item_id": iid,
+            "sprint_id": sid,
+            "assignee": EMPLOYEES[0],
+            "to_column": "do",
+            "committed_hours": "2",
+            "note": "should ignore",
+        },
+    )
+    assert r.status_code == 400
+    assert r.get_json().get("error") == "estimate_required"
+
+
+def test_scrm_api_move_backlog_to_do_updates_estimate_zero_burnt(client, app):
+    c = client
+    _manager_login(c)
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-02T12:30:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'S Bl2DoOk', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'BlOk', 0.5, 'open', '', 0, ?, ?, 'backlog', 'ndy')
+        """,
+        (sid, EMPLOYEES[0], ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    r = c.post(
+        "/scrum/api/item/move",
+        json={
+            "item_id": iid,
+            "sprint_id": sid,
+            "assignee": EMPLOYEES[0],
+            "to_column": "do",
+            "committed_hours": "9",
+            "note": "ignored",
+            "estimate_hours": "4",
+        },
+    )
+    assert r.status_code == 200
+    conn = get_db(app)
+    row = conn.execute(
+        "SELECT kanban_column, estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)
+    ).fetchone()
+    last_h = float(
+        conn.execute(
+            "SELECT committed_hours FROM scrum_item_activity WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+            (iid,),
+        ).fetchone()["committed_hours"]
+        or 0
+    )
+    conn.close()
+    assert str(row["kanban_column"]).lower() == "do"
+    assert abs(float(row["estimate_hours"]) - 4.0) < 0.001
+    assert abs(last_h) < 0.001
+
+
 def test_scrum_api_activity_update_returns_burn_totals(client, app):
     """Editing stand-up hours updates DB and JSON includes refreshed task burn (sum of activity hours)."""
     c = client
@@ -4031,7 +4126,7 @@ def test_scrm_api_move_do_to_doing_empty_hours_stores_null(client, app):
     assert b"Portal Kanban Card" in board.data
     assert b"/portal/scrum/api/item/move" in board.data
     assert b"kb-doing-reset-dialog" in board.data
-    assert b"Dashboard" in board.data
+    assert b"Portal Board Sprint" in board.data
     hop = client.get("/portal/sprint", follow_redirects=False)
     assert hop.status_code in (302, 303)
     assert "/portal/my-sprint/board" in (hop.headers.get("Location") or "")
@@ -4119,6 +4214,129 @@ def test_portal_scrum_api_move_queues_proposal_manager_approve_writes_activity(c
     assert "[approved employee change]" in body
     assert "picked up" in body
     assert col2 == "doing"
+
+
+def test_portal_scrum_api_move_backlog_to_do_requires_estimate(client, app):
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.test@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-01T08:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Portal Bl2Do Req', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'Bl portal', 1, 'open', '', 0, ?, ?, 'backlog', 'task')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    r = client.post(
+        "/portal/scrum/api/item/move",
+        json={
+            "item_id": iid,
+            "sprint_id": sid,
+            "assignee": name,
+            "to_column": "do",
+            "committed_hours": "1",
+            "note": "x",
+        },
+    )
+    assert r.status_code == 400
+    assert r.get_json().get("error") == "estimate_required"
+
+
+def test_portal_scrum_api_move_backlog_to_do_estimate_applied_on_approve(client, app):
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.test@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-01T09:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Portal Bl2Do Ok', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'Bl portal ok', 1, 'open', '', 0, ?, ?, 'backlog', 'task')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+    r = client.post(
+        "/portal/scrum/api/item/move",
+        json={
+            "item_id": iid,
+            "sprint_id": sid,
+            "assignee": name,
+            "to_column": "do",
+            "committed_hours": "3",
+            "note": "ignored",
+            "estimate_hours": "6.5",
+        },
+    )
+    assert r.status_code == 200
+    assert r.get_json().get("ok") is True
+    conn = get_db(app)
+    pid = int(
+        conn.execute(
+            "SELECT id FROM scrum_portal_proposal WHERE item_id = ? AND status = 'pending'",
+            (iid,),
+        ).fetchone()["id"]
+    )
+    conn.close()
+    _manager_login(client)
+    res = client.post(
+        "/scrum/portal-proposal/resolve",
+        data={"proposal_id": str(pid), "decision": "approve", "note": "ok", "manager_attest": "1"},
+        follow_redirects=False,
+    )
+    assert res.status_code in (302, 303)
+    conn = get_db(app)
+    row = conn.execute(
+        "SELECT kanban_column, estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)
+    ).fetchone()
+    last_h = float(
+        conn.execute(
+            "SELECT committed_hours FROM scrum_item_activity WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+            (iid,),
+        ).fetchone()["committed_hours"]
+        or 0
+    )
+    conn.close()
+    assert str(row["kanban_column"]).lower() == "do"
+    assert abs(float(row["estimate_hours"]) - 6.5) < 0.001
+    assert abs(last_h) < 0.001
 
 
 def test_portal_proposal_approve_without_attest_does_not_apply(client, app):

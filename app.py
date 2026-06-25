@@ -317,7 +317,7 @@ SCRUM_HPPM_SUMMARY_ROWS: tuple[tuple[str | None, str], ...] = (
     (None, "Absences"),
     ("code", "Verification"),
     ("improvement", "Internal Improvement"),
-    ("process_tools", "Competence Development"),
+    ("process_tools", "Process & Tools"),
 )
 SCRUM_HPPM_LABEL_BY_CODE: dict[str, str] = {c: lab for c, lab in SCRUM_HPPM_SUMMARY_ROWS if c is not None}
 
@@ -2809,6 +2809,66 @@ def _migrate_teams_owner_email_v1(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO app_migrations (id) VALUES ('teams_owner_email_v1')")
 
 
+def _migrate_scrum_item_linked_files_v1(conn: sqlite3.Connection) -> None:
+    """URL-linked reference files per sprint item (no upload needed)."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("scrum_item_linked_files_v1",)).fetchone():
+        return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scrum_item_linked_file (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES scrum_sprint_item(id) ON DELETE CASCADE,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            display_name TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrum_item_linked_file_item ON scrum_item_linked_file(item_id, sort_order)"
+    )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('scrum_item_linked_files_v1')")
+
+
+def _migrate_scrum_item_linked_file_auth_v1(conn: sqlite3.Connection) -> None:
+    """Add optional stored credentials (auth_user, auth_pass) for proxied SharePoint links."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("scrum_item_linked_file_auth_v1",)).fetchone():
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(scrum_item_linked_file)")}
+    if "auth_user" not in cols:
+        conn.execute("ALTER TABLE scrum_item_linked_file ADD COLUMN auth_user TEXT NOT NULL DEFAULT ''")
+    if "auth_pass" not in cols:
+        conn.execute("ALTER TABLE scrum_item_linked_file ADD COLUMN auth_pass TEXT NOT NULL DEFAULT ''")
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('scrum_item_linked_file_auth_v1')")
+
+
+def _migrate_scrum_item_checklist_v1(conn: sqlite3.Connection) -> None:
+    """Task checklist rows per sprint item (Items To Finish / status / LE / done till date)."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("scrum_item_checklist_v1",)).fetchone():
+        return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scrum_item_checklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES scrum_sprint_item(id) ON DELETE CASCADE,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            items_to_finish TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            le_to_complete TEXT NOT NULL DEFAULT '',
+            done_till_date TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrum_item_checklist_item ON scrum_item_checklist(item_id, sort_order)"
+    )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('scrum_item_checklist_v1')")
+
+
 def _hash_manager_password(password: str) -> str:
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 260000)
@@ -3101,6 +3161,9 @@ def init_db(app: Flask) -> None:
     _migrate_scrum_item_activity_committed_hours_nullable_v1(conn)
     _migrate_managers_table_v1(conn)
     _migrate_teams_owner_email_v1(conn)
+    _migrate_scrum_item_linked_files_v1(conn)
+    _migrate_scrum_item_linked_file_auth_v1(conn)
+    _migrate_scrum_item_checklist_v1(conn)
     _seed_primary_owner_manager_from_master_pin(app, conn)
     conn.commit()
     conn.close()
@@ -4174,6 +4237,10 @@ def build_kanban_leave_worksheet_context(
         round(100.0 * max(0.0, assigned - available_sum) / scale_max, 1) if scale_max > 0 else 0.0
     )
     pct_burnt_bar = round(100.0 * total_burnt_hours / scale_max, 1) if scale_max > 0 else 0.0
+    if assigned > SCRUM_HOUR_EPS:
+        burn_pct_of_estimate = int(round(100.0 * total_burnt_hours / assigned))
+    else:
+        burn_pct_of_estimate = None
 
     return {
         "kb_leave_days": days_meta,
@@ -4186,6 +4253,7 @@ def build_kanban_leave_worksheet_context(
         "kb_capacity_available_hours": round(available_sum, 1),
         "kb_capacity_assigned_hours": round(assigned, 1),
         "kb_capacity_burnt_hours": round(total_burnt_hours, 1),
+        "kb_capacity_burn_pct_of_estimate": burn_pct_of_estimate,
         "kb_capacity_stretch": stretch,
         "kb_capacity_scale_max": round(scale_max, 1),
         "kb_capacity_pct_available_bar": pct_available_bar,
@@ -4419,6 +4487,24 @@ def _parse_hours_field(raw: str | None) -> float:
         return max(0.0, min(9999.0, float(t)))
     except ValueError:
         return 0.0
+
+
+def _estimate_hours_for_backlog_to_do_move(
+    data: dict, *, from_col: str, to_col: str
+) -> tuple[float | None, str | None]:
+    """Backlog → To DO requires a positive estimate_hours in the request body."""
+    if from_col != "backlog" or to_col != "do":
+        return None, None
+    raw = data.get("estimate_hours")
+    if isinstance(raw, bool):
+        return None, "estimate_required"
+    if isinstance(raw, (int, float)):
+        est = max(0.0, min(9999.0, float(raw)))
+    else:
+        est = _parse_hours_field(str(raw if raw is not None else ""))
+    if est <= SCRUM_HOUR_EPS:
+        return None, "estimate_required"
+    return est, None
 
 
 def _parse_committed_hours_for_kanban_move(
@@ -5772,7 +5858,7 @@ def build_hppm_sprint_page_extra_context(
     sprint_start: str,
     sprint_end: str,
 ) -> dict[str, Any]:
-    """Pool name, HPPM summary by work type (estimates, burnt, absences; % columns = share of table totals), and per-sticky rows."""
+    """HPPM summary by work type (estimates, burnt, absences; % columns = each row's share of table total for that measure), and per-sticky rows grouped by area."""
     team_row = conn.execute("SELECT name FROM teams WHERE id = ?", (int(team_id),)).fetchone()
     pool_name = str(team_row["name"] or "") if team_row else ""
     try:
@@ -5866,13 +5952,13 @@ def build_hppm_sprint_page_extra_context(
         eh = float(row["estimate_hours"])
         bh = float(row["burnt_hours"])
         row["pct_capacity_estimate"] = pct_of_column_total(eh, te)
-        row["pct_capacity_burnt"] = pct_burnt_vs_estimate(bh, eh)
+        row["pct_capacity_burnt"] = pct_of_column_total(bh, tb)
 
     summary_totals: dict[str, Any] = {
         "estimate_hours": round(te, 4),
         "burnt_hours": round(tb, 4),
         "pct_capacity_estimate": 100.0 if te > SCRUM_HOUR_EPS else None,
-        "pct_capacity_burnt": pct_burnt_vs_estimate(tb, te),
+        "pct_capacity_burnt": 100.0 if tb > SCRUM_HOUR_EPS else None,
     }
 
     task_rows: list[dict[str, Any]] = []
@@ -5898,7 +5984,6 @@ def build_hppm_sprint_page_extra_context(
         bh = float(r["total_burnt_hours"] or 0)
         task_rows.append(
             {
-                "pool_name": pool_name,
                 "work_type": SCRUM_HPPM_LABEL_BY_CODE.get(rk, str(r["kind_label"] or rk)),
                 "area_type": ar_raw if ar_raw else SCRUM_AREA_STACK_NO_AREA_LABEL,
                 "title": str(r["title"] or ""),
@@ -5908,6 +5993,55 @@ def build_hppm_sprint_page_extra_context(
                 "burnt_pct": pct_burnt_vs_estimate(bh, eh),
             }
         )
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in task_rows:
+        ak = str(row.get("area_type") or "")
+        groups.setdefault(ak, []).append(row)
+    ordered_task_rows: list[dict[str, Any]] = []
+    for area_key in sorted(
+        groups.keys(),
+        key=lambda ak: (
+            -sum(float(r["burnt_hours"]) for r in groups[ak]),
+            (ak or "").lower(),
+        ),
+    ):
+        chunk = sorted(
+            groups[area_key],
+            key=lambda r: (
+                -float(r.get("burnt_hours") or 0),
+                str(r.get("assignee") or "").lower(),
+                str(r.get("title") or "").lower(),
+            ),
+        )
+        ordered_task_rows.extend(chunk)
+    task_rows = ordered_task_rows
+
+    i = 0
+    while i < len(task_rows):
+        j = i + 1
+        area_i = str(task_rows[i].get("area_type") or "")
+        while j < len(task_rows) and str(task_rows[j].get("area_type") or "") == area_i:
+            j += 1
+        blk = task_rows[i:j]
+        total_burnt = sum(float(r["burnt_hours"]) for r in blk)
+        for k, r in enumerate(blk):
+            r["area_group_burnt_total"] = float(total_burnt)
+            r["area_group_first"] = k == 0
+            r["area_total_rowspan"] = len(blk) if k == 0 else None
+        i = j
+
+    _hppm_area_band_n = 8
+    _unique_areas_order: list[str] = []
+    _seen_area: set[str] = set()
+    for _row in task_rows:
+        _ak = str(_row.get("area_type") or "")
+        if _ak not in _seen_area:
+            _seen_area.add(_ak)
+            _unique_areas_order.append(_ak)
+    _area_to_band = {a: i % _hppm_area_band_n for i, a in enumerate(_unique_areas_order)}
+    for _row in task_rows:
+        _row["area_band_idx"] = int(_area_to_band.get(str(_row.get("area_type") or ""), 0))
 
     return {
         "hppm_pool_name": pool_name,
@@ -6035,6 +6169,10 @@ def build_sprint_export_xlsx_bytes(
         )
     )
 
+    # Fetch checklist rows for all sprint items
+    all_item_ids_export = [int(r["id"]) for r in items]
+    checklist_export_map = _fetch_item_checklist_map(conn, all_item_ids_export) if all_item_ids_export else {}
+
     try:
         sd_date_export = date.fromisoformat(str(sprint["start_date"])[:10])
         ed_date_export = date.fromisoformat(str(sprint["end_date"])[:10])
@@ -6074,10 +6212,14 @@ def build_sprint_export_xlsx_bytes(
             assignee_day_hours[em][ad] += h
         fc = str(ar["from_column"] or "").strip()
         tc = str(ar["to_column"] or "").strip()
-        body = str(ar["note"] or "").strip().replace("\n", " ")
-        if len(body) > 100:
-            body = body[:97] + "…"
-        snip = f"+{h:.1f}h {fc}→{tc}" + (f": {body}" if body else "")
+        body = str(ar["note"] or "").strip()
+        # Standup note: show the note body as the primary text; include status transition as context
+        if body:
+            # Truncate long notes to keep cell readable
+            display_body = body if len(body) <= 200 else body[:197] + "…"
+            snip = f"[{fc}→{tc}] {display_body}"
+        else:
+            snip = f"[{fc}→{tc}] +{h:.1f}h"
         item_day_snips[iid][ad].append(snip)
 
     member_goals = list(
@@ -6221,6 +6363,8 @@ def build_sprint_export_xlsx_bytes(
     grid_border = Border(left=thin, right=thin, top=thin, bottom=thin)
     wrap = Alignment(wrap_text=True, vertical="top")
     top = Alignment(vertical="top")
+    pct_fill = PatternFill("solid", fgColor="FFF59D")   # light yellow for % cells
+    pct_font = Font(color="5D4037", bold=False, size=10) # dark-brown text on yellow
 
     def style_header_row(ws, row_idx: int, ncols: int) -> None:
         for c in range(1, ncols + 1):
@@ -6477,14 +6621,27 @@ def build_sprint_export_xlsx_bytes(
         cr = hrow + 1
         d0 = cr
 
-        def _write_kind_burnt_est_row(name: str, est_d: dict[str, float], brn_d: dict[str, float]) -> None:
+        def _write_kind_burnt_est_row(
+            name: str,
+            est_d: dict[str, float],
+            brn_d: dict[str, float],
+            hide_zero_est_kinds: bool = False,
+        ) -> None:
             nonlocal cr
             ws_cd.cell(row=cr, column=1, value=name)
             cc = 2
             for code in _SUMMARY_EXPORT_KIND_CHART_CODES:
-                ws_cd.cell(row=cr, column=cc, value=round(brn_d.get(code, 0.0), 2))
-                cc += 1
-                ws_cd.cell(row=cr, column=cc, value=round(est_d.get(code, 0.0), 2))
+                est_v = est_d.get(code, 0.0)
+                brn_v = brn_d.get(code, 0.0)
+                # When hide_zero_est_kinds is True, write None so Excel renders no bar for that kind.
+                if hide_zero_est_kinds and est_v <= SCRUM_HOUR_EPS:
+                    ws_cd.cell(row=cr, column=cc, value=None)
+                    cc += 1
+                    ws_cd.cell(row=cr, column=cc, value=None)
+                else:
+                    ws_cd.cell(row=cr, column=cc, value=round(brn_v, 2))
+                    cc += 1
+                    ws_cd.cell(row=cr, column=cc, value=round(est_v, 2))
                 cc += 1
             cr += 1
 
@@ -6498,7 +6655,11 @@ def build_sprint_export_xlsx_bytes(
             if not any(str(it["assignee"] or "").strip() == emp.strip() for it in items):
                 continue
             me_est, me_brn = _export_roll_kind_est_burnt_assignee(items, emp)
-            _write_kind_burnt_est_row(str(emp).strip(), me_est, me_brn)
+            # Skip members whose total estimate across all kinds is zero — they produce empty bars.
+            if sum(me_est.values()) <= SCRUM_HOUR_EPS:
+                continue
+            # Per-kind: hide est+burnt bars where that kind has zero estimate for this member.
+            _write_kind_burnt_est_row(str(emp).strip(), me_est, me_brn, hide_zero_est_kinds=True)
             shown += 1
 
         d1 = cr - 1
@@ -6525,6 +6686,57 @@ def build_sprint_export_xlsx_bytes(
             except Exception:
                 pass
             ws0.add_chart(ch, "A23")
+            # Patch chart font to 7pt by injecting DrawingML font attributes directly into the XML.
+            # openpyxl doesn't expose chart font size through a clean API, so we edit the element tree.
+            try:
+                from lxml import etree as _et
+                _NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                _NS_C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+                _SZ = "700"  # 700 hundredths-of-a-point = 7 pt
+
+                def _inject_font(parent_el: object) -> None:
+                    """Recursively set sz on every <a:defRPr> and <a:rPr> found."""
+                    for el in parent_el.iter():  # type: ignore[union-attr]
+                        tag = el.tag if isinstance(el.tag, str) else ""
+                        local = tag.split("}")[-1] if "}" in tag else tag
+                        if local in ("defRPr", "rPr"):
+                            el.set("sz", _SZ)
+                            el.set("b", "0")
+
+                root = ch._element  # type: ignore[attr-defined]
+                # Apply to axis tick labels (catAx / valAx / txPr)
+                for axis_tag in (f"{{{_NS_C}}}catAx", f"{{{_NS_C}}}valAx"):
+                    for ax in root.iter(axis_tag):
+                        # Ensure txPr/bodyPr/lstStyle/p/pPr/defRPr exist
+                        txPr = ax.find(f"{{{_NS_C}}}txPr")
+                        if txPr is None:
+                            txPr = _et.SubElement(ax, f"{{{_NS_C}}}txPr")
+                        if txPr.find(f"{{{_NS_A}}}bodyPr") is None:
+                            _et.SubElement(txPr, f"{{{_NS_A}}}bodyPr")
+                        if txPr.find(f"{{{_NS_A}}}lstStyle") is None:
+                            _et.SubElement(txPr, f"{{{_NS_A}}}lstStyle")
+                        p = txPr.find(f"{{{_NS_A}}}p")
+                        if p is None:
+                            p = _et.SubElement(txPr, f"{{{_NS_A}}}p")
+                        pPr = p.find(f"{{{_NS_A}}}pPr")
+                        if pPr is None:
+                            pPr = _et.SubElement(p, f"{{{_NS_A}}}pPr")
+                        defRPr = pPr.find(f"{{{_NS_A}}}defRPr")
+                        if defRPr is None:
+                            defRPr = _et.SubElement(pPr, f"{{{_NS_A}}}defRPr")
+                        defRPr.set("sz", _SZ)
+                        defRPr.set("b", "0")
+                # Apply to data labels
+                for dlbls in root.iter(f"{{{_NS_C}}}dLbls"):
+                    _inject_font(dlbls)
+                # Apply to legend
+                for leg in root.iter(f"{{{_NS_C}}}legend"):
+                    _inject_font(leg)
+                # Apply to chart title
+                for title_el in root.iter(f"{{{_NS_C}}}title"):
+                    _inject_font(title_el)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -6571,6 +6783,7 @@ def build_sprint_export_xlsx_bytes(
         "Burnt total (h)",
         "Burn %",
         "DoD (summary)",
+        "Task Checklist",
     ]
     sticky_headers = fb_base_headers + [d.isoformat() for d in sprint_calendar_dates]
     nstatcols = len(sticky_headers)
@@ -6580,11 +6793,26 @@ def build_sprint_export_xlsx_bytes(
     for ri, r in enumerate(items, start=2):
         est = float(r["estimate_hours"] or 0)
         burnt = float(r["total_burnt_hours"] or 0)
-        bpct = round(100.0 * burnt / est, 1) if est > SCRUM_HOUR_EPS else ""
+        bpct = round(burnt / est, 6) if est > SCRUM_HOUR_EPS else None  # 0–1 for Excel % format
         dod = str(r["dod"] or "")
         if len(dod) > 800:
             dod = dod[:797] + "…"
         iid = int(r["id"])
+        # Build checklist text: each row on its own line as "• <item> | <status> | LE:<le> | <comments>"
+        checklist_rows = checklist_export_map.get(iid, [])
+        checklist_parts = []
+        for cl in checklist_rows:
+            parts = [str(cl.get("items_to_finish") or "").strip()]
+            if (cl.get("status") or "").strip():
+                parts.append(str(cl["status"]).strip())
+            if (cl.get("le_to_complete") or "").strip():
+                parts.append("LE:" + str(cl["le_to_complete"]).strip())
+            if (cl.get("done_till_date") or "").strip():
+                parts.append(str(cl["done_till_date"]).strip())
+            checklist_parts.append("• " + " | ".join(p for p in parts if p))
+        checklist_text = "\n".join(checklist_parts)
+        if len(checklist_text) > 1500:
+            checklist_text = checklist_text[:1497] + "…"
         base_vals: list[object] = [
             team_name,
             iid,
@@ -6596,22 +6824,35 @@ def build_sprint_export_xlsx_bytes(
             burnt,
             bpct,
             dod,
+            checklist_text,
         ]
         for j, val in enumerate(base_vals, start=1):
-            cell = ws1.cell(row=ri, column=j, value=val)
+            write_val = "—" if (j == 9 and val is None) else val
+            cell = ws1.cell(row=ri, column=j, value=write_val)
             cell.alignment = wrap
             if j in (7, 8):
                 cell.number_format = "0.00"
-            if j == 9 and val != "":
-                cell.number_format = "0.0"
+            if j == 9 and val is not None:
+                cell.number_format = "0.0%"
+                cell.fill = pct_fill
+                cell.font = pct_font
         for j, d in enumerate(sprint_calendar_dates, start=len(base_vals) + 1):
             hv = float(item_day_hours.get(iid, {}).get(d, 0.0))
-            ccell = ws1.cell(row=ri, column=j, value=round(hv, 2) if hv > SCRUM_HOUR_EPS else None)
-            if hv > SCRUM_HOUR_EPS:
-                ccell.number_format = "0.00"
             snips = list(item_day_snips.get(iid, {}).get(d, []))
+            # Cell value: standup notes (text); hours go into the comment
             if snips:
-                ccell.comment = Comment("\n".join(snips)[:999], "scrum")
+                note_text = "\n".join(snips)
+                ccell = ws1.cell(row=ri, column=j, value=note_text[:900])
+                ccell.alignment = Alignment(vertical="top", wrap_text=True)
+                if hv > SCRUM_HOUR_EPS:
+                    ccell.comment = Comment(f"{round(hv, 2):.2f} h logged", "scrum")
+            elif hv > SCRUM_HOUR_EPS:
+                # No note text but hours exist — show hours so the cell isn't blank
+                ccell = ws1.cell(row=ri, column=j, value=round(hv, 2))
+                ccell.number_format = "0.00"
+                ccell.alignment = Alignment(vertical="top", wrap_text=True)
+            else:
+                ws1.cell(row=ri, column=j, value=None)
     ws1.freeze_panes = "A2"
     autofit(ws1)
     apply_data_grid(ws1, 1, max(1, len(items) + 1), nstatcols)
@@ -6652,7 +6893,7 @@ def build_sprint_export_xlsx_bytes(
                 row=rh,
                 column=1,
                 value="% Team Sprint Estimate = row estimate ÷ total estimate in this table (Total = 100%). "
-                "% Team Burnt = 100 × burnt ÷ estimate per row (Total row = total burnt ÷ total estimate × 100).",
+                "% Team Burnt = row burnt hours ÷ total burnt hours in this table (Total = 100%).",
             )
             cnote.font = subtitle_font
             cnote.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -6680,11 +6921,21 @@ def build_sprint_export_xlsx_bytes(
                 c_est = ws_hppm.cell(row=rh, column=3, value=float(srow.get("estimate_hours") or 0.0))
                 c_est.number_format = "0.0000"
                 c_est.alignment = top
-                ws_hppm.cell(row=rh, column=4, value=f"{float(pe):.2f}%" if pe is not None else "—").alignment = top
+                c_pe = ws_hppm.cell(row=rh, column=4, value=round(float(pe) / 100.0, 6) if pe is not None else "—")
+                c_pe.alignment = top
+                if pe is not None:
+                    c_pe.number_format = "0.00%"
+                    c_pe.fill = pct_fill
+                    c_pe.font = pct_font
                 c_br = ws_hppm.cell(row=rh, column=5, value=float(srow.get("burnt_hours") or 0.0))
                 c_br.number_format = "0.0000"
                 c_br.alignment = top
-                ws_hppm.cell(row=rh, column=6, value=f"{float(pb):.2f}%" if pb is not None else "—").alignment = top
+                c_pb = ws_hppm.cell(row=rh, column=6, value=round(float(pb) / 100.0, 6) if pb is not None else "—")
+                c_pb.alignment = top
+                if pb is not None:
+                    c_pb.number_format = "0.00%"
+                    c_pb.fill = pct_fill
+                    c_pb.font = pct_font
                 rh += 1
             tot = hppm_ctx.get("hppm_summary_totals") or {}
             pte = tot.get("pct_capacity_estimate")
@@ -6707,14 +6958,14 @@ def build_sprint_export_xlsx_bytes(
             ws_hppm.cell(row=rh, column=1, value="All stickies (HPPM work type & burnt)").font = sub_font
             rh += 1
             stk_hdr = (
-                "Pool name",
-                "Work type",
                 "Area type",
+                "Work type",
                 "Title",
                 "Assignee",
                 "Est. (h)",
                 "Burnt (h)",
                 "Burnt %",
+                "Total burnt (h)",
             )
             stk_hdr_row = rh
             for jc, lab in enumerate(stk_hdr, start=1):
@@ -6726,26 +6977,43 @@ def build_sprint_export_xlsx_bytes(
                 ws_hppm.cell(row=rh, column=1, value="(No stickies in this sprint.)").alignment = wrap
                 last_stk = rh
                 rh += 1
+                stk_total_merges: list[tuple[int, int]] = []
             else:
+                stk_total_merges = []
                 for tr in task_rows_h:
                     bp = tr.get("burnt_pct")
-                    ws_hppm.cell(row=rh, column=1, value=str(tr.get("pool_name") or "")).alignment = wrap
+                    ws_hppm.cell(row=rh, column=1, value=str(tr.get("area_type") or "")).alignment = wrap
                     ws_hppm.cell(row=rh, column=2, value=str(tr.get("work_type") or "")).alignment = wrap
-                    ws_hppm.cell(row=rh, column=3, value=str(tr.get("area_type") or "")).alignment = wrap
-                    ws_hppm.cell(row=rh, column=4, value=str(tr.get("title") or "")).alignment = wrap
-                    ws_hppm.cell(row=rh, column=5, value=str(tr.get("assignee") or "")).alignment = wrap
-                    ce = ws_hppm.cell(row=rh, column=6, value=float(tr.get("estimate_hours") or 0.0))
+                    ws_hppm.cell(row=rh, column=3, value=str(tr.get("title") or "")).alignment = wrap
+                    ws_hppm.cell(row=rh, column=4, value=str(tr.get("assignee") or "")).alignment = wrap
+                    ce = ws_hppm.cell(row=rh, column=5, value=float(tr.get("estimate_hours") or 0.0))
                     ce.number_format = "0.00"
-                    cb = ws_hppm.cell(row=rh, column=7, value=float(tr.get("burnt_hours") or 0.0))
+                    cb = ws_hppm.cell(row=rh, column=6, value=float(tr.get("burnt_hours") or 0.0))
                     cb.number_format = "0.0000"
-                    ws_hppm.cell(
+                    _bp_cell = ws_hppm.cell(
                         row=rh,
-                        column=8,
-                        value=f"{float(bp):.2f}%" if bp is not None else "—",
-                    ).alignment = top
+                        column=7,
+                        value=round(float(bp) / 100.0, 6) if bp is not None else "—",
+                    )
+                    _bp_cell.alignment = top
+                    if bp is not None:
+                        _bp_cell.number_format = "0.0%"
+                        _bp_cell.fill = pct_fill
+                        _bp_cell.font = pct_font
+                    if tr.get("area_group_first"):
+                        rs = int(tr.get("area_total_rowspan") or 1)
+                        c_tot = ws_hppm.cell(row=rh, column=8, value=float(tr.get("area_group_burnt_total") or 0.0))
+                        c_tot.number_format = "0.0000"
+                        c_tot.alignment = Alignment(horizontal="right", vertical="center")
+                        if rs > 1:
+                            stk_total_merges.append((rh, rs))
                     rh += 1
                 last_stk = rh - 1
             apply_data_grid(ws_hppm, stk_hdr_row, max(stk_hdr_row, last_stk), len(stk_hdr))
+            for sr, rsp in stk_total_merges:
+                if rsp > 1:
+                    ws_hppm.merge_cells(start_row=sr, start_column=8, end_row=sr + rsp - 1, end_column=8)
+                    ws_hppm.cell(row=sr, column=8).alignment = Alignment(horizontal="right", vertical="center")
             ws_hppm.freeze_panes = f"A{sum_hdr_row + 1}"
             autofit(ws_hppm)
         except Exception:
@@ -6754,10 +7022,11 @@ def build_sprint_export_xlsx_bytes(
         ws_hppm.cell(row=3, column=1, value="HPPM sheet skipped (app or roster not available in this export).")
 
     # --- Daily tasks Details: sprint team view per member + all stickies + scrum_daily_task rows ---
-    def _xlsx_pct_disp(v: float | None) -> str:
+    # Sentinel: returns the raw float (÷100 for Excel %-format) or None for "—"
+    def _xlsx_pct_disp(v: float | None) -> float | None:
         if v is None:
-            return "—"
-        return f"{float(v):.1f}"
+            return None
+        return round(float(v) / 100.0, 6)  # Excel stores 0–1; "0.0%" format shows "39.5%"
 
     ws3 = wb.create_sheet("Daily tasks Details")
     rz = 1
@@ -6833,11 +7102,23 @@ def build_sprint_export_xlsx_bytes(
             float(m["committed_total_hours"]),
             "; ".join(str(x) for x in (m.get("doing_preview") or [])),
         ] + day_vals
+        # Columns (1-based) that hold percentage values from _xlsx_pct_disp (stored as 0–1 float)
+        # col 3 = Sprint burnt %, 4 = NDY%, 5 = FSY%, 6 = CODE%, 13 = Improvement%, 14 = P&T%
+        pct_cols = {3, 4, 5, 6, 13, 14}
         for jc, val in enumerate(row_mv, start=1):
-            cell = ws3.cell(row=rz, column=jc, value=val)
+            if jc in pct_cols:
+                if val is None:
+                    cell = ws3.cell(row=rz, column=jc, value="—")
+                else:
+                    cell = ws3.cell(row=rz, column=jc, value=val)
+                    cell.number_format = "0.0%"
+                cell.fill = pct_fill
+                cell.font = pct_font
+            else:
+                cell = ws3.cell(row=rz, column=jc, value=val)
+                if isinstance(val, float):
+                    cell.number_format = "0.00"
             cell.alignment = wrap
-            if isinstance(val, float):
-                cell.number_format = "0.00"
         rz += 1
     last_mem = rz - 1
     apply_data_grid(ws3, mem_hdr_row, max(mem_hdr_row, last_mem), len(memb_headers))
@@ -6862,7 +7143,7 @@ def build_sprint_export_xlsx_bytes(
     for it in items:
         est = float(it["estimate_hours"] or 0)
         burnt = float(it["total_burnt_hours"] or 0)
-        sburn = round(100.0 * burnt / est, 1) if est > SCRUM_HOUR_EPS else None
+        sburn = round(burnt / est, 6) if est > SCRUM_HOUR_EPS else None  # 0–1 for Excel % format
         row_st = [
             team_name,
             int(it["id"]),
@@ -6870,15 +7151,17 @@ def build_sprint_export_xlsx_bytes(
             str(it["kanban_column"] or ""),
             est,
             burnt,
-            sburn if sburn is not None else "",
+            sburn,
         ]
         for jc, val in enumerate(row_st, start=1):
-            cell = ws3.cell(row=rz, column=jc, value=val)
+            cell = ws3.cell(row=rz, column=jc, value=val if val is not None else "—")
             cell.alignment = wrap
             if jc in (5, 6):
                 cell.number_format = "0.00"
-            if jc == 7 and val != "":
-                cell.number_format = "0.0"
+            if jc == 7 and val is not None:
+                cell.number_format = "0.0%"
+                cell.fill = pct_fill
+                cell.font = pct_font
         rz += 1
     last_st = rz - 1
     apply_data_grid(ws3, st_hdr_row, max(st_hdr_row, last_st), len(sticky_detail_headers))
@@ -7618,6 +7901,8 @@ def _sprint_team_overview_detailed_rows(
             _enrich_kanban_burn_cards(conn, buckets[col])
         all_ids = [int(c["id"]) for col in SCRUM_KANBAN_COLUMNS for c in buckets[col]]
         act_map = _fetch_kanban_item_activity_log_map(conn, all_ids) if all_ids else {}
+        checklist_map = _fetch_item_checklist_map(conn, all_ids) if all_ids else {}
+        linked_files_map = _fetch_item_linked_files_map(conn, all_ids) if all_ids else {}
         stickies: list[dict] = []
         for col in SCRUM_KANBAN_COLUMNS:
             for c in buckets[col]:
@@ -7630,6 +7915,8 @@ def _sprint_team_overview_detailed_rows(
                 if row.get("standup_updates"):
                     acts = [a for a in acts if not (a.get("from_column") == "doing" and a.get("to_column") == "doing")]
                 row["activity_log"] = acts
+                row["checklist"] = checklist_map.get(iid, [])
+                row["linked_files"] = linked_files_map.get(iid, [])
                 stickies.append(row)
         m["stickies"] = stickies
     return base
@@ -7677,6 +7964,72 @@ def _fetch_item_attachments_map(conn: sqlite3.Connection, item_ids: list[int]) -
                 "size_bytes": int(r["size_bytes"] or 0),
                 "created_at": str(r["created_at"] or ""),
                 "rel_path": (str(r["rel_path"] or "")).strip(),
+            }
+        )
+    return out
+
+
+def _fetch_item_linked_files_map(conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not item_ids:
+        return {}
+    ids = sorted({int(i) for i in item_ids})
+    ph = ",".join("?" * len(ids))
+    out: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+    for r in conn.execute(
+        f"""
+        SELECT id, item_id, sort_order, display_name, url, auth_user, auth_pass, updated_at, updated_by
+        FROM scrum_item_linked_file
+        WHERE item_id IN ({ph})
+        ORDER BY item_id ASC, sort_order ASC, id ASC
+        """,
+        ids,
+    ):
+        iid = int(r["item_id"])
+        if iid not in out:
+            continue
+        out[iid].append(
+            {
+                "id": int(r["id"]),
+                "sort_order": int(r["sort_order"] or 0),
+                "display_name": str(r["display_name"] or ""),
+                "url": str(r["url"] or ""),
+                "auth_user": str(r["auth_user"] or ""),
+                "has_auth": bool((r["auth_user"] or "").strip()),
+                "updated_at": str(r["updated_at"] or ""),
+                "updated_by": str(r["updated_by"] or ""),
+            }
+        )
+    return out
+
+
+def _fetch_item_checklist_map(conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not item_ids:
+        return {}
+    ids = sorted({int(i) for i in item_ids})
+    ph = ",".join("?" * len(ids))
+    out: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+    for r in conn.execute(
+        f"""
+        SELECT id, item_id, sort_order, items_to_finish, status, le_to_complete, done_till_date, updated_at, updated_by
+        FROM scrum_item_checklist
+        WHERE item_id IN ({ph})
+        ORDER BY item_id ASC, sort_order ASC, id ASC
+        """,
+        ids,
+    ):
+        iid = int(r["item_id"])
+        if iid not in out:
+            continue
+        out[iid].append(
+            {
+                "id": int(r["id"]),
+                "sort_order": int(r["sort_order"] or 0),
+                "items_to_finish": str(r["items_to_finish"] or ""),
+                "status": str(r["status"] or ""),
+                "le_to_complete": str(r["le_to_complete"] or ""),
+                "done_till_date": str(r["done_till_date"] or ""),
+                "updated_at": str(r["updated_at"] or ""),
+                "updated_by": str(r["updated_by"] or ""),
             }
         )
     return out
@@ -8429,9 +8782,9 @@ def _portal_proposal_summary_line(action: str, payload: dict, item_title: str | 
         return f"Stand-up / hours on «{t}»"
     if action == "item_add":
         title = (payload.get("title") or "").strip() or "New sticky"
-        return f"Add sticky in Do: «{title}»"
+        return f"Add sticky in To DO: «{title}»"
     if action == "item_update_do":
-        return f"Edit plan (Do) for «{t}»"
+        return f"Edit plan (To DO) for «{t}»"
     if action == "item_update_done":
         return f"Edit Done details for «{t}»"
     if action == "item_update_doing_estimate":
@@ -8445,7 +8798,7 @@ def _portal_proposal_summary_line(action: str, payload: dict, item_title: str | 
 
 def _kanban_column_public_label(col: str | None) -> str:
     c = _normalize_kanban_column(col)
-    return {"backlog": "To do", "do": "Do", "doing": "In progress", "done": "Done"}.get(c, c or "—")
+    return {"backlog": "To do", "do": "To DO", "doing": "In progress", "done": "Done"}.get(c, c or "—")
 
 
 def _pending_portal_proposals_grouped_for_sprint(
@@ -8456,7 +8809,7 @@ def _pending_portal_proposals_grouped_for_sprint(
         "item_move": "Column move",
         "item_note": "Stand-up / hours",
         "item_add": "New sticky",
-        "item_update_do": "Edit plan (Do)",
+        "item_update_do": "Edit plan (To DO)",
         "item_update_done": "Edit Done",
         "item_update_doing_estimate": "Adjust estimate (In progress)",
         "item_delete": "Delete sticky",
@@ -8539,6 +8892,12 @@ def _pending_portal_proposals_grouped_for_sprint(
                 ch = 0.0
             if ch is not None and abs(ch) > SCRUM_HOUR_EPS:
                 card["hours_hint"] = f"+{ch:g}h on this move"
+            try:
+                move_est = float(payload.get("estimate_hours", 0) or 0)
+            except (TypeError, ValueError):
+                move_est = 0.0
+            if move_est > SCRUM_HOUR_EPS and str(payload.get("to_column") or "").strip().lower() == "do":
+                card["estimate_hint"] = f"{move_est:g}h plan (To DO)"
         if action == "item_note":
             note_full = (payload.get("note") or "").strip()
             card["proposed_standup_note"] = note_full
@@ -8645,8 +9004,16 @@ def _apply_scrum_portal_proposal_core(
         from_col = _normalize_kanban_column(row["kanban_column"] if row else None)
         if from_col == to_col:
             return True, None
+        est_new, est_err = _estimate_hours_for_backlog_to_do_move(payload, from_col=from_col, to_col=to_col)
+        if est_err:
+            return False, est_err
+        if est_new is not None:
+            note_raw = ""
+            body = _approved_portal_activity_note(note_raw)
         st = _status_for_kanban_column(to_col)
-        if from_col == "do" and to_col == "doing":
+        if from_col == "backlog" and to_col == "do":
+            ch = 0.0
+        elif from_col == "do" and to_col == "doing":
             conn.execute("DELETE FROM scrum_item_activity WHERE item_id = ?", (item_id,))
             ch = _parse_committed_hours_for_kanban_move(
                 payload.get("committed_hours"), from_col=from_col, to_col=to_col
@@ -8673,6 +9040,15 @@ def _apply_scrum_portal_proposal_core(
                 WHERE id = ? AND sprint_id = ?
                 """,
                 (to_col, st, ts, artifacts_json, item_id, sprint_id),
+            )
+        elif est_new is not None:
+            conn.execute(
+                """
+                UPDATE scrum_sprint_item
+                SET kanban_column = ?, status = ?, updated_at = ?, estimate_hours = ?
+                WHERE id = ? AND sprint_id = ?
+                """,
+                (to_col, st, ts, est_new, item_id, sprint_id),
             )
         else:
             conn.execute(
@@ -8864,7 +9240,7 @@ def _apply_scrum_portal_proposal_core(
         if not ar or (ar["assignee"] or "").strip() != proposer:
             return False, "forbidden"
         if _normalize_kanban_column(ar["kanban_column"] if "kanban_column" in ar.keys() else None) != "do":
-            return False, "remove only while the sticky is in Do"
+            return False, "remove only while the sticky is in To DO"
         conn.execute("DELETE FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?", (item_id, sprint_id))
         return True, None
 
@@ -9487,7 +9863,6 @@ def create_app() -> Flask:
             cards_by_col=cards_by_col,
             task_kinds_rows=task_kinds_rows,
             kb_back_url=url_for("portal_dashboard"),
-            kb_back_label="Dashboard",
             kb_api_urls={
                 "item_move": url_for("portal_scrum_api_item_move"),
                 "item_note": url_for("portal_scrum_api_item_note"),
@@ -9682,9 +10057,17 @@ def create_app() -> Flask:
             conn.close()
             return jsonify({"ok": False, "error": "missing"}), 400
         from_col = _normalize_kanban_column(row["kanban_column"])
-        ch = _parse_committed_hours_for_kanban_move(
-            data.get("committed_hours"), from_col=from_col, to_col=to_col
-        )
+        est_bl2do, est_err = _estimate_hours_for_backlog_to_do_move(data, from_col=from_col, to_col=to_col)
+        if est_err:
+            conn.close()
+            return jsonify({"ok": False, "error": est_err}), 400
+        if from_col == "backlog" and to_col == "do":
+            ch = 0.0
+            note_raw = ""
+        else:
+            ch = _parse_committed_hours_for_kanban_move(
+                data.get("committed_hours"), from_col=from_col, to_col=to_col
+            )
         artifacts_json: str | None = None
         if to_col == "done":
             artifacts_json, aerr = _normalize_done_artifacts_from_api(data.get("artifacts"))
@@ -9692,10 +10075,12 @@ def create_app() -> Flask:
                 conn.close()
                 return jsonify({"ok": False, "error": aerr}), 400
         pl: dict = {"to_column": to_col, "committed_hours": ch, "note": note_raw}
+        if est_bl2do is not None:
+            pl["estimate_hours"] = est_bl2do
         if to_col == "done" and artifacts_json is not None:
             pl["done_artifacts_json"] = artifacts_json
         vurls = _normalize_verification_urls_mixed(data.get("verification_urls"))
-        if vurls:
+        if vurls and est_bl2do is None:
             pl["verification_urls"] = vurls
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_move", roster_name, pl)
         conn.commit()
@@ -9900,7 +10285,7 @@ def create_app() -> Flask:
 
         if cur_col != "do":
             conn.close()
-            flash("Planning edits are only in Do; details and artifacts can be edited in Done.", "error")
+            flash("Planning edits are only in To DO; details and artifacts can be edited in Done.", "error")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         title = (request.form.get("title") or "").strip()
         if not title:
@@ -9965,7 +10350,7 @@ def create_app() -> Flask:
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         if _normalize_kanban_column(ar["kanban_column"] if "kanban_column" in ar.keys() else None) != "do":
             conn.close()
-            flash("Stickies can only be removed while they are in Do.", "error")
+            flash("Stickies can only be removed while they are in To DO.", "error")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_delete", roster_name, {})
         conn.commit()
@@ -10767,24 +11152,12 @@ def create_app() -> Flask:
                 next_suggested_sprint_name = suggest_next_sprint_name_from_previous(str(prev_nm["name"]))
         conn.close()
         td = date.today()
-        end_default = scrum_sprint_default_end_date(td)
-        cap_preview = round(
-            compute_team_sprint_capacity_leave_hours(app, g.manager_roster, td, end_default), 1
-        )
         next_iso = next_sd.isoformat() if next_sd else None
-        next_cap_preview = 0.0
-        if next_sd is not None:
-            next_ed = scrum_sprint_default_end_date(next_sd)
-            next_cap_preview = round(
-                compute_team_sprint_capacity_leave_hours(app, g.manager_roster, next_sd, next_ed), 1
-        )
         return render_template(
             "scrum_hub.html",
             sprints=sprints,
             today_iso=td.isoformat(),
-            sprint_capacity_preview_hours=cap_preview,
             next_sprint_start_iso=next_iso,
-            next_sprint_capacity_preview_hours=next_cap_preview,
             next_suggested_sprint_name=next_suggested_sprint_name,
             portal_proposals_pending=portal_proposals_pending,
         )
@@ -11359,7 +11732,14 @@ def create_app() -> Flask:
             "SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (item_id,)
         ).fetchone()
         from_col = _normalize_kanban_column(row["kanban_column"] if row else None)
-        if from_col == "do" and to_col == "doing":
+        est_new, est_err = _estimate_hours_for_backlog_to_do_move(data, from_col=from_col, to_col=to_col)
+        if est_err:
+            conn.close()
+            return jsonify({"ok": False, "error": est_err}), 400
+        if from_col == "backlog" and to_col == "do":
+            body = ""
+            ch = 0.0
+        elif from_col == "do" and to_col == "doing":
             conn.execute("DELETE FROM scrum_item_activity WHERE item_id = ?", (item_id,))
             ch = _parse_committed_hours_for_kanban_move(
                 data.get("committed_hours"), from_col=from_col, to_col=to_col
@@ -11387,6 +11767,15 @@ def create_app() -> Flask:
                 WHERE id = ? AND sprint_id = ?
                 """,
                 (to_col, st, ts, artifacts_json, item_id, sprint_id),
+            )
+        elif est_new is not None:
+            conn.execute(
+                """
+                UPDATE scrum_sprint_item
+                SET kanban_column = ?, status = ?, updated_at = ?, estimate_hours = ?
+                WHERE id = ? AND sprint_id = ?
+                """,
+                (to_col, st, ts, est_new, item_id, sprint_id),
             )
         else:
             conn.execute(
@@ -11764,7 +12153,7 @@ def create_app() -> Flask:
         session["active_sprint_id"] = new_id
         if n_carried:
             flash(
-                f"Sprint created — carried {n_carried} sticky(ies) from Do / In progress on the prior sprint into this sprint’s backlog "
+                f"Sprint created — carried {n_carried} sticky(ies) from To DO / In progress on the prior sprint into this sprint’s backlog "
                 "(same assignees, details, and original estimate hours; Burnt starts at 0 on each new sticky).",
                 "success",
             )
@@ -12109,7 +12498,7 @@ def create_app() -> Flask:
 
         if cur_col != "do":
             conn.close()
-            flash("Planning edits are only in Do; details and artifacts can be edited in Done.", "error")
+            flash("Planning edits are only in To DO; details and artifacts can be edited in Done.", "error")
             return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
         title = (request.form.get("title") or "").strip()
         if not title:
@@ -12119,7 +12508,7 @@ def create_app() -> Flask:
         est = _parse_hours_field(request.form.get("estimate_hours"))
         if est <= SCRUM_HOUR_EPS:
             conn.close()
-            flash("Estimated hours must be greater than zero while planning in Do.", "error")
+            flash("Estimated hours must be greater than zero while planning in To DO.", "error")
             return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
         tkind = _coerce_sprint_item_task_kind(conn, team_id, request.form.get("task_kind"))
         notes = (request.form.get("notes") or "").strip()[:2000]
@@ -12137,7 +12526,7 @@ def create_app() -> Flask:
         )
         conn.commit()
         conn.close()
-        flash("Plan saved — you can edit again while this sticky stays in Do.", "success")
+        flash("Plan saved — you can edit again while this sticky stays in To DO.", "success")
         return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
 
     @app.post("/scrum/sprint/item/delete")
@@ -12175,7 +12564,7 @@ def create_app() -> Flask:
         if _normalize_kanban_column(ar["kanban_column"] if "kanban_column" in ar.keys() else None) != "do":
             assignee_err = (ar["assignee"] or "").strip()
             conn.close()
-            flash("Stickies can only be removed while they are in Do.", "error")
+            flash("Stickies can only be removed while they are in To DO.", "error")
             if assignee_err:
                 return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee_err))
             return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
@@ -13308,6 +13697,345 @@ def create_app() -> Flask:
                 "Content-Disposition": f"attachment; filename=leave_report_{start}_to_{end}.csv"
             },
         )
+
+    # ── Linked Files API ───────────────────────────────────────────────────────
+
+    @app.post("/scrum/api/item/linked-file/add")
+    def scrum_api_item_linked_file_add():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        url_val = (data.get("url") or "").strip()[:2000]
+        display_name = (data.get("display_name") or "").strip()[:300]
+        auth_user = (data.get("auth_user") or "").strip()[:200]
+        auth_pass = (data.get("auth_pass") or "").strip()[:200]
+        if not item_id or not url_val:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = int(g.manager_team_id)
+        item = conn.execute(
+            """
+            SELECT i.id FROM scrum_sprint_item i
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE i.id = ? AND s.team_id = ?
+            """,
+            (item_id, team_id),
+        ).fetchone()
+        if not item:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM scrum_item_linked_file WHERE item_id = ?", (item_id,)
+        ).fetchone()[0]
+        ts = _utc_stamp()
+        cur = conn.execute(
+            """
+            INSERT INTO scrum_item_linked_file
+                (item_id, sort_order, display_name, url, auth_user, auth_pass, updated_at, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (item_id, int(max_order) + 1, display_name or url_val[:80], url_val,
+             auth_user, auth_pass, ts, session.get("manager", "")),
+        )
+        new_id = cur.lastrowid
+        saved_name = display_name or url_val[:80]
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": new_id, "display_name": saved_name, "url": url_val,
+                        "has_auth": bool(auth_user)})
+
+    @app.post("/scrum/api/item/linked-file/update")
+    def scrum_api_item_linked_file_update():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        row_id = _parse_optional_int(data.get("id"))
+        item_id = _parse_optional_int(data.get("item_id"))
+        display_name = (data.get("display_name") or "").strip()[:300]
+        url_val = (data.get("url") or "").strip()[:2000]
+        # credentials: send empty strings to clear, send values to store
+        auth_user = data.get("auth_user")   # None means "don't touch"
+        auth_pass = data.get("auth_pass")
+        if not row_id or not item_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = int(g.manager_team_id)
+        row = conn.execute(
+            """
+            SELECT lf.id FROM scrum_item_linked_file lf
+            JOIN scrum_sprint_item i ON i.id = lf.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE lf.id = ? AND lf.item_id = ? AND s.team_id = ?
+            """,
+            (row_id, item_id, team_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        ts = _utc_stamp()
+        actor = session.get("manager", "")
+        if display_name:
+            conn.execute(
+                "UPDATE scrum_item_linked_file SET display_name = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (display_name, ts, actor, row_id),
+            )
+        if url_val:
+            conn.execute(
+                "UPDATE scrum_item_linked_file SET url = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (url_val, ts, actor, row_id),
+            )
+        if auth_user is not None:
+            conn.execute(
+                "UPDATE scrum_item_linked_file SET auth_user = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (str(auth_user).strip()[:200], ts, actor, row_id),
+            )
+        if auth_pass is not None:
+            conn.execute(
+                "UPDATE scrum_item_linked_file SET auth_pass = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (str(auth_pass).strip()[:200], ts, actor, row_id),
+            )
+        new_user = str(auth_user or "").strip() if auth_user is not None else None
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "has_auth": bool(new_user) if new_user is not None else None})
+
+    @app.post("/scrum/api/item/linked-file/delete")
+    def scrum_api_item_linked_file_delete():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        row_id = _parse_optional_int(data.get("id"))
+        item_id = _parse_optional_int(data.get("item_id"))
+        if not row_id or not item_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = int(g.manager_team_id)
+        row = conn.execute(
+            """
+            SELECT lf.id FROM scrum_item_linked_file lf
+            JOIN scrum_sprint_item i ON i.id = lf.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE lf.id = ? AND lf.item_id = ? AND s.team_id = ?
+            """,
+            (row_id, item_id, team_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        conn.execute("DELETE FROM scrum_item_linked_file WHERE id = ?", (row_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+
+    @app.get("/scrum/api/item/linked-file/proxy/<int:file_id>")
+    def scrum_api_item_linked_file_proxy(file_id: int):
+        """Server-side proxy: fetch a linked file using stored credentials and stream back.
+
+        Only available to logged-in managers/portal users for their team's files.
+        Credentials are stored per linked-file row; we support NTLM (SharePoint/Windows)
+        with a fallback to HTTP Basic auth.
+        """
+        import urllib.request
+        import urllib.error
+
+        authed = _manager_logged_in() or bool(_portal_session())
+        if not authed:
+            return jsonify({"ok": False, "error": "auth"}), 403
+
+        conn = get_db(app)
+        if _manager_logged_in():
+            team_id = int(g.manager_team_id)
+        else:
+            team_id = int(g.portal_team_id)
+
+        row = conn.execute(
+            """
+            SELECT lf.url, lf.auth_user, lf.auth_pass
+            FROM scrum_item_linked_file lf
+            JOIN scrum_sprint_item i ON i.id = lf.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE lf.id = ? AND s.team_id = ?
+            """,
+            (file_id, team_id),
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+
+        target_url = str(row["url"] or "")
+        auth_user = str(row["auth_user"] or "").strip()
+        auth_pass = str(row["auth_pass"] or "").strip()
+
+        if not target_url:
+            return jsonify({"ok": False, "error": "no_url"}), 400
+
+        try:
+            import requests as _req  # type: ignore[import]
+            _req_available = True
+        except ImportError:
+            _req_available = False
+
+        try:
+            if _req_available and auth_user:
+                # Try NTLM first (SharePoint / Windows-auth), fall back to Basic
+                try:
+                    from requests_ntlm import HttpNtlmAuth  # type: ignore[import]
+                    auth = HttpNtlmAuth(auth_user, auth_pass)
+                except ImportError:
+                    from requests.auth import HTTPBasicAuth  # type: ignore[import]
+                    auth = HTTPBasicAuth(auth_user, auth_pass)
+                resp = _req.get(target_url, auth=auth, timeout=20, stream=True,
+                                headers={"User-Agent": "Mozilla/5.0"})
+                content_type = resp.headers.get("Content-Type", "application/octet-stream")
+                status = resp.status_code
+                body = resp.content
+            elif _req_available:
+                resp = _req.get(target_url, timeout=20,
+                                headers={"User-Agent": "Mozilla/5.0"})
+                content_type = resp.headers.get("Content-Type", "application/octet-stream")
+                status = resp.status_code
+                body = resp.content
+            else:
+                req = urllib.request.Request(target_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    content_type = resp.headers.get("Content-Type", "application/octet-stream")
+                    status = resp.status
+                    body = resp.read()
+
+            from flask import Response as _Response  # noqa: F811 – already imported
+            return _Response(body, status=status, content_type=content_type)
+
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": str(exc)}), 502
+
+    # ── Task Checklist API ─────────────────────────────────────────────────────
+
+    @app.get("/scrum/api/item/checklist")
+    def scrum_api_item_checklist_get():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        item_id = _parse_optional_int(request.args.get("item_id"))
+        if not item_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        rows = _fetch_item_checklist_map(conn, [item_id]).get(item_id, [])
+        conn.close()
+        return jsonify({"ok": True, "rows": rows})
+
+    @app.post("/scrum/api/item/checklist/add")
+    def scrum_api_item_checklist_add():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        if not item_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        initial_item_name = (data.get("items_to_finish") or "").strip()[:500]
+        conn = get_db(app)
+        team_id = int(g.manager_team_id)
+        item = conn.execute(
+            """
+            SELECT i.id FROM scrum_sprint_item i
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE i.id = ? AND s.team_id = ?
+            """,
+            (item_id, team_id),
+        ).fetchone()
+        if not item:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM scrum_item_checklist WHERE item_id = ?", (item_id,)
+        ).fetchone()[0]
+        ts = _utc_stamp()
+        cur = conn.execute(
+            """
+            INSERT INTO scrum_item_checklist (item_id, sort_order, items_to_finish, status, le_to_complete, done_till_date, updated_at, updated_by)
+            VALUES (?, ?, ?, '', '', '', ?, ?)
+            """,
+            (item_id, int(max_order) + 1, initial_item_name, ts, session.get("manager", "")),
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": new_id, "sort_order": int(max_order) + 1})
+
+    @app.post("/scrum/api/item/checklist/update")
+    def scrum_api_item_checklist_update():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        row_id = _parse_optional_int(data.get("id"))
+        item_id = _parse_optional_int(data.get("item_id"))
+        field = (data.get("field") or "").strip()
+        value = (data.get("value") or "")[:2000]
+        allowed_fields = {"items_to_finish", "status", "le_to_complete", "done_till_date"}
+        if not row_id or not item_id or field not in allowed_fields:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = int(g.manager_team_id)
+        row = conn.execute(
+            """
+            SELECT c.id FROM scrum_item_checklist c
+            JOIN scrum_sprint_item i ON i.id = c.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE c.id = ? AND c.item_id = ? AND s.team_id = ?
+            """,
+            (row_id, item_id, team_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        ts = _utc_stamp()
+        conn.execute(
+            f"UPDATE scrum_item_checklist SET {field} = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+            (value, ts, session.get("manager", ""), row_id),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+
+    @app.post("/scrum/api/item/checklist/delete")
+    def scrum_api_item_checklist_delete():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        row_id = _parse_optional_int(data.get("id"))
+        item_id = _parse_optional_int(data.get("item_id"))
+        if not row_id or not item_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = int(g.manager_team_id)
+        row = conn.execute(
+            """
+            SELECT c.id FROM scrum_item_checklist c
+            JOIN scrum_sprint_item i ON i.id = c.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE c.id = ? AND c.item_id = ? AND s.team_id = ?
+            """,
+            (row_id, item_id, team_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        conn.execute("DELETE FROM scrum_item_checklist WHERE id = ?", (row_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
 
     with app.app_context():
         init_db(app)

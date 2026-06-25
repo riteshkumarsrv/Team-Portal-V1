@@ -1,4 +1,7 @@
-"""Regenerate data/team_tracker.db from data/teamportalfinal_full_dump.sql (Oracle unistr → SQLite)."""
+"""Regenerate data/team_tracker.db from TeamPortal SQL dumps (Oracle unistr → SQLite).
+
+Dump files live under ``Not Relevant Files/sql_dumps/`` (see ``data/README_teamportal_onedrive.md``).
+"""
 from __future__ import annotations
 
 import re
@@ -7,8 +10,9 @@ from pathlib import Path
 
 # SCRUM_vF project root (parent of scripts/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DUMP = PROJECT_ROOT / "data" / "teamportalfinal_full_dump.sql"
-FIXED = PROJECT_ROOT / "data" / "teamportalfinal_full_dump_sqlite.sql"
+_SQL_DIR = PROJECT_ROOT / "Not Relevant Files" / "sql_dumps"
+DUMP = _SQL_DIR / "teamportalfinal_full_dump.sql"
+FIXED = _SQL_DIR / "teamportalfinal_full_dump_sqlite.sql"
 DB = PROJECT_ROOT / "data" / "team_tracker.db"
 
 

@@ -8,10 +8,9 @@
 {% block content %}
   <section class="card scrum-board-hero">
     <div class="scrum-hub-hero-top">
-      <div class="scrum-hub-hero-top-lede">
-        <p class="scrum-board-muted">Agile delivery</p>
-        <h2 class="page-heading">Sprint hub</h2>
-        <p class="scrum-board-muted">{{ active_team_name or "Team" }} — create sprints, export a sprint to Excel, then open a sprint to see everyone and their sticky boards.</p>
+      <div class="scrum-hub-hero-top-lede scrum-hub-hero-title-actions">
+        <h2 class="page-heading scrum-hub-hero-team-title">{{ active_team_name or "Team" }}</h2>
+        <a class="btn secondary small scrum-hub-leave-dashboard" href="{{ url_for('dashboard') }}">Leave tracker</a>
       </div>
       {% if manager_logged_in and manager_teams %}
         {% set tp_prefix = "scrum-hub-" %}
@@ -26,26 +25,13 @@
       </div>
     {% endif %}
 
-    <div class="scrum-hub-bar" style="margin-top: 1rem">
-      <form method="post" action="{{ url_for('team_hub_mode_set') }}" class="inline-form">
-        {% include "partials/csrf.html" %}
-        <input type="hidden" name="hub_mode" value="leave" />
-        <input type="hidden" name="next" value="{{ request.full_path }}" />
-        <button type="submit" class="btn secondary small{% if team_hub_mode == 'leave' %} is-selected{% endif %}">Leave tracker</button>
-      </form>
-      <form method="post" action="{{ url_for('team_hub_mode_set') }}" class="inline-form">
-        {% include "partials/csrf.html" %}
-        <input type="hidden" name="hub_mode" value="scrum" />
-        <input type="hidden" name="next" value="{{ request.full_path }}" />
-        <button type="submit" class="btn secondary small{% if team_hub_mode == 'scrum' %} is-selected{% endif %}">Scrum hub</button>
-      </form>
+    <div class="scrum-hub-sprints-head">
+      <h3 class="section-subheading scrum-hub-sprints-title">Your sprints</h3>
+      <p class="scrum-board-muted scrum-hub-sprints-note">
+        <a href="{{ url_for('scrum_portal_proposals') }}">Employee change requests</a>
+        — portal edits land here until approved.
+      </p>
     </div>
-
-    <h3 class="section-subheading" style="margin-top: 1.25rem">Your sprints</h3>
-    <p class="scrum-board-muted" style="margin: 0.15rem 0 0.5rem; font-size: 0.85rem">
-      <a href="{{ url_for('scrum_portal_proposals') }}">Employee change requests</a>
-      — portal edits land here until approved.
-    </p>
     {% if sprints %}
       <div class="scrum-hub-sprint-list">
         {% for sp in sprints %}
@@ -153,7 +139,7 @@
             <h3 class="section-subheading">Create next sprint</h3>
             <p class="scrum-board-muted" style="font-size: 0.85rem; margin-top: 0; margin-bottom: 0.75rem">
               Start is set to <strong>{{ next_sprint_start_iso }}</strong> — the day after your latest sprint’s end date.
-              Same fixed 14-day window and sticky carry-over from <strong>Do</strong> / <strong>In progress</strong> as when you create a sprint below.
+              Same fixed 14-day window and sticky carry-over from <strong>To DO</strong> / <strong>In progress</strong> as when you create a sprint below.
               {% if next_suggested_sprint_name %}The <strong>Name</strong> field defaults to the latest sprint name with its trailing number bumped by 1 (edit if you prefer).{% endif %}
             </p>
             <form method="post" action="{{ url_for('scrum_sprint_create') }}" class="stack-form">
@@ -191,22 +177,6 @@
                   14 calendar days from this start (inclusive), same as a new sprint.
                 </p>
               </div>
-              <div class="field">
-                <label for="sp-next-capacity">Sprint total capacity (h)</label>
-                <input
-                  id="sp-next-capacity"
-                  type="text"
-                  readonly
-                  class="scrum-capacity-readonly"
-                  value="{{ '%.1f'|format(next_sprint_capacity_preview_hours|default(0)) }}"
-                  title="Same capacity rules as the field below; for this chained start window."
-                  tabindex="0"
-                  aria-live="polite"
-                />
-                <p class="scrum-board-muted" style="font-size: 0.78rem; margin: 0.25rem 0 0">
-                  Preview for this start window (same roster and capacity rules as below).
-                </p>
-              </div>
               <button type="submit" class="btn secondary">Create next sprint &amp; open team view</button>
             </form>
           </div>
@@ -235,22 +205,6 @@
               />
               <p class="scrum-board-muted" style="font-size: 0.78rem; margin: 0.25rem 0 0">
                 Fixed 14-day window from start date.
-              </p>
-            </div>
-            <div class="field">
-              <label for="sp-capacity">Sprint total capacity (h)</label>
-              <input
-                id="sp-capacity"
-                type="text"
-                readonly
-                class="scrum-capacity-readonly"
-                value="{{ '%.1f'|format(sprint_capacity_preview_hours|default(0)) }}"
-                title="Sum over the team roster: each Mon–Fri in the sprint is 8h minus approved or pending leave (0h on full leave, 4h on half-day). Weekends count 0h. Updates when Start changes (fixed 14-day inclusive window)."
-                tabindex="0"
-                aria-live="polite"
-              />
-              <p class="scrum-board-muted" style="font-size: 0.78rem; margin: 0.25rem 0 0">
-                Computed dynamically from the team's leave tracker.
               </p>
             </div>
             <button type="submit" class="btn">Create &amp; open team view</button>
@@ -305,84 +259,6 @@
       </section>
     </div>
   </section>
-  <script>
-    (function () {
-      function sprintEndInclusiveTwoWeeks(startIso) {
-        if (!startIso || startIso.length < 10) return "";
-        var p = startIso.slice(0, 10).split("-");
-        var y = parseInt(p[0], 10);
-        var mo = parseInt(p[1], 10) - 1;
-        var d = parseInt(p[2], 10);
-        if (isNaN(y) || isNaN(mo) || isNaN(d)) return "";
-        var dt = new Date(Date.UTC(y, mo, d));
-        dt.setUTCDate(dt.getUTCDate() + 13);
-        return (
-          dt.getUTCFullYear() +
-          "-" +
-          String(dt.getUTCMonth() + 1).padStart(2, "0") +
-          "-" +
-          String(dt.getUTCDate()).padStart(2, "0")
-        );
-      }
-      var startEl = document.getElementById("sp-start");
-      var capEl = document.getElementById("sp-capacity");
-      if (startEl && capEl) {
-        function refreshCapacity() {
-          var s = startEl.value;
-          if (!s) return;
-          var e = sprintEndInclusiveTwoWeeks(s);
-          if (!e) return;
-          fetch(
-            "{{ url_for('scrum_api_sprint_team_capacity') }}?start_date=" +
-              encodeURIComponent(s) +
-              "&end_date=" +
-              encodeURIComponent(e)
-          )
-            .then(function (r) {
-              return r.json();
-            })
-            .then(function (j) {
-              if (j && j.ok && typeof j.hours === "number") {
-                capEl.value = j.hours.toFixed(1);
-              }
-            })
-            .catch(function () {});
-        }
-        function onStartChange() {
-          refreshCapacity();
-        }
-        startEl.addEventListener("change", onStartChange);
-        startEl.addEventListener("input", onStartChange);
-        refreshCapacity();
-      }
-
-      var startNext = document.getElementById("sp-next-start");
-      var capNext = document.getElementById("sp-next-capacity");
-      if (startNext && capNext) {
-        var sn = startNext.value;
-        if (sn) {
-          var en = sprintEndInclusiveTwoWeeks(sn);
-          if (en) {
-            fetch(
-              "{{ url_for('scrum_api_sprint_team_capacity') }}?start_date=" +
-                encodeURIComponent(sn) +
-                "&end_date=" +
-                encodeURIComponent(en)
-            )
-              .then(function (r) {
-                return r.json();
-              })
-              .then(function (j) {
-                if (j && j.ok && typeof j.hours === "number") {
-                  capNext.value = j.hours.toFixed(1);
-                }
-              })
-              .catch(function () {});
-          }
-        }
-      }
-    })();
-  </script>
   <script>
     (function () {
       var dlg = document.getElementById("scrum-hub-delete-sprint-dialog");

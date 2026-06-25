@@ -139,7 +139,9 @@ def main() -> Path:
     ws.column_dimensions["D"].width = 14
     ws.column_dimensions["E"].width = 14
 
-    out = Path(__file__).resolve().parent.parent / "Leave_Management_April_2026_Team1.xlsx"
+    out_dir = Path(__file__).resolve().parent.parent / "Not Relevant Files" / "sample_spreadsheets"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "Leave_Management_April_2026_Team1.xlsx"
     wb.save(out)
     return out
 

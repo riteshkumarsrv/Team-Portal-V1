@@ -154,13 +154,32 @@ body.portal-dashboard-page .wrap.wrap-portal {
 /* Portal shell (post-login) */
 .portal-shell-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   margin-bottom: 1.75rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.portal-shell-top .inline-form {
+  margin: 0 0 0 auto;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
+@media (max-width: 480px) {
+  .portal-shell-top {
+    flex-wrap: wrap;
+  }
+
+  .portal-shell-top .inline-form {
+    width: 100%;
+    margin-left: 0;
+    display: flex;
+    justify-content: flex-end;
+  }
 }
 
 .portal-user-pill {

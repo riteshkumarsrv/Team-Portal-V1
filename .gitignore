@@ -13,6 +13,10 @@ data/**/*.sql.*
 # Local DB snapshots (auto backup every N hours while app runs; see team_tracker_backup.py)
 Backup/
 
+# Local / legacy clutter consolidated under one folder (see Not Relevant Files/README.md)
+Not Relevant Files/*
+!Not Relevant Files/README.md
+
 # Cursor / local IDE (not part of the app)
 terminals/
 mcps/
