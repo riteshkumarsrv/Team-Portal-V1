@@ -93,6 +93,68 @@ header.site {
   border-bottom: 1px solid var(--surface2);
 }
 
+header.site.site-employee-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  margin-bottom: 1rem;
+  padding-top: 0.35rem;
+  padding-bottom: 0.65rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--surface2);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+}
+
+body.portal-nokia-body header.site.site-employee-sticky {
+  background: #13112c;
+  border-bottom-color: rgba(148, 163, 184, 0.15);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.portal-employee-nav a {
+  font-size: 0.72rem;
+}
+
+.main-nav .portal-nav-sprint {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.2rem;
+  padding: 0.4rem 0.3rem;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.portal-nav-sprint-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted);
+  line-height: 1.1;
+  text-align: center;
+}
+
+.portal-nav-sprint.is-active .portal-nav-sprint-label {
+  color: var(--text);
+}
+
+.portal-nav-sprint-select {
+  width: 100%;
+  font-size: 0.62rem;
+  padding: 0.2rem 0.25rem;
+  border-radius: 4px;
+  border: 1px solid var(--surface2);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+body.portal-nokia-body .portal-nav-sprint-select {
+  background: #1a1835;
+  border-color: rgba(148, 163, 184, 0.25);
+  color: #e2e8f0;
+}
+
 header.site h1 {
   margin: 0;
   font-size: 1.05rem;

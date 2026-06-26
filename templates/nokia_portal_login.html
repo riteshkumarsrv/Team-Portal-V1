@@ -14,13 +14,13 @@
       </p>
       {% if portal_user %}
         <p class="nokia-login-lead">Signed in as <strong>{{ portal_user.name }}</strong>.</p>
-        <a class="nokia-btn-ms" href="{{ url_for('portal_dashboard') }}">Go to my dashboard</a>
+        <a class="nokia-btn-ms" href="{{ url_for('portal_my_sprint_kanban') }}">Go to sprint work</a>
         <div class="nokia-signed-links">
           <a href="{{ url_for('portal_leave_apply') }}">Apply for leave</a>
           <span aria-hidden="true">·</span>
           <a href="{{ url_for('my_requests') }}">My Leave Status</a>
           <span aria-hidden="true">·</span>
-          <a href="{{ url_for('portal_my_sprint_kanban') }}">My sprint work</a>
+          <a href="{{ url_for('portal_my_sprint_kanban') }}">Sprint work</a>
         </div>
         <form method="post" action="{{ url_for('portal_logout') }}" class="nokia-signout-form">
           {% include "partials/csrf.html" %}

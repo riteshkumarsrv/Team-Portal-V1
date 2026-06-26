@@ -113,7 +113,15 @@
         <a class="btn secondary" href="{{ url_for('dashboard', year=next_y, month=next_m) }}">Next Month →</a>
         <div class="ws-toolbar-spacer"></div>
         <a class="btn secondary" href="{{ url_for('nokia_audit', year=year, month=month) }}">Nokia e-tool</a>
-        <a class="btn secondary" href="{{ url_for('dashboard_leave_tracker_month_xlsx', year=year, month=month) }}">Export .xlsx</a>
+        <a class="btn secondary" href="{{ url_for('dashboard_leave_tracker_month_xlsx', year=year, month=month) }}">Export month .xlsx</a>
+        <a class="btn secondary" href="{{ url_for('dashboard_leave_tracker_year_xlsx', year=year) }}" title="Download all months Jan–{{ month_name }} as separate sheets">Export year .xlsx</a>
+        <label class="btn secondary" title="Upload a previously exported year .xlsx to re-import leave data" style="cursor:pointer; position:relative;">
+          Upload year .xlsx
+          <form method="post" action="{{ url_for('dashboard_leave_tracker_year_upload') }}" enctype="multipart/form-data" id="leave-year-upload-form" style="position:absolute;opacity:0;inset:0;overflow:hidden;">
+            {% include "partials/csrf.html" %}
+            <input type="file" name="leave_xlsx" accept=".xlsx" style="position:absolute;inset:0;width:100%;height:100%;cursor:pointer;" onchange="document.getElementById('leave-year-upload-form').submit();" />
+          </form>
+        </label>
       </div>
 
       <p class="meet-hint" style="margin: 0 0 1rem">

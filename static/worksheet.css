@@ -412,3 +412,8 @@
   min-height: 1.45rem;
   font-size: clamp(0.48rem, 0.44vw + 0.36rem, 0.66rem);
 }
+
+.ws-month-fit.ws-readonly .ws-cell {
+  cursor: default;
+  pointer-events: none;
+}

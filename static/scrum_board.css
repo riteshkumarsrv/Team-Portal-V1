@@ -28,6 +28,12 @@ body.page-scrum-board .wrap {
   max-width: min(1320px, 100%);
 }
 
+body.portal-employee-shell.page-scrum-board .wrap,
+body.portal-employee-shell.page-scrum-board .portal-employee-header-inner,
+body.portal-employee-shell.page-scrum-board .portal-employee-scroll {
+  max-width: min(var(--portal-employee-max-width, 56rem), 100%);
+}
+
 body.page-scrum-board .card {
   background: var(--sc-surface);
   backdrop-filter: blur(24px);
@@ -4059,6 +4065,50 @@ body.page-scrum-board .scrum-team-hero-main {
   vertical-align: middle;
   margin-right: 0.15rem;
   border: 1px solid var(--sc-border);
+}
+
+.scrum-kb-ws-name-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 8.5rem;
+}
+
+.scrum-kb-ws-name-text {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.scrum-kb-ws-view-toggle {
+  font-size: 0.68rem;
+  padding: 0.2rem 0.45rem;
+  white-space: nowrap;
+}
+
+.scrum-kb-ws-task-row .ws-name {
+  vertical-align: top;
+}
+
+.scrum-kb-ws-task-name {
+  max-width: 11rem;
+}
+
+.scrum-kb-ws-task-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.scrum-kb-ws-task-meta {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #94a3b8;
 }
 
 /* Legacy hub forms */

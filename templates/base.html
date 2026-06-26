@@ -6,14 +6,24 @@
     <meta name="csrf-token" content="{{ csrf_token() }}" />
     <title>{% block title %}TEAM MANAGEMENT PORTAL{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    {% if portal_user and not manager_logged_in %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+    {% endif %}
     {% block extra_head %}{% endblock %}
   </head>
-  <body class="{% block body_class %}{% endblock %}">
+  {% set employee_shell = portal_user and not manager_logged_in and hide_nav|default(false) %}
+  <body class="{% block body_class %}{% endblock %}{% if employee_shell %} portal-employee-shell{% endif %}">
+    {% if employee_shell %}
+    <div class="portal-employee-layout">
+      <div class="portal-employee-header-band">
+        <div class="portal-employee-header-inner">
+    {% else %}
     <div class="wrap{% if hide_nav|default(false) %} wrap-portal{% endif %}">
-      <header class="site{% if hide_nav|default(false) %} site-portal{% endif %}">
+    {% endif %}
+      <header class="site{% if hide_nav|default(false) %} site-portal{% endif %}{% if portal_user and not manager_logged_in and not employee_shell %} site-employee-sticky{% endif %}">
         <div class="brand">
           {% if hide_nav|default(false) %}
-            <a href="{{ url_for('home') }}" class="site-mark" style="display: flex; align-items: center; letter-spacing: 0.12em; font-weight: 700;">
+            <a href="{% if portal_user and not manager_logged_in %}{{ url_for('portal_my_sprint_kanban') }}{% else %}{{ url_for('home') }}{% endif %}" class="site-mark" style="display: flex; align-items: center; letter-spacing: 0.12em; font-weight: 700;">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 0.5rem;">
                 <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -23,7 +33,7 @@
             </a>
           {% else %}
             <h1>
-              <a href="{% if manager_logged_in %}{{ url_for('scrum') }}{% else %}{{ url_for('home') }}{% endif %}" style="display: flex; align-items: center; letter-spacing: 0.12em; font-weight: 700;">
+              <a href="{% if portal_user and not manager_logged_in %}{{ url_for('portal_my_sprint_kanban') }}{% elif manager_logged_in %}{{ url_for('scrum') }}{% else %}{{ url_for('home') }}{% endif %}" style="display: flex; align-items: center; letter-spacing: 0.12em; font-weight: 700;">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 0.5rem;">
                   <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                   <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -43,7 +53,12 @@
             </p>
           {% endif %}
         </div>
-        {% if not hide_nav|default(false) %}
+        {% if portal_user and not manager_logged_in %}
+        <nav class="main-nav portal-employee-nav" aria-label="Employee portal">
+          {% include "partials/portal_employee_nav.html" %}
+        </nav>
+        {% include "partials/portal_shell_top.html" %}
+        {% elif not hide_nav|default(false) %}
         <nav class="main-nav" aria-label="Main">
           <a
             href="{% if manager_logged_in %}{{ url_for('scrum') }}{% else %}{{ url_for('home') }}{% endif %}"
@@ -67,6 +82,11 @@
         </nav>
         {% endif %}
       </header>
+    {% if employee_shell %}
+        </div>
+      </div>
+      <div class="portal-employee-scroll">
+    {% endif %}
 
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
@@ -78,10 +98,15 @@
         {% endif %}
       {% endwith %}
 
-      <main class="main-content">
+      <main class="main-content portal-employee-main">
         {% block content %}{% endblock %}
       </main>
+    {% if employee_shell %}
+      </div>
     </div>
+    {% else %}
+    </div>
+    {% endif %}
     {% block scripts %}{% endblock %}
     <script>
       function confirmDeleteTeam(event, teamName) {

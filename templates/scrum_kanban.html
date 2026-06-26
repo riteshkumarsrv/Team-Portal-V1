@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Board — {{ assignee }} — {{ sprint_name }}{% endblock %}
-{% block body_class %}page-scrum-board{% endblock %}
+{% block body_class %}page-scrum-board{% if portal_kanban|default(false) %} portal-nokia-body portal-employee-nav{% endif %}{% endblock %}
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=50) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=51) }}" />
   <script defer src="{{ url_for('static', filename='scrum_area_autocomplete.js', v=1) }}"></script>
 {% endblock %}
 {% block content %}
@@ -183,8 +183,24 @@
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <td class="ws-name">{{ kb_assignee }}</td>
+          <tr class="scrum-kb-ws-summary-row" data-kb-ws-view="summary">
+            <td class="ws-name">
+              <div class="scrum-kb-ws-name-cell">
+                <span class="scrum-kb-ws-name-text">{{ kb_assignee }}</span>
+                {% if kb_task_detail_rows|default([]) %}
+                  <button
+                    type="button"
+                    class="scrum-kb-ws-view-toggle btn secondary small"
+                    id="kb-capacity-view-toggle"
+                    aria-pressed="false"
+                    aria-controls="kb-capacity-task-detail-rows"
+                    title="Show burnt hours per sticky"
+                  >
+                    Detailed view
+                  </button>
+                {% endif %}
+              </div>
+            </td>
             {% for cell in kb_leave_cells %}
               {% set wk = kb_leave_days[loop.index0].is_weekend %}
               {% set hrs = kb_leave_hours_logged[loop.index0] %}
@@ -201,6 +217,25 @@
               </td>
             {% endfor %}
           </tr>
+          {% for task in kb_task_detail_rows|default([]) %}
+            <tr class="scrum-kb-ws-task-row" data-kb-ws-view="detail" hidden>
+              <td class="ws-name scrum-kb-ws-task-name" title="{{ task.title }} · {{ task.kind_label }} · {{ task.kanban_column_label }}">
+                <span class="scrum-kb-ws-task-title">{{ task.title_short }}</span>
+                <span class="scrum-kb-ws-task-meta">{{ task.kind_label }}</span>
+              </td>
+              {% for hrs in task.day_hours %}
+                {% set wk = kb_leave_days[loop.index0].is_weekend %}
+                <td
+                  class="ws-cell scrum-ws-cell-stack{% if wk %} ws-col-weekend{% endif %}"
+                  title="{{ hrs }} burnt on this sticky"
+                >
+                  <div class="scrum-ws-cell-inner">
+                    <span class="scrum-ws-cell-effort{% if hrs == '0.0h' %} scrum-ws-cell-effort-zero{% endif %}">{{ hrs }}</span>
+                  </div>
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
         </tbody>
       </table>
     </div>
@@ -210,8 +245,31 @@
       <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
       <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
       <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
-      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends)</span>
+      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends){% if kb_task_detail_rows|default([]) %} · use <strong>Detailed view</strong> next to the name for per-sticky hours{% endif %}</span>
     </div>
+    {% if kb_task_detail_rows|default([]) %}
+    <script>
+      (function () {
+        var btn = document.getElementById("kb-capacity-view-toggle");
+        var tbody = document.querySelector(".scrum-kb-ws-table tbody");
+        if (!btn || !tbody) return;
+        var summaryRows = tbody.querySelectorAll('[data-kb-ws-view="summary"]');
+        var detailRows = tbody.querySelectorAll('[data-kb-ws-view="detail"]');
+        var detailed = false;
+        btn.addEventListener("click", function () {
+          detailed = !detailed;
+          btn.setAttribute("aria-pressed", detailed ? "true" : "false");
+          btn.textContent = detailed ? "Summary view" : "Detailed view";
+          summaryRows.forEach(function (row) {
+            row.hidden = detailed;
+          });
+          detailRows.forEach(function (row) {
+            row.hidden = !detailed;
+          });
+        });
+      })();
+    </script>
+    {% endif %}
   </section>
 
   <div class="scrum-kb-wrap{% if sprint_readonly %} scrum-kb-readonly{% endif %}">

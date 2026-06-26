@@ -1,25 +1,10 @@
 {% extends "base.html" %}
 {% block title %}My leave history{% endblock %}
-{% block body_class %}portal-nokia-body{% endblock %}
+{% block body_class %}portal-nokia-body portal-employee-nav{% endblock %}
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
 {% endblock %}
 {% block content %}
-  <a class="portal-back" href="{{ url_for('portal_dashboard') }}">← Dashboard</a>
-  <header class="portal-shell-top">
-    <div class="portal-user-pill">
-      <div class="portal-avatar" aria-hidden="true">{{ (portal_user.name or "?")[:1] }}</div>
-      <div class="portal-user-meta">
-        <span class="portal-user-name">{{ portal_user.name }}</span>
-        <span class="portal-user-email">{{ portal_user.email }}</span>
-      </div>
-    </div>
-    <form method="post" action="{{ url_for('portal_logout') }}" class="inline-form">
-      {% include "partials/csrf.html" %}
-      <button type="submit" class="btn secondary small">Sign out</button>
-    </form>
-  </header>
-
   <h1 class="page-heading" style="color: #fff; margin-top: 0">My leave history</h1>
   {% if not display_rows %}
     <p style="color: #94a3b8">You have not applied for any leave yet.</p>

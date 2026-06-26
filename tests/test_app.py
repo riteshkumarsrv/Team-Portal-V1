@@ -169,6 +169,18 @@ def test_portal_email_otp_send_verify(tmp_path, monkeypatch):
     monkeypatch.setenv("PORTAL_OTP_FROM", "noreply@example.test")
     application = create_app()
     application.config["TESTING"] = True
+    conn = get_db(application)
+    tid = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    ts = "2026-12-01T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'OTP Landing Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    conn.commit()
+    conn.close()
     c = application.test_client()
 
     captured: list[tuple[str, str]] = []
@@ -185,11 +197,14 @@ def test_portal_email_otp_send_verify(tmp_path, monkeypatch):
 
     r2 = c.post("/auth/email-otp/verify", data={"code": code}, follow_redirects=False)
     assert r2.status_code in (302, 303)
-    assert "/portal" in (r2.headers.get("Location") or "")
+    loc = r2.headers.get("Location") or ""
+    assert "/portal/sprint/" in loc and "/board" in loc
 
-    dash = c.get("/portal")
+    dash = c.get("/portal", follow_redirects=True)
     assert dash.status_code == 200
-    assert b"My sprint work" in dash.data
+    assert b"Sprint work" in dash.data
+    assert b"Apply-Leave" in dash.data
+    assert b"My Leave Status" in dash.data
 
 
 def test_portal_email_otp_dev_console_flow(tmp_path, monkeypatch):
@@ -206,6 +221,18 @@ def test_portal_email_otp_dev_console_flow(tmp_path, monkeypatch):
     monkeypatch.delenv("TEAM_TRACKER_PRODUCTION", raising=False)
     application = create_app()
     application.config["TESTING"] = True
+    conn = get_db(application)
+    tid = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    ts = "2026-12-01T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'OTP Landing Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    conn.commit()
+    conn.close()
     c = application.test_client()
     r = c.post(
         "/auth/email-otp/send",
@@ -218,7 +245,8 @@ def test_portal_email_otp_dev_console_flow(tmp_path, monkeypatch):
     code = m.group(1).decode()
     r2 = c.post("/auth/email-otp/verify", data={"code": code}, follow_redirects=False)
     assert r2.status_code in (302, 303)
-    assert "/portal" in (r2.headers.get("Location") or "")
+    loc = r2.headers.get("Location") or ""
+    assert "/portal/sprint/" in loc and "/board" in loc
 
 
 def test_leave_submit_via_portal_uses_roster_and_ip(client, app):
@@ -276,9 +304,11 @@ def test_portal_flow_with_fake_session(client, app):
             "roster_name": "Akanksha Jha",
             "role": "employee",
         }
-    dash = client.get("/portal")
+    dash = client.get("/portal", follow_redirects=True)
     assert dash.status_code == 200
-    assert b"My sprint work" in dash.data
+    assert b"Sprint work" in dash.data
+    assert b"Apply-Leave" in dash.data
+    assert b"My Leave Status" in dash.data
     rv = client.post(
         "/portal/leave/apply",
         data={
@@ -292,7 +322,172 @@ def test_portal_flow_with_fake_session(client, app):
     assert rv.status_code == 200
     hist = client.get("/my-requests")
     assert hist.status_code == 200
-    assert b"Time off" in hist.data
+    assert b"My Leave Status" in hist.data
+    assert b"portal-leave-month-bar" in hist.data
+    assert b"read-only" in hist.data.lower()
+
+
+def test_portal_roster_name_matches_team_roster_case_insensitive(client, app):
+    """Portal session name variants resolve to the canonical team_roster spelling."""
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id LIMIT 1").fetchone()["id"])
+    conn.execute("DELETE FROM team_roster WHERE team_id = ?", (tid,))
+    conn.execute(
+        "INSERT INTO team_roster (team_id, employee_name, sort_order) VALUES (?, ?, 0)",
+        (tid, "Gajendra Singh Thakur"),
+    )
+    ts = "2026-12-01T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Gajendra Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "gajendra.thakur@nokia.com",
+            "name": "Gajendra Singh Thakur",
+            "roster_name": "gajendra singh thakur",
+            "role": "employee",
+        }
+    dash = client.get("/portal/my-sprint/board", follow_redirects=True)
+    assert dash.status_code == 200
+    assert b"scrum-kb" in dash.data or b"My sprint board" in dash.data
+    assert b"not mapped to a team roster" not in dash.data.lower()
+
+
+def test_portal_sprint_work_opens_current_team_kanban(client, app):
+    """Sprint work opens the Kanban board for the employee's current mapped-team sprint."""
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    ts = "2026-12-01T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Current Sprint Board', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    dash = client.get("/portal/my-sprint/board", follow_redirects=True)
+    assert dash.status_code == 200
+    assert b"Current Sprint Board" in dash.data or b"scrum-kb" in dash.data
+    assert b"portal-team-picker" not in dash.data
+
+
+def test_portal_sprint_work_uses_beta_team_when_on_beta_roster(client, app):
+    """Employee on Beta roster opens Beta team's current sprint Kanban, not Default."""
+    conn = get_db(app)
+    ts = "2026-12-01T10:00:00Z"
+    alpha_id = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    conn.execute("INSERT INTO teams (name, created_at) VALUES ('BetaSprintTeam', ?)", (ts,))
+    beta_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        "INSERT INTO team_roster (team_id, employee_name, sort_order) VALUES (?, ?, 0)",
+        (beta_id, "Akanksha Jha"),
+    )
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Alpha Only Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (alpha_id, ts, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Beta Only Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (beta_id, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    dash = client.get("/portal/my-sprint/board", follow_redirects=True)
+    assert dash.status_code == 200
+    assert b"Beta Only Sprint" in dash.data
+    assert b"Alpha Only Sprint" not in dash.data
+
+
+def test_portal_sprints_scoped_to_employee_mapped_team(client, app):
+    """Sprint work opens Default team sprint when employee is only on Default roster."""
+    conn = get_db(app)
+    ts = "2026-12-01T10:00:00Z"
+    alpha_id = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    conn.execute("INSERT INTO teams (name, created_at) VALUES ('BetaSprintTeam', ?)", (ts,))
+    beta_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Alpha Only Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (alpha_id, ts, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Beta Only Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (beta_id, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    dash = client.get("/portal", follow_redirects=True)
+    assert dash.status_code == 200
+    assert b"Alpha Only Sprint" in dash.data
+    assert b"Beta Only Sprint" not in dash.data
+
+
+def test_portal_sprint_board_lists_team_sprints_without_assignments(client, app):
+    """Sprint work opens team Kanban even when employee has no stickies assigned yet."""
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY name COLLATE NOCASE LIMIT 1").fetchone()["id"])
+    ts = "2026-12-01T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at, is_closed)
+        VALUES (?, 'Empty Team Sprint', '2026-12-01', '2026-12-14', '', ?, ?, 0)
+        """,
+        (tid, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    dash = client.get("/portal/my-sprint/board", follow_redirects=True)
+    assert dash.status_code == 200
+    assert b"Empty Team Sprint" in dash.data
+    assert b"scrum-kb" in dash.data
+    assert b"portal-team-picker" not in dash.data
 
 
 def test_portal_leave_rejects_weekend_start(client, app):
@@ -320,6 +515,33 @@ def test_portal_requires_login(client):
     assert client.get("/portal", follow_redirects=False).status_code == 302
 
 
+def test_portal_logged_in_home_and_login_open_kanban(client, app):
+    """Signed-in employees land on the current sprint Kanban from / and /login."""
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    ts = "2026-12-01T10:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Landing Sprint', '2026-12-01', '2026-12-14', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    for path in ("/", "/login"):
+        resp = client.get(path, follow_redirects=True)
+        assert resp.status_code == 200
+        assert b"Landing Sprint" in resp.data or b"scrum-kb" in resp.data
+
+
 def test_portal_my_requests_blocks_name_change_post(client, app):
     with client.session_transaction() as sess:
         sess["portal_user"] = {
@@ -335,6 +557,51 @@ def test_portal_my_requests_blocks_name_change_post(client, app):
     )
     assert res.status_code == 200
     assert b"only view" in res.data.lower() or b"own requests" in res.data.lower()
+
+
+def test_portal_my_requests_shows_month_grid_with_clickable_leaves(client, app):
+    """My Leave Status shows full team leave-tracker grid for the signed-in employee."""
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at)
+        VALUES (?, 'pl', 'Nokia e-tool approved', '2026-06-04', '2026-06-05', 'full', 'approved', '2026-06-01T10:00:00Z')
+        """,
+        ("Akanksha Jha",),
+    )
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at)
+        VALUES (?, 'pl', '', '2026-07-10', '2026-07-10', 'full', 'rejected', '2026-07-01T10:00:00Z')
+        """,
+        ("Akanksha Jha",),
+    )
+    conn.commit()
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    res = client.get("/my-requests", query_string={"year": 2026, "month": 6})
+    assert res.status_code == 200
+    assert b"portal-leave-month-bar" in res.data
+    assert b"portal-leave-cell-btn" in res.data
+    assert b"ws-rownum-col" in res.data
+    assert b"ws-eleave-col" in res.data
+    assert b"portal-leave-self-row" in res.data
+    assert b"leave tracker" in res.data.lower()
+    assert res.data.count(b"ws-month-grid-row") >= len(EMPLOYEES)
+    july = client.get("/my-requests", query_string={"year": 2026, "month": 7})
+    assert july.status_code == 200
+    july_body = july.data.split(b"<tbody>")[1].split(b"</tbody>")[0]
+    assert b"portal-leave-cell-btn" not in july_body
+    assert re.search(rb'class="portal-leave-month-btn is-active"[^>]*>Jul</a>', july.data)
+    assert re.search(rb'class="portal-leave-month-btn has-leave"[^>]*>Jun</a>', july.data)
 
 
 def test_portal_leave_redirects_legacy_leave(client, app):
@@ -447,7 +714,7 @@ def test_manager_reports_and_export(client):
 
     r = c.get("/reports?start=2026-07-01&end=2026-07-31")
     assert r.status_code == 200
-    assert b"Leave Reports" in r.data
+    assert b"LPO manager access" in r.data
 
     exp = c.get("/reports/export.csv?start=2026-07-01&end=2026-07-31")
     assert exp.status_code == 200
@@ -3027,6 +3294,9 @@ def test_scrum_kanban_capacity_strip_shows_daily_burnt_hours_including_weekend(c
     assert b"multiple" in board.data
     assert b"scrum-ws-cell-effort" in board.data
     assert b"3.0h" in board.data
+    assert b"kb-capacity-view-toggle" in board.data
+    assert b"Detailed view" in board.data
+    assert b"StripCard" in board.data
     assert b"Improvement" in board.data
     assert b"process_tools" in board.data
 

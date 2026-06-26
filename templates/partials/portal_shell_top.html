@@ -1,0 +1,15 @@
+<header class="portal-shell-top">
+  <div class="portal-user-pill">
+    <div class="portal-avatar" aria-hidden="true">{{ (portal_user.name or "?")[:1] }}</div>
+    <div class="portal-user-meta">
+      <span class="portal-user-name">{{ portal_user.name }}</span>
+      <span class="portal-user-email">{{ portal_user.email }}</span>
+    </div>
+  </div>
+  <div class="portal-shell-actions">
+    <form method="post" action="{{ url_for('portal_logout') }}" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit" class="btn secondary small">Sign out</button>
+    </form>
+  </div>
+</header>

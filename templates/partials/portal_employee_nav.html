@@ -1,0 +1,10 @@
+{% set ep = request.endpoint or '' %}
+{% set sprint_active = ep in (
+  'portal_my_sprint_kanban',
+  'portal_scrum_kanban_board',
+  'portal_sprint',
+  'portal_dashboard',
+) %}
+<a href="{{ url_for('portal_my_sprint_kanban') }}" class="{% if sprint_active %}active{% endif %}">Sprint work</a>
+<a href="{{ url_for('portal_leave_apply') }}" class="{% if ep == 'portal_leave_apply' %}active{% endif %}">Apply-Leave</a>
+<a href="{{ url_for('my_requests') }}" class="{% if ep == 'my_requests' %}active{% endif %}">My Leave Status</a>

@@ -4,6 +4,8 @@ __pycache__/
 venv/
 data/*.db
 *.db
+!Latest Database/
+!Latest Database/team_tracker.db
 # Large local SQL dumps / recovery copies (do not push to Gerrit)
 data/**/*.sql
 data/**/*.sql.*
