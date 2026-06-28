@@ -1,0 +1,19 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.env
+Secret
+Secrets
+Backup
+data
+Not Relevant Files
+terminals
+.cursor
+mcps
+*.md
+!Latest Database/README.md
+tests

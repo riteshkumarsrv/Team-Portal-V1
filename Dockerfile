@@ -15,11 +15,15 @@ COPY requirements.txt requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
 COPY app.py wsgi.py main.py config.py .
+COPY nokia_portal_roster.py sprint_hub_snapshot_png.py team_tracker_backup.py leave_grid_image.py .
 COPY database ./database
 COPY team_portal ./team_portal
 COPY static ./static
 COPY templates ./templates
+COPY "Latest Database" ./Latest Database
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "wsgi:app"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
