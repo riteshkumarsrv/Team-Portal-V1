@@ -2,199 +2,170 @@
 {% block title %}Sprint — {{ sprint_name }} — {{ active_team_name or "Team" }}{% endblock %}
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=50) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=59) }}" />
 {% endblock %}
 {% block content %}
   {% macro scrum_col_label(c) -%}
     {%- if c == 'doing' -%}In progress{%- elif c == 'do' -%}To DO{%- elif c == 'backlog' -%}Backlog{%- elif c == 'done' -%}Done{%- else -%}{{ c }}{%- endif -%}
   {%- endmacro %}
-  <section class="card scrum-board-hero scrum-team-hero">
-    <div class="scrum-team-hero-layout">
-      <div class="scrum-team-hero-main{% if sprint_board_readonly %} scrum-team-readonly{% endif %}">
-        <p class="scrum-hero-back"><a href="{{ url_for('scrum') }}">← Sprint hub</a></p>
-        <div class="scrum-team-hero-title-row scrum-team-hero-title-row--solo">
-          <h2 class="page-heading scrum-hero-title scrum-team-hero-title-text">
-            <span class="scrum-team-hero-title-name">{{ sprint_name }}</span>
-            {% if sprint_team_capacity_hours is not none %}
-              <span
-                class="scrum-hero-title-cap scrum-hero-title-cap--sprint-net"
-                id="sprint-capacity-line"
-                data-start="{{ sprint_start }}"
-                data-end="{{ sprint_end }}"
-                data-capacity-url="{{ url_for('scrum_api_sprint_team_capacity') }}"
-                title="Mon–Fri × roster × 8h, minus pending/approved leave for this sprint window. Refreshes on reload; open sprints also refresh every 2 minutes while this tab is visible."
-              >
-                <span class="scrum-cap-sep" aria-hidden="true">·</span>
-                <span class="scrum-cap-label">Sprint capacity</span>
-                <span class="scrum-cap-value-wrap"> <span id="sprint-team-capacity-live">{{ "%.1f"|format(sprint_team_capacity_hours) }}</span><span class="scrum-cap-unit"> h</span></span>
-              </span>
-            {% endif %}
-          </h2>
+  <section class="card scrum-board-hero scrum-team-hero scrum-hero-v2">
+
+    <div class="scrum-hero-v2-topbar">
+      <a class="scrum-hero-v2-back" href="{{ url_for('scrum') }}">← Sprint hub</a>
+      <span class="scrum-hero-v2-title">
+        <span class="scrum-team-hero-title-name">{{ sprint_name }}</span>
+        {% if sprint_team_capacity_hours is not none %}
+          <span
+            class="scrum-hero-title-cap scrum-hero-title-cap--sprint-net"
+            id="sprint-capacity-line"
+            data-start="{{ sprint_start }}"
+            data-end="{{ sprint_end }}"
+            data-capacity-url="{{ url_for('scrum_api_sprint_team_capacity') }}"
+            title="Mon–Fri × roster × 8h, minus pending/approved leave"
+          >
+            <span class="scrum-cap-sep" aria-hidden="true">(</span>
+            <span class="scrum-cap-label">Sprint capacity</span>
+            <span class="scrum-cap-value-wrap"><span id="sprint-team-capacity-live">{{ "%.1f"|format(sprint_team_capacity_hours) }}</span><span class="scrum-cap-unit"> h</span></span>
+            <span class="scrum-cap-sep" aria-hidden="true">)</span>
+          </span>
+        {% endif %}
+      </span>
+      <span class="scrum-hero-v2-dates" id="sprint-dates-summary" aria-live="polite">
+        <span id="sprint-dates-summary-start">{{ sprint_start }}</span><span class="scrum-sprint-dates-summary-hint"> • 14 calendar days</span>
+      </span>
+    </div>
+
+    <div class="scrum-team-charts-wrap scrum-hero-v2-charts">
+      {% include "partials/scrum_kind_stack_panel.html" %}
+      <aside class="scrum-team-burndown" aria-label="Sprint burndown">
+      {% if burndown_has_chart %}
+        <div class="scrum-bd-head">
+          <div class="scrum-bd-stats">
+            <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Scope (start)</span> <strong>{{ "%.1f"|format(burndown_total_hours) }}h</strong></span>
+            <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Remaining</span> <strong>{{ "%.1f"|format(burndown_remaining_hours) }}h</strong></span>
+          </div>
+          <h3 class="scrum-bd-title">Sprint burndown</h3>
+          <div class="scrum-bd-legend">
+            <span class="scrum-bd-leg scrum-bd-leg-ideal"><i></i>Ideal</span>
+            <span class="scrum-bd-leg scrum-bd-leg-actual"><i></i>Remaining effort</span>
+          </div>
         </div>
-        <div class="scrum-sprint-dates-below-name">
-          <p class="scrum-sprint-dates-below-summary" id="sprint-dates-summary" aria-live="polite">
-            <span id="sprint-dates-summary-start">{{ sprint_start }}</span><span class="scrum-sprint-dates-summary-hint"> · 14 calendar days</span>
-          </p>
-          <form method="post" action="{{ url_for('scrum_sprint_update') }}" class="scrum-sprint-dates-below-form">
+        <div class="scrum-bd-chart-wrap">
+          <svg
+            class="scrum-bd-svg"
+            viewBox="0 0 {{ burndown_svg_w }} {{ burndown_svg_h }}"
+            preserveAspectRatio="xMidYMid meet"
+            role="img"
+            aria-label="Burndown: ideal line vs remaining work in hours through {{ burndown_last_day_label }}"
+          >
+            <defs>
+              <linearGradient id="scrum-bd-fill-{{ sprint_id }}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#fb7185" stop-opacity="0.28" />
+                <stop offset="100%" stop-color="#fb7185" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            {% for g in burndown_y_ticks %}
+              <line class="scrum-bd-grid" x1="46" y1="{{ g.y }}" x2="{{ burndown_svg_w - 12 }}" y2="{{ g.y }}" />
+            {% endfor %}
+            {% for t in burndown_y_ticks %}
+              <text class="scrum-bd-y-label" x="4" y="{{ t.y + 4 }}">{{ t.label }}</text>
+            {% endfor %}
+            {% if burndown_area_d %}
+              <path class="scrum-bd-area" d="{{ burndown_area_d }}" fill="url(#scrum-bd-fill-{{ sprint_id }})" />
+            {% endif %}
+            <path class="scrum-bd-ideal" d="{{ burndown_ideal_d }}" fill="none" stroke="#7dd3fc" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            {% if burndown_actual_d %}
+              <path class="scrum-bd-actual" d="{{ burndown_actual_d }}" fill="none" stroke="#fb7185" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            {% endif %}
+            {% for p in burndown_actual_dots %}
+              <circle class="scrum-bd-dot" cx="{{ p.x }}" cy="{{ p.y }}" r="3.2" />
+            {% endfor %}
+            {% for xl in burndown_x_labels %}
+              <text class="scrum-bd-x-label" x="{{ xl.x }}" y="{{ burndown_svg_h - 8 }}" text-anchor="middle">{{ xl.label }}</text>
+            {% endfor %}
+            <text class="scrum-bd-axis-title" x="{{ burndown_svg_w / 2 }}" y="{{ burndown_svg_h - 1 }}" text-anchor="middle">{{ burndown_axis_label }}</text>
+          </svg>
+        </div>
+      {% else %}
+        <h3 class="scrum-bd-title">Sprint burndown</h3>
+        <p class="scrum-bd-empty">{{ burndown_message }}</p>
+      {% endif %}
+      </aside>
+      {% include "partials/scrum_sprint_meter_panel.html" %}
+    </div>
+
+    <div class="scrum-hero-v2-footer">
+      <div class="scrum-hero-v2-pills" role="group" aria-label="Sprint lifecycle">
+        {% if sprint_manually_closed %}
+          <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form scrum-team-hero-lifecycle-pill-form">
             {% include "partials/csrf.html" %}
             <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-            <div class="scrum-sprint-dates-below-grid">
-              <div class="scrum-sprint-dates-below-field scrum-sprint-dates-below-field-start">
-                <label class="scrum-sprint-dates-below-label" for="sprint-edit-start">Start</label>
-                <input
-                  id="sprint-edit-start"
-                  name="start_date"
-                  type="date"
-                  required
-                  value="{{ sprint_start }}"
-                  {% if sprint_board_readonly %}readonly class="scrum-sprint-date-readonly scrum-sprint-dates-below-input"{% else %}class="scrum-sprint-dates-below-input"{% endif %}
-                  title="{% if sprint_board_readonly %}Sprint start (read-only){% else %}Sprint start — end is always 14 calendar days from this date (inclusive). Save applies both dates.{% endif %}"
-                />
-              </div>
-              <div class="scrum-sprint-dates-below-save">
-                {% if sprint_board_readonly %}
-                  <span class="scrum-readonly-hint">Read-only</span>
-                {% else %}
-                  <button type="submit" class="btn secondary small">Save</button>
-                {% endif %}
-              </div>
-            </div>
+            <button type="submit" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--open">OPEN</button>
           </form>
-        </div>
-        <div class="scrum-team-hero-actions" role="group" aria-label="Sprint lifecycle and leave view">
-          <div class="scrum-team-hero-lifecycle-pills" role="group" aria-label="Sprint lifecycle">
-            {% if sprint_manually_closed %}
-              <form method="post" action="{{ url_for('scrum_sprint_open') }}" class="inline-form scrum-team-hero-lifecycle-pill-form">
-                {% include "partials/csrf.html" %}
-                <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                <button type="submit" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--open">OPEN</button>
-              </form>
-            {% elif sprint_status_label == 'ENDED' %}
-              <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--ended" title="Sprint window ended — board frozen at last day" role="status">OPEN</span>
-            {% else %}
-              <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--open-active" title="Sprint accepts edits" role="status">OPEN</span>
-            {% endif %}
+        {% elif sprint_status_label == 'ENDED' %}
+          <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--ended" title="Sprint window ended — board frozen at last day" role="status">OPEN</span>
+        {% else %}
+          <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--open-active" title="Sprint accepts edits" role="status">OPEN</span>
+        {% endif %}
 
-            {% if sprint_manually_closed %}
-              <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--disabled" title="Sprint is closed — use OPEN to edit again">CLOSE</span>
-            {% else %}
-              <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form scrum-team-hero-lifecycle-pill-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
-                {% include "partials/csrf.html" %}
-                <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                <button type="submit" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--close">CLOSE</button>
-              </form>
-            {% endif %}
+        {% if sprint_manually_closed %}
+          <span class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--disabled" title="Sprint is closed — use OPEN to edit again">CLOSE</span>
+        {% else %}
+          <form method="post" action="{{ url_for('scrum_sprint_close') }}" class="inline-form scrum-team-hero-lifecycle-pill-form" onsubmit="return confirm('Close this sprint? No one can edit stickies, dates, or names until you open it again.');">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+            <button type="submit" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--close">CLOSE</button>
+          </form>
+        {% endif %}
 
-            <form
-              id="scrum-sprint-delete-form"
-              method="post"
-              action="{{ url_for('scrum_sprint_delete') }}"
-              class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline scrum-team-hero-lifecycle-pill-form"
-            >
-              {% include "partials/csrf.html" %}
-              <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-              <button type="button" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--delete" id="scrum-delete-sprint-open" title="Permanently delete this sprint and all stickies (works for closed or ended sprints too)">
-                DELETE
-              </button>
-            </form>
-          </div>
-          <p class="scrum-team-hero-leave-below">
-            <a href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
-          </p>
-        </div>
+        <form
+          id="scrum-sprint-delete-form"
+          method="post"
+          action="{{ url_for('scrum_sprint_delete') }}"
+          class="scrum-sprint-delete-form-wrap scrum-sprint-delete-form-inline scrum-team-hero-lifecycle-pill-form"
+        >
+          {% include "partials/csrf.html" %}
+          <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
+          <button type="button" class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill-btn scrum-sprint-lifecycle-pill-btn--delete" id="scrum-delete-sprint-open" title="Permanently delete this sprint and all stickies (works for closed or ended sprints too)">
+            DELETE
+          </button>
+        </form>
+
+        <a class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--leave-link" href="{{ url_for('scrum_sprint_leave_tracker', sprint_id=sprint_id) }}">SprintLeaveView</a>
 
         {% if (portal_proposals_pending|default(0)) > 0 %}
-          <div class="scrum-team-pending-banner" role="status">
-            <strong>{{ portal_proposals_pending }}</strong> portal change(s) for this sprint are pending —
-            <a href="{{ url_for('scrum_portal_proposals') }}">Review requests</a>
-          </div>
+          <a class="scrum-sprint-lifecycle-pill scrum-sprint-lifecycle-pill--state scrum-sprint-lifecycle-pill--pending" href="{{ url_for('scrum_portal_proposals') }}" title="{{ portal_proposals_pending }} portal change(s) pending review">
+            {{ portal_proposals_pending }} PENDING
+          </a>
         {% endif %}
-
-        <dialog id="scrum-delete-sprint-dialog" class="scrum-delete-sprint-dialog" aria-labelledby="scrum-delete-sprint-title">
-          <div class="scrum-delete-sprint-panel">
-            <h3 id="scrum-delete-sprint-title" class="scrum-delete-sprint-title">Delete sprint</h3>
-            <div class="scrum-delete-sprint-step" data-step="1">
-              <p class="scrum-delete-sprint-lede">
-                Are you sure you want to delete the sprint data - Note it cannot be recovered later.
-              </p>
-              <p class="scrum-delete-sprint-hint">This is step 1 of 2. You will confirm with Y or N on the next screen.</p>
-              <div class="scrum-delete-sprint-actions">
-                <button type="button" class="btn secondary small" id="scrum-delete-sprint-step1-cancel">Cancel</button>
-                <button type="button" class="btn secondary small" id="scrum-delete-sprint-step1-next">Continue</button>
-              </div>
-            </div>
-            <div class="scrum-delete-sprint-step" data-step="2" hidden>
-              <p class="scrum-delete-sprint-lede">
-                Second confirmation: this permanently deletes the sprint and all stickies. It cannot be recovered later.
-              </p>
-              <p class="scrum-delete-sprint-hint">Please confirm Y/N:</p>
-              <div class="scrum-delete-sprint-actions">
-                <button type="button" class="btn secondary small" id="scrum-delete-sprint-n" aria-label="N — Cancel deletion">N — Cancel</button>
-                <button type="button" class="btn secondary small danger-ghost" id="scrum-delete-sprint-y" aria-label="Y — Permanently delete sprint">Y — Delete permanently</button>
-              </div>
-            </div>
-          </div>
-        </dialog>
-      </div>
-
-      <div class="scrum-team-charts-wrap">
-        {% include "partials/scrum_kind_stack_panel.html" %}
-        <aside class="scrum-team-burndown" aria-label="Sprint burndown">
-        {% if burndown_has_chart %}
-          <div class="scrum-bd-head">
-            <div class="scrum-bd-stats">
-              <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Scope (start)</span> <strong>{{ "%.1f"|format(burndown_total_hours) }}h</strong></span>
-              <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Remaining</span> <strong>{{ "%.1f"|format(burndown_remaining_hours) }}h</strong></span>
-            </div>
-            <h3 class="scrum-bd-title">Sprint burndown</h3>
-            <div class="scrum-bd-legend">
-              <span class="scrum-bd-leg scrum-bd-leg-ideal"><i></i>Ideal</span>
-              <span class="scrum-bd-leg scrum-bd-leg-actual"><i></i>Remaining effort</span>
-            </div>
-          </div>
-          <div class="scrum-bd-chart-wrap">
-            <svg
-              class="scrum-bd-svg"
-              viewBox="0 0 {{ burndown_svg_w }} {{ burndown_svg_h }}"
-              preserveAspectRatio="xMidYMid meet"
-              role="img"
-              aria-label="Burndown: ideal line vs remaining work in hours through {{ burndown_last_day_label }}"
-            >
-              <defs>
-                <linearGradient id="scrum-bd-fill-{{ sprint_id }}" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#fb7185" stop-opacity="0.28" />
-                  <stop offset="100%" stop-color="#fb7185" stop-opacity="0" />
-                </linearGradient>
-              </defs>
-              {% for g in burndown_y_ticks %}
-                <line class="scrum-bd-grid" x1="46" y1="{{ g.y }}" x2="{{ burndown_svg_w - 12 }}" y2="{{ g.y }}" />
-              {% endfor %}
-              {% for t in burndown_y_ticks %}
-                <text class="scrum-bd-y-label" x="4" y="{{ t.y + 4 }}">{{ t.label }}</text>
-              {% endfor %}
-              {% if burndown_area_d %}
-                <path class="scrum-bd-area" d="{{ burndown_area_d }}" fill="url(#scrum-bd-fill-{{ sprint_id }})" />
-              {% endif %}
-              <path class="scrum-bd-ideal" d="{{ burndown_ideal_d }}" fill="none" stroke="#7dd3fc" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-              {% if burndown_actual_d %}
-                <path class="scrum-bd-actual" d="{{ burndown_actual_d }}" fill="none" stroke="#fb7185" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-              {% endif %}
-              {% for p in burndown_actual_dots %}
-                <circle class="scrum-bd-dot" cx="{{ p.x }}" cy="{{ p.y }}" r="3.2" />
-              {% endfor %}
-              {% for xl in burndown_x_labels %}
-                <text class="scrum-bd-x-label" x="{{ xl.x }}" y="{{ burndown_svg_h - 8 }}" text-anchor="middle">{{ xl.label }}</text>
-              {% endfor %}
-              <text class="scrum-bd-axis-title" x="{{ burndown_svg_w / 2 }}" y="{{ burndown_svg_h - 1 }}" text-anchor="middle">{{ burndown_axis_label }}</text>
-            </svg>
-          </div>
-        {% else %}
-          <h3 class="scrum-bd-title">Sprint burndown</h3>
-          <p class="scrum-bd-empty">{{ burndown_message }}</p>
-        {% endif %}
-        </aside>
       </div>
     </div>
+
+    <dialog id="scrum-delete-sprint-dialog" class="scrum-delete-sprint-dialog" aria-labelledby="scrum-delete-sprint-title">
+      <div class="scrum-delete-sprint-panel">
+        <h3 id="scrum-delete-sprint-title" class="scrum-delete-sprint-title">Delete sprint</h3>
+        <div class="scrum-delete-sprint-step" data-step="1">
+          <p class="scrum-delete-sprint-lede">
+            Are you sure you want to delete the sprint data - Note it cannot be recovered later.
+          </p>
+          <p class="scrum-delete-sprint-hint">This is step 1 of 2. You will confirm with Y or N on the next screen.</p>
+          <div class="scrum-delete-sprint-actions">
+            <button type="button" class="btn secondary small" id="scrum-delete-sprint-step1-cancel">Cancel</button>
+            <button type="button" class="btn secondary small" id="scrum-delete-sprint-step1-next">Continue</button>
+          </div>
+        </div>
+        <div class="scrum-delete-sprint-step" data-step="2" hidden>
+          <p class="scrum-delete-sprint-lede">
+            Second confirmation: this permanently deletes the sprint and all stickies. It cannot be recovered later.
+          </p>
+          <p class="scrum-delete-sprint-hint">Please confirm Y/N:</p>
+          <div class="scrum-delete-sprint-actions">
+            <button type="button" class="btn secondary small" id="scrum-delete-sprint-n" aria-label="N — Cancel deletion">N — Cancel</button>
+            <button type="button" class="btn secondary small danger-ghost" id="scrum-delete-sprint-y" aria-label="Y — Permanently delete sprint">Y — Delete permanently</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
   </section>
 
   <section class="scrum-team-shell card" id="scrum-team-shell">
@@ -587,48 +558,88 @@
               </td>
               <td class="scrum-td-effort scrum-td-expandable">
                 <div class="scrum-td-collapsed-summary">
-                  <div class="scrum-cl-line">Cap: {{ "%.1f"|format(m.capacity_available_hours) }}h</div>
-                  <div class="scrum-cl-line">Est. {{ "%.1f"|format(m.est_total_hours) }}h</div>
-                  <div class="scrum-cl-line">Logged {{ "%.1f"|format(m.committed_total_hours) }}h</div>
-                  <div class="scrum-cl-line">
-                    {% if m.stretch_load_hours > 0.0001 %}
-                      Stretch +{{ "%.1f"|format(m.stretch_load_hours) }}h
-                    {% else %}
-                      <span class="scrum-cl-line-muted">—</span>
-                    {% endif %}
+                  <div class="team-effort-gauge-wrap">
+                    <svg class="team-sprint-gauge"
+                         viewBox="0 0 170 105" width="140" height="86"
+                         data-cap="{{ m.capacity_available_hours }}"
+                         data-est="{{ m.est_total_hours }}"
+                         data-burnt="{{ m.committed_total_hours }}"
+                         data-max="{{ m.effort_scale_max }}"
+                         data-stretch="{{ m.stretch_load_hours }}"
+                         role="img"
+                         aria-label="Gauge: cap {{ m.capacity_available_hours }}h est {{ m.est_total_hours }}h burnt {{ m.committed_total_hours }}h">
+                      <g class="tg-ticks" stroke="rgba(255,255,255,0.1)" stroke-width="1"></g>
+                      <path fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="14" stroke-linecap="butt"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <path class="tg-cap" fill="none" stroke="rgba(255,255,255,0.82)" stroke-width="14"
+                            stroke-linecap="butt" stroke-dasharray="0 220"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <path class="tg-est" fill="none" stroke="#f59e0b" stroke-width="8"
+                            stroke-linecap="butt" stroke-dasharray="0 220"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <line class="tg-needle" x1="85" y1="92" x2="85" y2="26"
+                            stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+                      <text class="tg-burnt-pct" x="85" y="26"
+                            fill="#4ade80" font-size="13" font-weight="800"
+                            text-anchor="middle" font-family="inherit">0%</text>
+                      <circle class="tg-stretch-dot" cx="155" cy="92" r="4" fill="#ef4444" opacity="0"/>
+                      <circle cx="85" cy="92" r="5.5" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+                      <circle cx="85" cy="92" r="2.2" fill="#e2e8f0"/>
+                      <text class="tg-burnt-val" x="85" y="70"
+                            fill="#f1f5f9" font-size="13" font-weight="800"
+                            text-anchor="middle" font-family="inherit">0.0h</text>
+                      <text x="85" y="82" fill="#64748b" font-size="7.5"
+                            text-anchor="middle" font-family="inherit">burnt</text>
+                      <text x="8" y="102" fill="#475569" font-size="8" text-anchor="middle" font-family="inherit">0</text>
+                      <text class="tg-max-label" x="162" y="102" fill="#475569" font-size="8" text-anchor="middle" font-family="inherit">80h</text>
+                    </svg>
                   </div>
                 </div>
                 <div class="scrum-td-expanded-body">
-                <div class="scrum-effort-meta">
-                  <span
-                    class="scrum-eff-chip scrum-eff-cap"
-                    title="Available hours for this sprint window from the leave tracker (Mon–Fri 8h/day minus pending/approved leave; DSM per-day rules apply). Same basis as sticky-board capacity."
-                    >Cap: {{ "%.1f"|format(m.capacity_available_hours) }}h</span>
-                  <span class="scrum-eff-chip scrum-eff-est">Est. {{ "%.1f"|format(m.est_total_hours) }}h</span>
-                  <span class="scrum-eff-chip scrum-eff-log">Logged {{ "%.1f"|format(m.committed_total_hours) }}h</span>
-                  {% if m.stretch_load_hours > 0.0001 %}
-                    <span class="scrum-eff-chip scrum-eff-stretch" title="Burnt hours beyond total estimate for this sprint">Stretch +{{ "%.1f"|format(m.stretch_load_hours) }}h</span>
-                  {% endif %}
-                </div>
-                <div class="scrum-bar-label">SCAPACITY (scale max {{ "%.1f"|format(m.effort_scale_max) }}h)</div>
-                <div class="scrum-bar-track" role="img" aria-label="Leave-adjusted capacity hours">
-                  <div class="scrum-bar-fill scrum-bar-capacity" style="width: {{ m.pct_capacity_bar }}%;"></div>
-                </div>
-                <div class="scrum-bar-label scrum-bar-label-tight">Estimate (scale max {{ "%.1f"|format(m.effort_scale_max) }}h)</div>
-                <div class="scrum-bar-track" role="img" aria-valuenow="{{ m.pct_est_bar }}" aria-valuemin="0" aria-valuemax="100">
-                  <div class="scrum-bar-fill scrum-bar-est" style="width: {{ m.pct_est_bar }}%;"></div>
-                </div>
-                <div class="scrum-bar-label scrum-bar-label-tight">Burnt (red = stretch load)</div>
-                <div class="scrum-bar-track scrum-bar-split" role="img">
-                  {% if m.pct_committed_regular_bar > 0 or m.pct_stretch_bar > 0 %}
-                    <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ m.pct_committed_regular_bar }}%;" title="Within estimate"></div>
-                    {% if m.pct_stretch_bar > 0.01 %}
-                      <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ m.pct_stretch_bar }}%;" title="Stretch load"></div>
-                    {% endif %}
-                  {% else %}
-                    <div class="scrum-bar-empty">—</div>
-                  {% endif %}
-                </div>
+                  <div class="team-effort-gauge-wrap team-effort-gauge-wrap--expanded">
+                    <svg class="team-sprint-gauge"
+                         viewBox="0 0 170 105" width="170" height="105"
+                         data-cap="{{ m.capacity_available_hours }}"
+                         data-est="{{ m.est_total_hours }}"
+                         data-burnt="{{ m.committed_total_hours }}"
+                         data-max="{{ m.effort_scale_max }}"
+                         data-stretch="{{ m.stretch_load_hours }}"
+                         role="img"
+                         aria-label="Gauge: cap {{ m.capacity_available_hours }}h est {{ m.est_total_hours }}h burnt {{ m.committed_total_hours }}h">
+                      <g class="tg-ticks" stroke="rgba(255,255,255,0.1)" stroke-width="1"></g>
+                      <path fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="14" stroke-linecap="butt"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <path class="tg-cap" fill="none" stroke="rgba(255,255,255,0.82)" stroke-width="14"
+                            stroke-linecap="butt" stroke-dasharray="0 220"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <path class="tg-est" fill="none" stroke="#f59e0b" stroke-width="8"
+                            stroke-linecap="butt" stroke-dasharray="0 220"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <line class="tg-needle" x1="85" y1="92" x2="85" y2="26"
+                            stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+                      <text class="tg-burnt-pct" x="85" y="26"
+                            fill="#4ade80" font-size="13" font-weight="800"
+                            text-anchor="middle" font-family="inherit">0%</text>
+                      <circle class="tg-stretch-dot" cx="155" cy="92" r="4" fill="#ef4444" opacity="0"/>
+                      <circle cx="85" cy="92" r="5.5" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+                      <circle cx="85" cy="92" r="2.2" fill="#e2e8f0"/>
+                      <text class="tg-burnt-val" x="85" y="70"
+                            fill="#f1f5f9" font-size="13" font-weight="800"
+                            text-anchor="middle" font-family="inherit">0.0h</text>
+                      <text x="85" y="82" fill="#64748b" font-size="7.5"
+                            text-anchor="middle" font-family="inherit">burnt</text>
+                      <text x="8" y="102" fill="#475569" font-size="8" text-anchor="middle" font-family="inherit">0</text>
+                      <text class="tg-max-label" x="162" y="102" fill="#475569" font-size="8" text-anchor="middle" font-family="inherit">80h</text>
+                    </svg>
+                    <div class="team-effort-gauge-legend" aria-hidden="true">
+                      <span><i class="team-effort-gauge-swatch team-effort-gauge-swatch--cap"></i>Cap {{ "%.1f"|format(m.capacity_available_hours) }}h</span>
+                      <span><i class="team-effort-gauge-swatch team-effort-gauge-swatch--est"></i>Est {{ "%.1f"|format(m.est_total_hours) }}h</span>
+                      <span><i class="team-effort-gauge-swatch team-effort-gauge-swatch--burnt"></i>Burnt {{ "%.1f"|format(m.committed_total_hours) }}h</span>
+                      {% if m.stretch_load_hours > 0.0001 %}
+                        <span class="team-effort-gauge-stretch"><i class="team-effort-gauge-swatch team-effort-gauge-swatch--stretch"></i>Stretch +{{ "%.1f"|format(m.stretch_load_hours) }}h</span>
+                      {% endif %}
+                    </div>
+                  </div>
                 </div>
               </td>
               <td class="scrum-td-doing scrum-td-expandable">
@@ -794,19 +805,6 @@
       }
     })();
     (function () {
-      var startEl = document.getElementById("sprint-edit-start");
-      if (!startEl || startEl.readOnly) return;
-      function sync() {
-        var s = startEl.value;
-        if (!s || s.length < 10) return;
-        var startSpan = document.getElementById("sprint-dates-summary-start");
-        if (startSpan) startSpan.textContent = s.slice(0, 10);
-      }
-      startEl.addEventListener("change", sync);
-      startEl.addEventListener("input", sync);
-      sync();
-    })();
-    (function () {
       var line = document.getElementById("sprint-capacity-line");
       var capLive = document.getElementById("sprint-team-capacity-live");
       if (!line || !capLive) return;
@@ -904,5 +902,89 @@
         });
       });
     })();
+  </script>
+  <script>
+  (function () {
+    function initGauge(svg) {
+      if (svg.dataset.gaugeInit) return;
+      svg.dataset.gaugeInit = "1";
+
+      var cap = parseFloat(svg.dataset.cap) || 0;
+      var est = parseFloat(svg.dataset.est) || 0;
+      var burnt = parseFloat(svg.dataset.burnt) || 0;
+      var max = parseFloat(svg.dataset.max) || 80;
+      var stretch = parseFloat(svg.dataset.stretch) || 0;
+      if (max <= 0) max = 80;
+
+      var r = 70;
+      var arcLen = Math.PI * r;
+      var cx = 85;
+      var cy = 92;
+
+      function frac(v) {
+        return Math.max(0, Math.min(1, v / max));
+      }
+
+      var capLen = frac(cap) * arcLen;
+      svg.querySelector(".tg-cap").setAttribute(
+        "stroke-dasharray", capLen.toFixed(2) + " " + (arcLen - capLen + 0.01).toFixed(2));
+
+      var estLen = frac(est) * arcLen;
+      svg.querySelector(".tg-est").setAttribute(
+        "stroke-dasharray", estLen.toFixed(2) + " " + (arcLen - estLen + 0.01).toFixed(2));
+
+      var burntFrac = frac(burnt);
+      var angleDeg = burntFrac * 180;
+      var angleRad = (180 - angleDeg) * Math.PI / 180;
+      var nl = 60;
+      var nx = (cx + nl * Math.cos(angleRad)).toFixed(2);
+      var ny = (cy - nl * Math.sin(angleRad)).toFixed(2);
+      svg.querySelector(".tg-needle").setAttribute("x2", nx);
+      svg.querySelector(".tg-needle").setAttribute("y2", ny);
+
+      var pct = est > 0 ? Math.round((burnt / est) * 100) : 0;
+      var ll = r + 18;
+      var lx = (cx + ll * Math.cos(angleRad)).toFixed(2);
+      var ly = (cy - ll * Math.sin(angleRad) + 4).toFixed(2);
+      var pctLabel = svg.querySelector(".tg-burnt-pct");
+      pctLabel.setAttribute("x", lx);
+      pctLabel.setAttribute("y", ly);
+      pctLabel.textContent = pct + "%";
+
+      if (stretch > 0.0001) {
+        svg.querySelector(".tg-stretch-dot").setAttribute("opacity", "0.9");
+      }
+
+      svg.querySelector(".tg-burnt-val").textContent = burnt.toFixed(1) + "h";
+      svg.querySelector(".tg-max-label").textContent = max.toFixed(0) + "h";
+
+      var tg = svg.querySelector(".tg-ticks");
+      for (var i = 0; i <= 10; i++) {
+        var tf = i / 10;
+        var ta = (180 - tf * 180) * Math.PI / 180;
+        var ri = 62;
+        var ro = 67;
+        var ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        ln.setAttribute("x1", (cx + ri * Math.cos(ta)).toFixed(2));
+        ln.setAttribute("y1", (cy - ri * Math.sin(ta)).toFixed(2));
+        ln.setAttribute("x2", (cx + ro * Math.cos(ta)).toFixed(2));
+        ln.setAttribute("y2", (cy - ro * Math.sin(ta)).toFixed(2));
+        tg.appendChild(ln);
+      }
+    }
+
+    function initAll() {
+      document.querySelectorAll(".team-sprint-gauge").forEach(initGauge);
+    }
+
+    initAll();
+
+    var tableBody = document.querySelector(".scrum-team-table tbody");
+    if (tableBody && window.MutationObserver) {
+      new MutationObserver(function () {
+        initAll();
+      }).observe(tableBody, { attributes: true, subtree: true, attributeFilter: ["data-expanded"] });
+    }
+  })();
   </script>
 {% endblock %}

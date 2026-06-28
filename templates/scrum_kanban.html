@@ -3,8 +3,11 @@
 {% block body_class %}page-scrum-board{% if portal_kanban|default(false) %} portal-nokia-body portal-employee-nav{% endif %}{% endblock %}
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=51) }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=55) }}" />
   <script defer src="{{ url_for('static', filename='scrum_area_autocomplete.js', v=1) }}"></script>
+  {% if kb_item_detail_url|default('') %}
+  <script defer src="{{ url_for('static', filename='scrum_item_checklist.js', v=3) }}"></script>
+  {% endif %}
 {% endblock %}
 {% block content %}
   {% set col_labels = {'backlog': 'Backlog', 'do': 'To DO', 'doing': 'In progress', 'done': 'Done'} %}
@@ -88,7 +91,7 @@
         </p>
       {% endif %}
       <input type="hidden" id="kb-csrf" value="{{ csrf_token() }}" />
-      <script type="application/json" id="kb-cfg">{{ {"sprintId": sprint_id, "assignee": assignee, "readOnly": sprint_readonly}|tojson }}</script>
+      <script type="application/json" id="kb-cfg">{{ {"sprintId": sprint_id, "assignee": assignee, "readOnly": sprint_readonly, "itemDetailUrl": kb_item_detail_url|default(''), "checklistUrls": kb_checklist_urls|default({})}|tojson }}</script>
       <script type="application/json" id="kb-kinds">{{ task_kinds_rows|tojson }}</script>
       <script type="application/json" id="kb-api-urls">{{ kb_api_urls|tojson }}</script>
     </div>
@@ -125,47 +128,126 @@
           <span class="scrum-kb-capacity-stretch-badge" title="Total sticky estimates exceed available hours after leave">Stretch</span>
         {% endif %}
       </div>
-      <div class="scrum-kb-capacity-bars">
-        <div class="scrum-bar-label scrum-bar-label-compact scrum-kb-capacity-stack-legend">
-          Available · assigned · burnt <span class="scrum-kb-cap-scale-note">(max {{ kb_capacity_scale_max }}h)</span>
-        </div>
-        <div
-          class="scrum-kb-capacity-stack"
-          role="img"
-          aria-label="Available, assigned, and burnt hours versus scale max {{ kb_capacity_scale_max }} hours"
-        >
-          <div
-            class="scrum-bar-track scrum-kb-capacity-track scrum-kb-capacity-stack-row scrum-bar-track-compact"
-            title="Available hours"
-          >
-            <div class="scrum-bar-fill scrum-bar-cap-avail" style="width: {{ kb_capacity_pct_available_bar }}%;"></div>
-          </div>
-          <div
-            class="scrum-bar-track scrum-kb-capacity-track scrum-kb-capacity-stack-row scrum-bar-track-compact scrum-bar-split"
-            title="Assigned estimate (within available + stretch)"
-          >
-            {% if kb_capacity_pct_assigned_within_bar > 0.01 %}
-              <div class="scrum-bar-fill scrum-bar-logged" style="width: {{ kb_capacity_pct_assigned_within_bar }}%;"></div>
-            {% endif %}
-            {% if kb_capacity_pct_assigned_stretch_bar > 0.01 %}
-              <div class="scrum-bar-fill scrum-bar-stretch" style="width: {{ kb_capacity_pct_assigned_stretch_bar }}%;"></div>
-            {% endif %}
-            {% if kb_capacity_pct_assigned_within_bar <= 0.01 and kb_capacity_pct_assigned_stretch_bar <= 0.01 %}
-              <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
-            {% endif %}
-          </div>
-          <div
-            class="scrum-bar-track scrum-kb-capacity-track scrum-kb-capacity-stack-row scrum-bar-track-compact"
-            title="Burnt hours on stickies ({{ kb_assignee }})"
-          >
-            {% if kb_capacity_pct_burnt_bar > 0.01 %}
-              <div class="scrum-bar-fill scrum-bar-cap-burnt" style="width: {{ kb_capacity_pct_burnt_bar }}%;"></div>
-            {% else %}
-              <div class="scrum-bar-empty scrum-bar-empty-compact">—</div>
-            {% endif %}
-          </div>
+      <div class="scrum-kb-capacity-gauge-wrap">
+        <svg class="sprint-odometer"
+             viewBox="0 0 200 118" width="220" height="121"
+             data-cap="{{ kb_capacity_available_hours }}"
+             data-est="{{ kb_capacity_assigned_hours }}"
+             data-burnt="{{ kb_capacity_burnt_hours }}"
+             data-max="{{ kb_capacity_scale_max }}"
+             role="img"
+             aria-label="Sprint gauge: capacity {{ kb_capacity_available_hours }}h, estimate {{ kb_capacity_assigned_hours }}h, burnt {{ kb_capacity_burnt_hours }}h">
+
+          <g class="gauge-ticks" stroke="rgba(255,255,255,0.12)" stroke-width="1.2"></g>
+
+          <path fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="16" stroke-linecap="butt"
+                d="M 18 105 A 82 82 0 0 1 182 105"/>
+
+          <path class="gauge-cap-arc" fill="none" stroke="rgba(255,255,255,0.82)" stroke-width="16"
+                stroke-linecap="butt" stroke-dasharray="0 258"
+                d="M 18 105 A 82 82 0 0 1 182 105"/>
+
+          <path class="gauge-est-arc" fill="none" stroke="#f59e0b" stroke-width="9"
+                stroke-linecap="butt" stroke-dasharray="0 258"
+                d="M 18 105 A 82 82 0 0 1 182 105"/>
+
+          <circle cx="18"  cy="105" r="3" fill="#3b82f6" opacity="0.7"/>
+          <circle cx="182" cy="105" r="3" fill="#3b82f6" opacity="0.7"/>
+
+          <line class="gauge-needle"
+                x1="100" y1="105" x2="100" y2="28"
+                stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+
+          <text class="gauge-burnt-pct" x="100" y="20"
+                fill="#4ade80" font-size="13" font-weight="800"
+                text-anchor="middle" font-family="inherit">0%</text>
+
+          <circle cx="100" cy="105" r="6"  fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+          <circle cx="100" cy="105" r="2.5" fill="#e2e8f0"/>
+
+          <text class="gauge-burnt-text" x="100" y="80"
+                fill="#f1f5f9" font-size="16" font-weight="800"
+                text-anchor="middle" font-family="inherit">{{ kb_capacity_burnt_hours }}h</text>
+          <text x="100" y="92" fill="#64748b" font-size="8"
+                text-anchor="middle" font-family="inherit">burnt</text>
+
+          <text x="10"  y="117" fill="#475569" font-size="8.5" text-anchor="middle" font-family="inherit">0</text>
+          <text class="gauge-max-text"
+                x="190" y="117" fill="#475569" font-size="8.5" text-anchor="middle" font-family="inherit">{{ kb_capacity_scale_max }}h</text>
+        </svg>
+
+        <div class="scrum-kb-capacity-gauge-legend">
+          <span>
+            <svg width="14" height="6" aria-hidden="true"><rect width="14" height="5" rx="2" fill="rgba(255,255,255,0.82)"/></svg>
+            Capacity {{ kb_capacity_available_hours }}h
+          </span>
+          <span>
+            <svg width="14" height="6" aria-hidden="true"><rect width="14" height="5" rx="2" fill="#f59e0b"/></svg>
+            Est. {{ kb_capacity_assigned_hours }}h
+          </span>
+          <span>
+            <svg width="14" height="6" aria-hidden="true"><rect width="14" height="5" rx="2" fill="#ef4444"/></svg>
+            Burnt {{ kb_capacity_burnt_hours }}h
+          </span>
         </div>
       </div>
+      <script>
+      (function () {
+        document.querySelectorAll(".sprint-odometer").forEach(function (svg) {
+          var cap   = parseFloat(svg.dataset.cap)   || 0;
+          var est   = parseFloat(svg.dataset.est)   || 0;
+          var burnt = parseFloat(svg.dataset.burnt) || 0;
+          var max   = parseFloat(svg.dataset.max)   || 80;
+          if (max <= 0) max = 80;
+
+          var r      = 82;
+          var arcLen = Math.PI * r;
+
+          function frac(v) { return Math.max(0, Math.min(1, v / max)); }
+
+          var capLen = frac(cap) * arcLen;
+          svg.querySelector(".gauge-cap-arc").setAttribute(
+            "stroke-dasharray", capLen.toFixed(2) + " " + (arcLen - capLen + 0.01).toFixed(2)
+          );
+
+          var estLen = frac(est) * arcLen;
+          svg.querySelector(".gauge-est-arc").setAttribute(
+            "stroke-dasharray", estLen.toFixed(2) + " " + (arcLen - estLen + 0.01).toFixed(2)
+          );
+
+          var burntFrac = frac(burnt);
+          var angleDeg  = burntFrac * 180;
+          var angleRad  = (180 - angleDeg) * Math.PI / 180;
+          var nl = 74;
+          var cx = 100, cy = 105;
+          var nx = (cx + nl * Math.cos(angleRad)).toFixed(2);
+          var ny = (cy - nl * Math.sin(angleRad)).toFixed(2);
+          var needle = svg.querySelector(".gauge-needle");
+          needle.setAttribute("x2", nx);
+          needle.setAttribute("y2", ny);
+
+          var pct = est > 0 ? Math.round((burnt / est) * 100) : 0;
+          var ll = r + 18;
+          var lx = (cx + ll * Math.cos(angleRad)).toFixed(2);
+          var ly = (cy - ll * Math.sin(angleRad) + 4).toFixed(2);
+          var pctEl = svg.querySelector(".gauge-burnt-pct");
+          if (pctEl) { pctEl.setAttribute("x", lx); pctEl.setAttribute("y", ly); pctEl.textContent = pct + "%"; }
+
+          var tg = svg.querySelector(".gauge-ticks");
+          for (var i = 0; i <= 10; i++) {
+            var tf = i / 10;
+            var ta = (180 - tf * 180) * Math.PI / 180;
+            var inner = 72, outer = 78;
+            var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", (cx + inner * Math.cos(ta)).toFixed(2));
+            line.setAttribute("y1", (cy - inner * Math.sin(ta)).toFixed(2));
+            line.setAttribute("x2", (cx + outer * Math.cos(ta)).toFixed(2));
+            line.setAttribute("y2", (cy - outer * Math.sin(ta)).toFixed(2));
+            tg.appendChild(line);
+          }
+        });
+      })();
+      </script>
     </div>
     <div class="worksheet-wrap scrum-kb-leave-sheet" style="--kb-ws-days: {{ kb_leave_days|length }};">
       <table class="ws-table scrum-kb-ws-table" role="grid" aria-label="Leave across sprint dates">
@@ -186,18 +268,17 @@
           <tr class="scrum-kb-ws-summary-row" data-kb-ws-view="summary">
             <td class="ws-name">
               <div class="scrum-kb-ws-name-cell">
-                <span class="scrum-kb-ws-name-text">{{ kb_assignee }}</span>
                 {% if kb_task_detail_rows|default([]) %}
                   <button
                     type="button"
-                    class="scrum-kb-ws-view-toggle btn secondary small"
+                    class="scrum-kb-ws-name-text scrum-kb-ws-name-toggle"
                     id="kb-capacity-view-toggle"
                     aria-pressed="false"
                     aria-controls="kb-capacity-task-detail-rows"
-                    title="Show burnt hours per sticky"
-                  >
-                    Detailed view
-                  </button>
+                    title="Click name to show burnt hours per sticky"
+                  >{{ kb_assignee }}</button>
+                {% else %}
+                  <span class="scrum-kb-ws-name-text">{{ kb_assignee }}</span>
                 {% endif %}
               </div>
             </td>
@@ -245,24 +326,23 @@
       <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
       <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
       <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
-      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends){% if kb_task_detail_rows|default([]) %} · use <strong>Detailed view</strong> next to the name for per-sticky hours{% endif %}</span>
+      <span class="ws-legend-note">½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved · <strong>Per-day value</strong> = total burnt hours logged that calendar day on the sticky board (including weekends){% if kb_task_detail_rows|default([]) %} · click the <strong>name</strong> for per-sticky hours{% endif %}</span>
     </div>
     {% if kb_task_detail_rows|default([]) %}
     <script>
       (function () {
-        var btn = document.getElementById("kb-capacity-view-toggle");
+        var toggle = document.getElementById("kb-capacity-view-toggle");
         var tbody = document.querySelector(".scrum-kb-ws-table tbody");
-        if (!btn || !tbody) return;
-        var summaryRows = tbody.querySelectorAll('[data-kb-ws-view="summary"]');
+        if (!toggle || !tbody) return;
         var detailRows = tbody.querySelectorAll('[data-kb-ws-view="detail"]');
         var detailed = false;
-        btn.addEventListener("click", function () {
+        toggle.addEventListener("click", function () {
           detailed = !detailed;
-          btn.setAttribute("aria-pressed", detailed ? "true" : "false");
-          btn.textContent = detailed ? "Summary view" : "Detailed view";
-          summaryRows.forEach(function (row) {
-            row.hidden = detailed;
-          });
+          toggle.setAttribute("aria-pressed", detailed ? "true" : "false");
+          toggle.title = detailed
+            ? "Click name to show daily totals"
+            : "Click name to show burnt hours per sticky";
+          toggle.classList.toggle("is-detailed", detailed);
           detailRows.forEach(function (row) {
             row.hidden = !detailed;
           });
@@ -325,7 +405,15 @@
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="scrum-sticky-toggle-icon"><polyline points="6 9 12 15 18 9"></polyline></svg>
                   </button>
                 </div>
-                <p class="scrum-sticky-title">{{ card.title }}</p>
+                <p
+                  class="scrum-sticky-title{% if kb_item_detail_url|default('') %} kb-item-detail-trigger{% endif %}"
+                  {% if kb_item_detail_url|default('') %}
+                  role="button"
+                  tabindex="0"
+                  title="Open task detail (checklist &amp; activity)"
+                  data-item-id="{{ card.id }}"
+                  {% endif %}
+                >{{ card.title }}</p>
                 <div class="scrum-sticky-meta">
                   <span class="scrum-sticky-badge">{{ card.kind_label }}</span>
                   <span>{{ "%.1f"|format(card.estimate_hours) }}h est.</span>
@@ -736,6 +824,20 @@
       </div>
     </div>
   </dialog>
+
+  {% if kb_item_detail_url|default('') %}
+  <dialog id="kb-item-detail-dialog" class="kb-item-detail-dialog" aria-labelledby="kb-item-detail-title">
+    <div class="kb-item-detail-dialog-inner">
+      <header class="kb-item-detail-dialog-head">
+        <h3 id="kb-item-detail-title" class="kb-item-detail-dialog-title">Task detail</h3>
+        <button type="button" class="btn secondary small" id="kb-item-detail-close">Close</button>
+      </header>
+      <div id="kb-item-detail-body" class="kb-item-detail-body">
+        <p class="kb-item-detail-loading">Loading…</p>
+      </div>
+    </div>
+  </dialog>
+  {% endif %}
 
   <dialog id="kb-doing-reset-dialog" class="scrum-move-dialog">
     <div class="scrum-move-dialog-inner">
@@ -1578,6 +1680,307 @@
           e.stopPropagation();
         });
       });
+
+      var itemDetailUrl = cfg.itemDetailUrl || "";
+      var checklistUrls = cfg.checklistUrls || {};
+      var detailDlg = document.getElementById("kb-item-detail-dialog");
+      var detailBody = document.getElementById("kb-item-detail-body");
+      var detailClose = document.getElementById("kb-item-detail-close");
+
+      function escHtml(s) {
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function fmtHours(n) {
+        return Number(n || 0).toFixed(1);
+      }
+
+      function renderItemDetailPanel(data) {
+        var item = data.item || {};
+        var checklist = data.checklist || [];
+        var standups = data.standup_updates || [];
+        var activity = data.activity_log || [];
+        var canEdit = !readOnly && checklistUrls.add;
+        var delCol = canEdit ? '<th class="scrum-checklist-del-col"></th>' : "";
+        var checklistRows = "";
+        if (checklist.length) {
+          checklist.forEach(function (row) {
+            var ce = canEdit ? ' contenteditable="true"' : "";
+            var ro = canEdit ? "" : " readonly";
+            var delCell = canEdit
+              ? '<td class="scrum-checklist-del-col"><button type="button" class="scrum-checklist-del-btn" title="Remove row">✕</button></td>'
+              : "";
+            checklistRows +=
+              '<tr data-row-id="' +
+              escHtml(row.id) +
+              '">' +
+              '<td class="scrum-checklist-cell" data-field="items_to_finish"' +
+              ce +
+              ' spellcheck="false">' +
+              escHtml(row.items_to_finish || "") +
+              "</td>" +
+              '<td class="scrum-checklist-cell scrum-checklist-cell--status" data-field="status"' +
+              ce +
+              ' spellcheck="false">' +
+              escHtml(row.status || "") +
+              "</td>" +
+              '<td class="scrum-checklist-cell" data-field="le_to_complete"' +
+              ce +
+              ' spellcheck="false">' +
+              escHtml(row.le_to_complete || "") +
+              "</td>" +
+              '<td class="scrum-checklist-cell scrum-checklist-cell--done scrum-checklist-cell--textarea" data-field="done_till_date">' +
+              '<textarea class="scrum-checklist-textarea" rows="2" spellcheck="false"' +
+              ro +
+              ">" +
+              escHtml(row.done_till_date || "") +
+              "</textarea></td>" +
+              delCell +
+              "</tr>";
+          });
+        } else {
+          checklistRows =
+            '<tr class="scrum-checklist-empty-row"><td colspan="' +
+            (canEdit ? 5 : 4) +
+            '" class="scrum-checklist-empty-msg">No checklist items.' +
+            (canEdit ? ' Click "+ Add row".' : "") +
+            "</td></tr>";
+        }
+        var addBtn = canEdit
+          ? '<button type="button" class="btn secondary small scrum-checklist-add-btn">+ Add row</button>'
+          : "";
+        var burnPct =
+          item.burn_pct !== null && item.burn_pct !== undefined && !isNaN(Number(item.burn_pct))
+            ? '<div class="scrum-team-detail-sticky-progress-pct">' +
+              Math.round(Number(item.burn_pct)) +
+              "% of estimate</div>"
+            : "";
+        var areaBlock = item.area
+          ? '<p class="scrum-team-detail-sticky-area">Area: ' + escHtml(item.area) + "</p>"
+          : "";
+        var notesBlock =
+          item.notes_display || item.notes
+            ? '<p class="scrum-team-detail-sticky-notes"><span class="label">Notes:</span> ' +
+              escHtml(item.notes_display || item.notes) +
+              "</p>"
+            : "";
+        var standupHtml = "";
+        if (standups.length) {
+          standupHtml =
+            '<h5 class="scrum-team-detail-subh2">In progress updates (stand-up)</h5><ul class="scrum-team-detail-activity">';
+          standups.forEach(function (u) {
+            standupHtml +=
+              "<li><span class=\"scrum-team-detail-act-ts\">" +
+              escHtml(u.created_at_display || u.created_at || "") +
+              "</span>";
+            if (u.committed_hours && Number(u.committed_hours) > 0) {
+              standupHtml +=
+                '<span class="scrum-team-detail-act-h">+' +
+                fmtHours(u.committed_hours) +
+                "h</span>";
+            }
+            if (u.body) {
+              standupHtml +=
+                '<span class="scrum-team-detail-act-body">' + escHtml(u.body) + "</span>";
+            }
+            standupHtml += "</li>";
+          });
+          standupHtml += "</ul>";
+        }
+        var activityHtml = "";
+        if (activity.length) {
+          activityHtml = '<ul class="scrum-team-detail-activity">';
+          activity.forEach(function (a) {
+            activityHtml +=
+              "<li><span class=\"scrum-team-detail-act-ts\">" +
+              escHtml(a.created_at_display || a.created_at || "") +
+              "</span>";
+            if (a.from_label && a.to_label) {
+              activityHtml +=
+                '<span class="scrum-team-detail-act-move">' +
+                escHtml(a.from_label) +
+                " → " +
+                escHtml(a.to_label) +
+                "</span>";
+            }
+            if (a.kind_label) {
+              activityHtml +=
+                '<span class="scrum-team-detail-act-kind">(' + escHtml(a.kind_label) + ")</span>";
+            }
+            if (a.committed_hours !== null && a.committed_hours !== undefined && Number(a.committed_hours) > 0) {
+              activityHtml +=
+                '<span class="scrum-team-detail-act-h">+' +
+                fmtHours(a.committed_hours) +
+                "h</span>";
+            }
+            if (a.body) {
+              activityHtml +=
+                '<span class="scrum-team-detail-act-body">' + escHtml(a.body) + "</span>";
+            }
+            activityHtml += "</li>";
+          });
+          activityHtml += "</ul>";
+        } else if (!standups.length) {
+          activityHtml = '<p class="scrum-team-detail-empty">No activity rows yet.</p>';
+        }
+        var kindStyle = item.kind_color_hex
+          ? ' style="--kind-color: ' +
+            escHtml(item.kind_color_hex) +
+            "; border-color: " +
+            escHtml(item.kind_color_hex) +
+            ';"'
+          : "";
+        return (
+          '<article class="scrum-team-detail-sticky kb-item-detail-sticky" data-item-id="' +
+          escHtml(item.id) +
+          '">' +
+          '<div class="scrum-team-detail-sticky-top">' +
+          '<div class="scrum-team-detail-sticky-top-row1">' +
+          '<div class="scrum-team-detail-sticky-top-left">' +
+          '<span class="scrum-team-detail-kind-pill"' +
+          kindStyle +
+          ">" +
+          escHtml(item.kind_label || "") +
+          "</span>" +
+          '<span class="scrum-team-detail-sticky-title">' +
+          escHtml(item.title || "—") +
+          "</span>" +
+          "</div>" +
+          '<div class="scrum-team-detail-sticky-progress" aria-label="Burnt hours versus estimate">' +
+          '<div class="scrum-team-detail-sticky-progress-main">' +
+          '<span class="scrum-team-detail-sticky-progress-burnt">' +
+          fmtHours(item.committed_logged_hours) +
+          "h</span>" +
+          '<span class="scrum-team-detail-sticky-progress-sep" aria-hidden="true">/</span>' +
+          '<span class="scrum-team-detail-sticky-progress-est">' +
+          fmtHours(item.estimate_hours) +
+          "h</span>" +
+          "</div>" +
+          burnPct +
+          "</div></div>" +
+          '<span class="scrum-team-detail-sticky-meta">' +
+          escHtml(item.kanban_column_label || "") +
+          ' · workflow <strong>' +
+          escHtml(item.workflow_status || "—") +
+          "</strong></span></div>" +
+          areaBlock +
+          notesBlock +
+          '<div class="scrum-team-detail-sticky-split">' +
+          '<div class="scrum-team-detail-sticky-col scrum-team-detail-sticky-col--left">' +
+          '<div class="scrum-checklist-wrap" data-item-id="' +
+          escHtml(item.id) +
+          '" data-sprint-id="' +
+          escHtml(cfg.sprintId) +
+          '" data-url-add="' +
+          escHtml(checklistUrls.add || "") +
+          '" data-url-update="' +
+          escHtml(checklistUrls.update || "") +
+          '" data-url-delete="' +
+          escHtml(checklistUrls.delete || "") +
+          '">' +
+          '<div class="scrum-checklist-header">' +
+          '<h4 class="scrum-team-detail-subh scrum-checklist-title">Task Checklist</h4>' +
+          addBtn +
+          "</div>" +
+          '<div class="scrum-checklist-frame"><table class="scrum-checklist-table"><thead><tr>' +
+          "<th>Items</th><th>Status</th><th>LE</th><th>Comments</th>" +
+          delCol +
+          "</tr></thead><tbody class=\"scrum-checklist-tbody\">" +
+          checklistRows +
+          "</tbody></table></div>" +
+          '<p class="scrum-checklist-err-msg" hidden></p></div></div>' +
+          '<div class="scrum-team-detail-sticky-col scrum-team-detail-sticky-col--right">' +
+          '<h4 class="scrum-team-detail-subh">All task activity</h4>' +
+          standupHtml +
+          activityHtml +
+          "</div></div></article>"
+        );
+      }
+
+      function openItemDetail(itemId) {
+        if (!itemDetailUrl || !detailDlg || !detailBody) return;
+        detailBody.innerHTML = '<p class="kb-item-detail-loading">Loading…</p>';
+        if (typeof detailDlg.showModal === "function") detailDlg.showModal();
+        fetch(
+          itemDetailUrl +
+            "?item_id=" +
+            encodeURIComponent(itemId) +
+            "&sprint_id=" +
+            encodeURIComponent(cfg.sprintId),
+          { credentials: "same-origin" }
+        )
+          .then(function (r) {
+            return r.json().then(function (j) {
+              return { ok: r.ok && j && j.ok, j: j };
+            });
+          })
+          .then(function (res) {
+            if (!res.ok || !res.j) {
+              detailBody.innerHTML =
+                '<p class="kb-item-detail-error">Could not load task detail' +
+                (res.j && res.j.error ? " (" + escHtml(res.j.error) + ")" : "") +
+                ".</p>";
+              return;
+            }
+            detailBody.innerHTML = renderItemDetailPanel(res.j);
+            var titleEl = document.getElementById("kb-item-detail-title");
+            if (titleEl && res.j.item && res.j.item.title) {
+              titleEl.textContent = res.j.item.title;
+            }
+            if (window.initScrumChecklistWraps) {
+              window.initScrumChecklistWraps(detailBody);
+            }
+          })
+          .catch(function () {
+            detailBody.innerHTML = '<p class="kb-item-detail-error">Network error loading task detail.</p>';
+          });
+      }
+
+      if (itemDetailUrl && detailDlg) {
+        document.querySelectorAll(".kb-item-detail-trigger").forEach(function (el) {
+          el.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var id = el.getAttribute("data-item-id");
+            if (id) openItemDetail(id);
+          });
+          el.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              var id = el.getAttribute("data-item-id");
+              if (id) openItemDetail(id);
+            }
+          });
+        });
+        if (detailClose) {
+          detailClose.addEventListener("click", function () {
+            requestCloseItemDetail();
+          });
+        }
+        detailDlg.addEventListener("cancel", function (e) {
+          e.preventDefault();
+          requestCloseItemDetail();
+        });
+
+        function requestCloseItemDetail() {
+          if (!detailDlg || !detailDlg.open) return;
+          var flush = window.flushScrumChecklistWraps;
+          if (detailClose) detailClose.disabled = true;
+          var done = function () {
+            if (detailClose) detailClose.disabled = false;
+            if (typeof detailDlg.close === "function") detailDlg.close();
+          };
+          if (flush) {
+            flush(detailBody).finally(done);
+          } else {
+            done();
+          }
+        }
+      }
     })();
   </script>
 {% endblock %}

@@ -522,6 +522,40 @@ def resolve_employee_name(raw: str, roster: Sequence[str] | None = None) -> str 
     return m2[0] if m2 else None
 
 
+def _exact_roster_name_match(raw: str, roster: Sequence[str]) -> str | None:
+    """Exact roster name only (case/normalized equality). Used for leave-tracker grids so other teams' rows are not fuzzy-matched."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    roster_t = tuple(roster)
+    if raw in roster_t:
+        return raw
+    raw_n = _norm(raw)
+    for e in roster_t:
+        if _norm(e) == raw_n:
+            return e
+    return None
+
+
+def _bucket_leave_requests_by_roster(
+    leaves: Sequence[sqlite3.Row], roster: Sequence[str]
+) -> dict[str, list[sqlite3.Row]]:
+    """Group leave rows under roster display names without fuzzy cross-team matching."""
+    roster_t = tuple(roster)
+    by_emp: dict[str, list[sqlite3.Row]] = {e: [] for e in roster_t}
+    for row in leaves:
+        db_name = str(row["employee_name"] or "").strip()
+        if not db_name:
+            continue
+        if db_name in by_emp:
+            by_emp[db_name].append(row)
+            continue
+        resolved = _exact_roster_name_match(db_name, roster_t)
+        if resolved:
+            by_emp[resolved].append(row)
+    return by_emp
+
+
 # Pasted Nokia / Excel grid: treat these cell values as "no leave" in Nokia.
 NOKIA_EMPTY_MARKERS = frozenset({".", "-", "—", "", "0", "x", "X"})
 
@@ -2401,6 +2435,261 @@ def _portal_otp_code_hmac(app: Flask, code: str) -> str:
     return hmac.new(secret, code.strip().encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _portal_employee_access_code_hmac(app: Flask, code: str) -> str:
+    secret = (app.config.get("SECRET_KEY") or "dev").encode("utf-8")
+    payload = f"portal-employee-access:{code.strip()}".encode("utf-8")
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def _normalize_portal_access_code(raw: str) -> str | None:
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) != 6:
+        return None
+    return digits
+
+
+def _portal_directory_hit_for_roster(roster_name: str) -> dict[str, str] | None:
+    target = (roster_name or "").strip()
+    if not target:
+        return None
+    target_n = _norm(target)
+    for em, display, roster in NOKIA_PORTAL_DIRECTORY:
+        if roster == target or display == target or _norm(roster) == target_n or _norm(display) == target_n:
+            return {"email": em, "display_name": display, "roster_name": roster}
+    return None
+
+
+def _portal_access_codes_configured(app: Flask) -> bool:
+    conn = get_db(app)
+    row = conn.execute("SELECT 1 FROM portal_employee_access_code LIMIT 1").fetchone()
+    conn.close()
+    return row is not None
+
+
+def _portal_employee_access_code_status_for_roster(
+    app: Flask, roster: Sequence[str]
+) -> list[dict[str, Any]]:
+    names = [str(n).strip() for n in roster if str(n or "").strip()]
+    if not names:
+        return []
+    ph = ",".join("?" * len(names))
+    conn = get_db(app)
+    rows = conn.execute(
+        f"""
+        SELECT employee_name, employee_email, updated_at, updated_by_manager_email
+        FROM portal_employee_access_code
+        WHERE employee_name IN ({ph})
+        """,
+        names,
+    ).fetchall()
+    email_rows = conn.execute(
+        f"""
+        SELECT employee_name, employee_email
+        FROM team_roster
+        WHERE employee_name IN ({ph})
+        """,
+        names,
+    ).fetchall()
+    conn.close()
+    by_name = {str(r["employee_name"]): r for r in rows}
+    roster_email_by_name: dict[str, str] = {}
+    for r in email_rows:
+        nm = str(r["employee_name"] or "").strip()
+        em = normalize_email(str(r["employee_email"] or ""))
+        if nm and em and nm not in roster_email_by_name:
+            roster_email_by_name[nm] = em
+    out: list[dict[str, Any]] = []
+    for name in names:
+        row = by_name.get(name)
+        roster_email = roster_email_by_name.get(name, "")
+        code_email = normalize_email(str(row["employee_email"] or "")) if row else ""
+        out.append(
+            {
+                "employee_name": name,
+                "employee_email": roster_email or code_email,
+                "is_set": row is not None,
+                "updated_at": str(row["updated_at"] or "") if row else "",
+                "updated_by": str(row["updated_by_manager_email"] or "") if row else "",
+            }
+        )
+    return out
+
+
+def _roster_email_for_employee(app: Flask, employee_name: str) -> str:
+    canonical = (employee_name or "").strip()
+    if not canonical:
+        return ""
+    conn = get_db(app)
+    row = conn.execute(
+        """
+        SELECT employee_email FROM team_roster
+        WHERE employee_name = ? COLLATE NOCASE AND trim(employee_email) != ''
+        ORDER BY sort_order
+        LIMIT 1
+        """,
+        (canonical,),
+    ).fetchone()
+    conn.close()
+    return normalize_email(str(row["employee_email"] or "")) if row else ""
+
+
+def _lookup_team_roster_by_email(app: Flask, email: str) -> dict[str, str] | None:
+    em = normalize_email(email)
+    if not em:
+        return None
+    conn = get_db(app)
+    row = conn.execute(
+        """
+        SELECT tr.employee_name, tr.employee_email, t.name AS team_name
+        FROM team_roster tr
+        JOIN teams t ON t.id = tr.team_id
+        WHERE lower(trim(tr.employee_email)) = ?
+        ORDER BY tr.sort_order, tr.employee_name COLLATE NOCASE
+        LIMIT 1
+        """,
+        (em,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    name = str(row["employee_name"] or "").strip()
+    if not name:
+        return None
+    return {
+        "employee_name": name,
+        "employee_email": normalize_email(str(row["employee_email"] or "")) or em,
+        "team_name": str(row["team_name"] or "").strip(),
+    }
+
+
+def _canonical_roster_name_on_manager_roster(roster: Sequence[str], employee_name: str) -> str | None:
+    target = (employee_name or "").strip()
+    if not target:
+        return None
+    target_n = _norm(target)
+    for name in roster:
+        nm = (name or "").strip()
+        if nm == target or _norm(nm) == target_n:
+            return nm
+    resolved = resolve_employee_name(target, roster=roster)
+    return resolved
+
+
+def _set_portal_employee_access_code(
+    app: Flask, employee_name: str, code: str, manager_email: str = ""
+) -> str | None:
+    """Store a 6-digit access code for one roster employee. Returns error message or None."""
+    normalized = _normalize_portal_access_code(code)
+    if not normalized:
+        return "Enter a 6-digit numeric code."
+    canonical = (employee_name or "").strip()
+    if not canonical:
+        return "Employee name is required."
+    ts = _utc_stamp()
+    digest = _portal_employee_access_code_hmac(app, normalized)
+    roster_email = _roster_email_for_employee(app, canonical)
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO portal_employee_access_code
+            (employee_name, employee_email, code_hmac, updated_at, updated_by_manager_email)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(employee_name) DO UPDATE SET
+            employee_email = excluded.employee_email,
+            code_hmac = excluded.code_hmac,
+            updated_at = excluded.updated_at,
+            updated_by_manager_email = excluded.updated_by_manager_email
+        """,
+        (canonical, roster_email, digest, ts, (manager_email or "").strip()),
+    )
+    conn.commit()
+    conn.close()
+    return None
+
+
+def _clear_portal_employee_access_code(app: Flask, employee_name: str) -> None:
+    canonical = (employee_name or "").strip()
+    if not canonical:
+        return
+    conn = get_db(app)
+    conn.execute("DELETE FROM portal_employee_access_code WHERE employee_name = ?", (canonical,))
+    conn.commit()
+    conn.close()
+
+
+def _verify_portal_employee_access_code(
+    app: Flask, employee_name: str, code: str, *, login_email: str = ""
+) -> bool:
+    canonical = (employee_name or "").strip()
+    normalized = _normalize_portal_access_code(code)
+    if not canonical or not normalized:
+        return False
+    digest = _portal_employee_access_code_hmac(app, normalized)
+    conn = get_db(app)
+    row = conn.execute(
+        """
+        SELECT code_hmac, employee_email FROM portal_employee_access_code
+        WHERE employee_name = ?
+        """,
+        (canonical,),
+    ).fetchone()
+    conn.close()
+    if not row or str(row["code_hmac"] or "") != digest:
+        return False
+    login_em = normalize_email(login_email)
+    if login_em:
+        roster_em = _roster_email_for_employee(app, canonical)
+        code_em = normalize_email(str(row["employee_email"] or ""))
+        expected = roster_em or code_em
+        if expected and login_em != expected:
+            return False
+    return True
+
+
+def _resolve_portal_access_code_identity(app: Flask, identifier: str) -> dict | None:
+    """Map email or roster name to sign-in identity when a manager access code is used."""
+    raw = (identifier or "").strip()
+    if not raw:
+        return None
+    union = get_union_roster_for_app(app)
+    if "@" in raw:
+        em = normalize_email(raw)
+        roster_hit = _lookup_team_roster_by_email(app, em)
+        if roster_hit:
+            name = roster_hit["employee_name"]
+            if name in union or _match_roster_employee_name(name, union):
+                return {
+                    "email": roster_hit["employee_email"] or em,
+                    "display_name": name,
+                    "roster_name": name,
+                }
+        hit = lookup_portal_directory(em)
+        if hit:
+            roster_name = _resolve_portal_employee_roster_name(
+                app, email=em, display_name=hit["display_name"], roster_name=hit["roster_name"]
+            )
+            if roster_name and roster_name in union:
+                return {
+                    "email": em,
+                    "display_name": hit["display_name"],
+                    "roster_name": roster_name,
+                }
+        return None
+    roster_name = resolve_employee_name(raw, roster=union)
+    if not roster_name:
+        roster_name = _match_roster_employee_name(raw, union)
+    if not roster_name:
+        return None
+    hit = _portal_directory_hit_for_roster(roster_name)
+    if hit:
+        return hit
+    return {
+        "email": f"{roster_name.replace(' ', '.').lower()}@nokia.com",
+        "display_name": roster_name,
+        "roster_name": roster_name,
+    }
+
+
 def send_portal_otp_smtp(app: Flask, to_addr: str, code: str) -> None:
     """Send a one-time sign-in code (raises on SMTP failure)."""
     host = (app.config.get("PORTAL_OTP_SMTP_HOST") or "").strip()
@@ -2472,7 +2761,7 @@ def _seed_default_team_if_empty(conn: sqlite3.Connection) -> None:
     tid = int(cur.lastrowid)
     for i, name in enumerate(EMPLOYEES):
         conn.execute(
-            "INSERT INTO team_roster (team_id, employee_name, sort_order) VALUES (?, ?, ?)",
+            "INSERT INTO team_roster (team_id, employee_name, employee_email, sort_order) VALUES (?, ?, '', ?)",
             (tid, name, i),
         )
 
@@ -2703,6 +2992,48 @@ def _migrate_portal_email_otp_v1(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_portal_email_otp_email_created ON portal_email_otp(email, created_at DESC)"
     )
     conn.execute("INSERT INTO app_migrations (id) VALUES ('portal_email_otp_v1')")
+
+
+def _migrate_portal_employee_access_code_v1(conn: sqlite3.Connection) -> None:
+    if conn.execute(
+        "SELECT 1 FROM app_migrations WHERE id = ?", ("portal_employee_access_code_v1",)
+    ).fetchone():
+        return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portal_employee_access_code (
+            employee_name TEXT PRIMARY KEY COLLATE NOCASE,
+            code_hmac TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_by_manager_email TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('portal_employee_access_code_v1')")
+
+
+def _migrate_roster_email_v1(conn: sqlite3.Connection) -> None:
+    """Add employee_email to team_roster."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("roster_email_v1",)).fetchone():
+        return
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(team_roster)").fetchall()}
+    if "employee_email" not in existing:
+        conn.execute("ALTER TABLE team_roster ADD COLUMN employee_email TEXT NOT NULL DEFAULT ''")
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('roster_email_v1')")
+
+
+def _migrate_portal_employee_access_code_email_v1(conn: sqlite3.Connection) -> None:
+    """Add employee_email to portal access-code rows."""
+    if conn.execute(
+        "SELECT 1 FROM app_migrations WHERE id = ?", ("portal_employee_access_code_email_v1",)
+    ).fetchone():
+        return
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(portal_employee_access_code)").fetchall()}
+    if "employee_email" not in existing:
+        conn.execute(
+            "ALTER TABLE portal_employee_access_code ADD COLUMN employee_email TEXT NOT NULL DEFAULT ''"
+        )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('portal_employee_access_code_email_v1')")
 
 
 def _migrate_scrum_portal_proposal_v1(conn: sqlite3.Connection) -> None:
@@ -3169,6 +3500,9 @@ def init_db(app: Flask) -> None:
     _migrate_employee_portal_v1(conn)
     _migrate_scrum_sprint_item_area_v1(conn)
     _migrate_scrum_sprint_item_attachment_v1(conn)
+    _migrate_roster_email_v1(conn)
+    _migrate_portal_employee_access_code_v1(conn)
+    _migrate_portal_employee_access_code_email_v1(conn)
     _seed_default_team_if_empty(conn)
     _seed_portal_demo_scrum_items_if_requested(conn)
     _migrate_scrum_team_task_kinds(conn)
@@ -3202,26 +3536,28 @@ def get_union_roster_for_app(app: Flask) -> tuple[str, ...]:
     return tuple(r[0] for r in rows) if rows else EMPLOYEES
 
 
-def build_team_roster_export_rows(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+def build_team_roster_export_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
     """
-    Rows for roster Excel: (TeamName, EmployeeName) for each team_roster row,
-    then one Default row per seeded EMPLOYEES entry that does not appear on any team (case-insensitive).
+    Rows for roster Excel/CSV: (TeamName, EmployeeName, EmployeeEmail) for each team_roster row,
+    then Default rows for seeded EMPLOYEES not on any team (case-insensitive).
     """
     rows = conn.execute(
         """
-        SELECT t.name AS team_name, tr.employee_name AS employee_name
+        SELECT t.name AS team_name, tr.employee_name AS employee_name,
+               tr.employee_email AS employee_email
         FROM team_roster tr
         JOIN teams t ON t.id = tr.team_id
         ORDER BY t.name COLLATE NOCASE, tr.sort_order, tr.employee_name COLLATE NOCASE
         """
     ).fetchall()
-    pairs: list[tuple[str, str]] = []
+    triplets: list[tuple[str, str, str]] = []
     for r in rows:
         tn = str(r["team_name"] or "").strip() or "Default"
         en = str(r["employee_name"] or "").strip()
+        em = normalize_email(str(r["employee_email"] or ""))
         if en:
-            pairs.append((tn, en))
-    mapped_ci = {n.casefold() for _, n in pairs}
+            triplets.append((tn, en, em))
+    mapped_ci = {n.casefold() for _, n, _ in triplets}
     drow = conn.execute("SELECT name FROM teams WHERE lower(trim(name)) = 'default' LIMIT 1").fetchone()
     default_label = "Default"
     if drow and (drow["name"] or "").strip():
@@ -3230,9 +3566,9 @@ def build_team_roster_export_rows(conn: sqlite3.Connection) -> list[tuple[str, s
         e = (emp or "").strip()
         if not e or e.casefold() in mapped_ci:
             continue
-        pairs.append((default_label, e))
+        triplets.append((default_label, e, ""))
         mapped_ci.add(e.casefold())
-    return pairs
+    return triplets
 
 
 def _find_csv_col(header: list[str], candidates: tuple[str, ...]) -> int | None:
@@ -3250,19 +3586,32 @@ def _find_csv_col(header: list[str], candidates: tuple[str, ...]) -> int | None:
     return None
 
 
-def _roster_table_rows_to_pairs(header: list[str], data_rows: list[list[str]]) -> list[tuple[str, str]]:
-    """Map tabular rows to (team_name, employee_name) using flexible header matching."""
+def _roster_table_rows_to_entries(header: list[str], data_rows: list[list[str]]) -> list[tuple[str, str, str]]:
+    """Map tabular rows to (team_name, employee_name, employee_email) using flexible header matching."""
     header = [(c or "").strip() for c in header]
     ti = _find_csv_col(header, ("teamname", "team", "team name", "squad", "group", "pod"))
-    ni = _find_csv_col(header, ("employeename", "name", "employee", "member", "display name", "full name", "person"))
+    ni = _find_csv_col(
+        header, ("employeename", "employee name", "name", "employee", "member", "display name", "full name", "person")
+    )
+    ei = _find_csv_col(
+        header, ("employeeemail", "employee email", "email", "e-mail", "mail", "nokia email", "work email")
+    )
     if ni is None and len(header) >= 2 and ti == 0:
         ni = 1
     if ni is None and len(header) >= 2 and ti is None:
         ti, ni = 0, 1
+    if ei is None and len(header) >= 3:
+        used = {x for x in (ti, ni) if x is not None}
+        for idx in range(len(header)):
+            if idx not in used:
+                ei = idx
+                break
     if ni is None:
-        raise ValueError("Could not detect employee column (try headers: TeamName, EmployeeName).")
+        raise ValueError(
+            "Could not detect employee column (try headers: Team Name, Employee Name, Employee Email)."
+        )
 
-    pairs: list[tuple[str, str]] = []
+    entries: list[tuple[str, str, str]] = []
     for r in data_rows:
 
         def cell(idx: int | None) -> str:
@@ -3276,8 +3625,14 @@ def _roster_table_rows_to_pairs(header: list[str], data_rows: list[list[str]]) -
         team = cell(ti) if ti is not None else "Default"
         if not team:
             team = "Default"
-        pairs.append((team, emp))
-    return pairs
+        email = normalize_email(cell(ei)) if ei is not None else ""
+        entries.append((team, emp, email))
+    return entries
+
+
+def _roster_table_rows_to_pairs(header: list[str], data_rows: list[list[str]]) -> list[tuple[str, str]]:
+    """Legacy helper: team + employee only (email ignored)."""
+    return [(t, n) for t, n, _e in _roster_table_rows_to_entries(header, data_rows)]
 
 
 def _sqlite_db_snapshot_copy(db_path: Path, label: str) -> Path | None:
@@ -3295,23 +3650,25 @@ def _sqlite_db_snapshot_copy(db_path: Path, label: str) -> Path | None:
         return None
 
 
-def ingest_team_roster_pairs(app: Flask, pairs: list[tuple[str, str]]) -> tuple[int, int, list[str]]:
-    """Replace roster rows for each team present in pairs (teams are created if missing)."""
+def ingest_team_roster_entries(
+    app: Flask, entries: list[tuple[str, str, str]]
+) -> tuple[int, int, list[str]]:
+    """Replace roster rows for each team present in entries (teams are created if missing)."""
     warnings: list[str] = []
-    if not pairs:
+    if not entries:
         raise ValueError("No member rows found below the header.")
 
     _sqlite_db_snapshot_copy(Path(app.config["DB_PATH"]), "pre_roster_upload")
 
-    by_team: dict[str, list[str]] = {}
-    for team, emp in pairs:
-        by_team.setdefault(team, []).append(emp)
+    by_team: dict[str, list[tuple[str, str]]] = {}
+    for team, emp, email in entries:
+        by_team.setdefault(team, []).append((emp, normalize_email(email)))
 
     conn = get_db(app)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     teams_updated = 0
     people_rows = 0
-    for team_name, names in by_team.items():
+    for team_name, members in by_team.items():
         conn.execute("INSERT OR IGNORE INTO teams (name, created_at) VALUES (?, ?)", (team_name, ts))
         row = conn.execute("SELECT id FROM teams WHERE name = ?", (team_name,)).fetchone()
         if not row:
@@ -3320,21 +3677,30 @@ def ingest_team_roster_pairs(app: Flask, pairs: list[tuple[str, str]]) -> tuple[
         tid = int(row["id"])
         teams_updated += 1
         conn.execute("DELETE FROM team_roster WHERE team_id = ?", (tid,))
-        deduped: list[str] = []
+        deduped: list[tuple[str, str]] = []
         seen: set[str] = set()
-        for n in names:
+        for n, em in members:
             if n not in seen:
                 seen.add(n)
-                deduped.append(n)
-        for i, emp in enumerate(deduped):
+                deduped.append((n, em))
+        for i, (emp, email) in enumerate(deduped):
             conn.execute(
-                "INSERT INTO team_roster (team_id, employee_name, sort_order) VALUES (?, ?, ?)",
-                (tid, emp, i),
+                """
+                INSERT INTO team_roster (team_id, employee_name, employee_email, sort_order)
+                VALUES (?, ?, ?, ?)
+                """,
+                (tid, emp, email, i),
             )
             people_rows += 1
     conn.commit()
     conn.close()
     return teams_updated, people_rows, warnings
+
+
+def ingest_team_roster_pairs(app: Flask, pairs: list[tuple[str, str]]) -> tuple[int, int, list[str]]:
+    """Legacy: team + employee only (empty email)."""
+    entries = [(team, emp, "") for team, emp in pairs]
+    return ingest_team_roster_entries(app, entries)
 
 
 def ingest_team_roster_xlsx(app: Flask, data: bytes) -> tuple[int, int, list[str]]:
@@ -3362,8 +3728,8 @@ def ingest_team_roster_xlsx(app: Flask, data: bytes) -> tuple[int, int, list[str
     if not rows:
         raise ValueError("No rows in workbook.")
     header = rows[0]
-    pairs = _roster_table_rows_to_pairs(header, rows[1:])
-    return ingest_team_roster_pairs(app, pairs)
+    entries = _roster_table_rows_to_entries(header, rows[1:])
+    return ingest_team_roster_entries(app, entries)
 
 
 def ingest_team_roster_csv(app: Flask, text: str) -> tuple[int, int, list[str]]:
@@ -3385,10 +3751,40 @@ def ingest_team_roster_csv(app: Flask, text: str) -> tuple[int, int, list[str]]:
     if not rows:
         raise ValueError("No rows in CSV.")
     header = [(c or "").strip() for c in rows[0]]
-    pairs = _roster_table_rows_to_pairs(header, rows[1:])
-    if not pairs:
+    entries = _roster_table_rows_to_entries(header, rows[1:])
+    if not entries:
         raise ValueError("No member rows found below the header.")
-    return ingest_team_roster_pairs(app, pairs)
+    return ingest_team_roster_entries(app, entries)
+
+
+def ingest_team_roster_json(app: Flask, data: bytes) -> tuple[int, int, list[str]]:
+    """Parse roster JSON: {rows: [{team_name, employee_name, employee_email}, ...]} or a bare array."""
+    if not data:
+        raise ValueError("Empty file.")
+    try:
+        body = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as ex:
+        raise ValueError("Could not parse roster JSON.") from ex
+    raw_rows = body.get("rows") if isinstance(body, dict) else body
+    if not isinstance(raw_rows, list):
+        raise ValueError("Roster JSON must be an array or an object with a rows array.")
+    entries: list[tuple[str, str, str]] = []
+    for item in raw_rows:
+        if not isinstance(item, dict):
+            continue
+        team = str(item.get("team_name") or item.get("team") or item.get("Team Name") or "Default").strip()
+        name = str(item.get("employee_name") or item.get("name") or item.get("Employee Name") or "").strip()
+        email = normalize_email(
+            str(item.get("employee_email") or item.get("email") or item.get("Employee Email") or "")
+        )
+        if not name:
+            continue
+        if not team:
+            team = "Default"
+        entries.append((team, name, email))
+    if not entries:
+        raise ValueError("No roster rows found in JSON.")
+    return ingest_team_roster_entries(app, entries)
 
 
 def _safe_next_path(nxt: str | None) -> str | None:
@@ -4128,6 +4524,87 @@ def _purge_meet_leave_day_rows_for_leave(conn: sqlite3.Connection, leave_id: int
     conn.execute("DELETE FROM meet_leave_day WHERE leave_id = ?", (int(leave_id),))
 
 
+def _portal_withdraw_leave_request(app: Flask, roster_name: str, leave_id: int) -> str | None:
+    """Delete one non-Nokia leave owned by the portal employee. Returns an error key or None."""
+    roster_name = (roster_name or "").strip()
+    if not roster_name or leave_id <= 0:
+        return "missing"
+    conn = get_db(app)
+    row = conn.execute(
+        """
+        SELECT id, description FROM leave_requests
+        WHERE id = ? AND employee_name = ? COLLATE NOCASE
+        """,
+        (leave_id, roster_name),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return "not_found"
+    if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in str(row["description"] or ""):
+        conn.close()
+        return "nokia_locked"
+    _purge_meet_leave_day_rows_for_leave(conn, int(row["id"]))
+    conn.execute("DELETE FROM leave_requests WHERE id = ?", (int(row["id"]),))
+    conn.commit()
+    conn.close()
+    return None
+
+
+def _leave_row_on_roster(row: sqlite3.Row, roster: Sequence[str]) -> bool:
+    """True when the stored employee_name maps to this roster (exact / normalized only)."""
+    return _exact_roster_name_match(str(row["employee_name"] or ""), roster) is not None
+
+
+def _delete_single_day_leave_rows_for_employee(
+    conn: sqlite3.Connection, employee_name: str, work_date: str
+) -> int:
+    """Delete all single-day pending/approved leave rows for one employee on one calendar day."""
+    rows = conn.execute(
+        """
+        SELECT id FROM leave_requests
+        WHERE employee_name = ?
+          AND start_date = ? AND end_date = ?
+          AND status IN ('pending', 'approved')
+        """,
+        (employee_name, work_date, work_date),
+    ).fetchall()
+    for row in rows:
+        lid = int(row["id"])
+        _purge_meet_leave_day_rows_for_leave(conn, lid)
+        conn.execute("DELETE FROM leave_requests WHERE id = ?", (lid,))
+    return len(rows)
+
+
+def _apply_leave_tracker_day_removal(app: Flask, leave_id: int, work_date: str) -> bool:
+    """Remove one day from the tracker. Single-day rows are deleted from leave_requests; multi-day rows use meet_leave_day."""
+    work_date = work_date.strip()[:10]
+    conn = get_db(app)
+    row = conn.execute("SELECT * FROM leave_requests WHERE id = ?", (leave_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    sd = str(row["start_date"] or "")[:10]
+    ed = str(row["end_date"] or "")[:10]
+    emp = str(row["employee_name"] or "").strip()
+    if sd == ed == work_date:
+        _delete_single_day_leave_rows_for_employee(conn, emp, work_date)
+    else:
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        conn.execute(
+            """
+            INSERT INTO meet_leave_day (leave_id, work_date, decision, updated_at)
+            VALUES (?, ?, 'removed', ?)
+            ON CONFLICT(leave_id, work_date) DO UPDATE SET
+                decision = excluded.decision,
+                updated_at = excluded.updated_at
+            """,
+            (leave_id, work_date, ts),
+        )
+    conn.commit()
+    conn.close()
+    return True
+
+
 def _meet_validate_leave_in_window(
     app: Flask,
     leave_id_raw: str | None,
@@ -4156,7 +4633,7 @@ def _meet_validate_leave_in_window(
     conn.close()
     if not row:
         return None, anchor, "not_found"
-    if row["employee_name"] not in roster_t:
+    if not _leave_row_on_roster(row, roster_t):
         return None, anchor, "bad_emp"
     if row["status"] not in ("pending", "approved"):
         return None, anchor, "bad_status"
@@ -4202,7 +4679,7 @@ def _dashboard_validate_leave_for_month(
     conn.close()
     if not row:
         return None, "not_found"
-    if row["employee_name"] not in roster_t:
+    if not _leave_row_on_roster(row, roster_t):
         return None, "bad_emp"
     if row["status"] not in ("pending", "approved"):
         return None, "bad_status"
@@ -4244,17 +4721,7 @@ def build_month_context(
 
     day_dec = _load_meet_leave_day_map(app, month_start_iso, month_end_iso)
 
-    by_emp: dict[str, list[sqlite3.Row]] = {e: [] for e in roster_t}
-    for row in leaves:
-        db_name = str(row["employee_name"] or "").strip()
-        if not db_name:
-            continue
-        if db_name in by_emp:
-            by_emp[db_name].append(row)
-            continue
-        resolved = resolve_employee_name(db_name, roster=roster_t)
-        if resolved and resolved in by_emp:
-            by_emp[resolved].append(row)
+    by_emp = _bucket_leave_requests_by_roster(leaves, roster_t)
 
     reason_l = dict(LEAVE_REASONS)
     dur_l = dict(DURATION_CHOICES)
@@ -4369,17 +4836,7 @@ def _employee_leave_tracker_months_in_year(app: Flask, employee_name: str, year:
     ).fetchall()
     conn.close()
 
-    by_emp: dict[str, list[sqlite3.Row]] = {name: []}
-    for row in leaves:
-        db_name = str(row["employee_name"] or "").strip()
-        if not db_name:
-            continue
-        if db_name in by_emp:
-            by_emp[db_name].append(row)
-            continue
-        resolved = resolve_employee_name(db_name, roster=roster_t)
-        if resolved and resolved in by_emp:
-            by_emp[resolved].append(row)
+    by_emp = _bucket_leave_requests_by_roster(leaves, roster_t)
 
     months: set[int] = set()
     for m in range(1, 13):
@@ -6031,6 +6488,33 @@ def build_sprint_burndown_chart_context(
         "burndown_last_day_label": f"{calendar.month_abbr[last_actual_day.month]} {last_actual_day.day}"
         if last_actual_day
         else "—",
+    }
+
+
+def build_sprint_team_meter_context(
+    *,
+    sprint_team_capacity_hours: float | None,
+    kind_stack_total_est: float,
+    kind_stack_total_burnt: float,
+) -> dict[str, float | None]:
+    """Sprint hero gauge: team capacity vs total estimate vs total burnt hours."""
+    cap = float(sprint_team_capacity_hours or 0)
+    est = float(kind_stack_total_est or 0)
+    burnt = float(kind_stack_total_burnt or 0)
+    stretch = max(0.0, burnt - est)
+    mx = max(cap, est, burnt, 0.01)
+    pct: float | None
+    if est > SCRUM_HOUR_EPS:
+        pct = round(100.0 * burnt / est, 1)
+    else:
+        pct = None
+    return {
+        "sprint_meter_cap_hours": round(cap, 1),
+        "sprint_meter_est_hours": round(est, 1),
+        "sprint_meter_burnt_hours": round(burnt, 1),
+        "sprint_meter_stretch_hours": round(stretch, 1),
+        "sprint_meter_scale_max": round(mx, 1),
+        "sprint_meter_burnt_pct": pct,
     }
 
 
@@ -8455,9 +8939,13 @@ def import_manager_team_bundle(conn: sqlite3.Connection, team_id: int, bundle: d
         if not name:
             continue
         so = int(row.get("sort_order") or 0)
+        email = normalize_email(str(row.get("employee_email") or ""))
         conn.execute(
-            "INSERT INTO team_roster (team_id, employee_name, sort_order) VALUES (?, ?, ?)",
-            (tid, name, so),
+            """
+            INSERT INTO team_roster (team_id, employee_name, employee_email, sort_order)
+            VALUES (?, ?, ?, ?)
+            """,
+            (tid, name, email, so),
         )
 
     if _sqlite_table_exists(conn, "scrum_team_task_kind"):
@@ -8788,6 +9276,80 @@ def _sprint_team_overview_detailed_rows(
                 stickies.append(row)
         m["stickies"] = stickies
     return base
+
+
+def _build_scrum_item_detail_payload(
+    conn: sqlite3.Connection,
+    team_id: int,
+    sprint_id: int,
+    item_id: int,
+) -> dict[str, Any] | None:
+    """Single sticky detail for Kanban task-detail modal (checklist + activity)."""
+    item_row = conn.execute(
+        """
+        SELECT i.id FROM scrum_sprint_item i
+        JOIN scrum_sprint s ON s.id = i.sprint_id
+        WHERE i.id = ? AND i.sprint_id = ? AND s.team_id = ?
+        """,
+        (int(item_id), int(sprint_id), int(team_id)),
+    ).fetchone()
+    if not item_row:
+        return None
+    assignee_row = conn.execute(
+        "SELECT assignee FROM scrum_sprint_item WHERE id = ?", (int(item_id),)
+    ).fetchone()
+    assignee = str(assignee_row["assignee"] or "").strip() if assignee_row else ""
+    if not assignee:
+        return None
+    buckets = _load_kanban_cards(conn, int(sprint_id), assignee, int(team_id))
+    card: dict[str, Any] | None = None
+    col_key = ""
+    for col in SCRUM_KANBAN_COLUMNS:
+        for c in buckets[col]:
+            if int(c["id"]) == int(item_id):
+                card = dict(c)
+                col_key = col
+                break
+        if card:
+            break
+    if not card:
+        return None
+    card["kanban_column"] = col_key
+    card["kanban_column_label"] = _kanban_column_public_label(col_key)
+    iid = int(item_id)
+    checklist = _fetch_item_checklist_map(conn, [iid]).get(iid, [])
+    act_map = _fetch_kanban_item_activity_log_map(conn, [iid])
+    acts = list(act_map.get(iid, []))
+    standups = list(card.get("standup_updates") or [])
+    if standups:
+        acts = [
+            a
+            for a in acts
+            if not (a.get("from_column") == "doing" and a.get("to_column") == "doing")
+        ]
+    return {
+        "item": card,
+        "checklist": checklist,
+        "standup_updates": standups,
+        "activity_log": acts,
+    }
+
+
+def _scrum_checklist_item_on_team(conn: sqlite3.Connection, item_id: int, team_id: int) -> bool:
+    row = conn.execute(
+        """
+        SELECT i.id FROM scrum_sprint_item i
+        JOIN scrum_sprint s ON s.id = i.sprint_id
+        WHERE i.id = ? AND s.team_id = ?
+        """,
+        (int(item_id), int(team_id)),
+    ).fetchone()
+    return row is not None
+
+
+def _scrum_portal_checklist_updated_by(pu: dict[str, Any], roster_name: str) -> str:
+    email = str(pu.get("email") or "").strip()
+    return email or roster_name or "portal"
 
 
 def _scrum_attachment_root_dir(app: Flask) -> Path:
@@ -10244,8 +10806,45 @@ def create_app() -> Flask:
         session.pop("portal_team_id", None)
         session.pop("portal_otp_email", None)
         session.pop("portal_otp_fails", None)
+        session.pop("portal_access_code_fails", None)
         flash("Signed out.", "success")
         return redirect(url_for("home"))
+
+    @app.post("/auth/employee-access-code")
+    def portal_employee_access_code_signin():
+        if not _csrf_form_ok():
+            flash("Invalid security token.", "error")
+            return redirect(url_for("login_page"))
+        identifier = (request.form.get("identifier") or request.form.get("email") or "").strip()
+        code = (request.form.get("access_code") or request.form.get("code") or "").strip()
+        if not identifier:
+            flash("Enter your work email or roster name.", "error")
+            return redirect(url_for("login_page"))
+        if not code:
+            flash("Enter your 6-digit access code.", "error")
+            return redirect(url_for("login_page"))
+        hit = _resolve_portal_access_code_identity(app, identifier)
+        if not hit:
+            flash("We could not match that name or email to the team roster.", "error")
+            return redirect(url_for("login_page"))
+        roster_name = str(hit["roster_name"] or "").strip()
+        if not _verify_portal_employee_access_code(
+            app,
+            roster_name,
+            code,
+            login_email=normalize_email(identifier) if "@" in identifier else "",
+        ):
+            fails = int(session.get("portal_access_code_fails") or 0) + 1
+            session["portal_access_code_fails"] = fails
+            if fails >= 8:
+                session.pop("portal_access_code_fails", None)
+                flash("Too many failed attempts. Try again later or contact your manager.", "error")
+            else:
+                flash("Invalid access code. Check with your manager if you need a reset.", "error")
+            return redirect(url_for("login_page"))
+        session.pop("portal_access_code_fails", None)
+        hit["auth"] = "access_code"
+        return _complete_employee_signin(app, hit)
 
     @app.post("/auth/email-otp/send")
     def portal_email_otp_send():
@@ -10714,6 +11313,12 @@ def create_app() -> Flask:
                 "attachment_upload": url_for("portal_scrum_item_attachment_upload"),
                 "attachment_delete": url_for("portal_scrum_item_attachment_delete"),
             },
+            kb_checklist_urls={
+                "add": url_for("portal_scrum_api_item_checklist_add"),
+                "update": url_for("portal_scrum_api_item_checklist_update"),
+                "delete": url_for("portal_scrum_api_item_checklist_delete"),
+            },
+            kb_item_detail_url=url_for("portal_scrum_api_item_detail"),
             portal_kanban=True,
             sprint_readonly=tf["sprint_board_readonly"],
             sprint_freeze_mode=tf["sprint_freeze_mode"],
@@ -11048,6 +11653,164 @@ def create_app() -> Flask:
         conn.close()
         return jsonify({"ok": True, "pending_approval": True})
 
+    @app.get("/portal/scrum/api/item/detail")
+    def portal_scrum_api_item_detail():
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        roster_name = _portal_effective_roster_name(app, pu)
+        item_id = _parse_optional_int(request.args.get("item_id"))
+        sprint_id = _parse_optional_int(request.args.get("sprint_id"))
+        if not item_id or not sprint_id or not roster_name:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None or not _item_belongs_to_sprint_team(
+            conn, item_id, sprint_id, team_id, roster_name
+        ):
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        payload = _build_scrum_item_detail_payload(conn, team_id, sprint_id, item_id)
+        conn.close()
+        if not payload:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        return jsonify({"ok": True, **payload})
+
+    @app.post("/portal/scrum/api/item/checklist/add")
+    def portal_scrum_api_item_checklist_add():
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        roster_name = _portal_effective_roster_name(app, pu)
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        if not item_id or not sprint_id or not roster_name:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        initial_item_name = (data.get("items_to_finish") or "").strip()[:500]
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None or not _item_belongs_to_sprint_team(
+            conn, item_id, sprint_id, team_id, roster_name
+        ):
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
+            conn.close()
+            return jsonify({"ok": False, "error": fr}), 403
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM scrum_item_checklist WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()[0]
+        ts = _utc_stamp()
+        updated_by = _scrum_portal_checklist_updated_by(pu, roster_name)
+        cur = conn.execute(
+            """
+            INSERT INTO scrum_item_checklist (item_id, sort_order, items_to_finish, status, le_to_complete, done_till_date, updated_at, updated_by)
+            VALUES (?, ?, ?, '', '', '', ?, ?)
+            """,
+            (item_id, int(max_order) + 1, initial_item_name, ts, updated_by),
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": new_id, "sort_order": int(max_order) + 1})
+
+    @app.post("/portal/scrum/api/item/checklist/update")
+    def portal_scrum_api_item_checklist_update():
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        roster_name = _portal_effective_roster_name(app, pu)
+        data = request.get_json(silent=True) or {}
+        row_id = _parse_optional_int(data.get("id"))
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        field = (data.get("field") or "").strip()
+        value = (data.get("value") or "")[:2000]
+        allowed_fields = {"items_to_finish", "status", "le_to_complete", "done_till_date"}
+        if not row_id or not item_id or not sprint_id or field not in allowed_fields:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None or not _item_belongs_to_sprint_team(
+            conn, item_id, sprint_id, team_id, roster_name
+        ):
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
+            conn.close()
+            return jsonify({"ok": False, "error": fr}), 403
+        row = conn.execute(
+            """
+            SELECT c.id FROM scrum_item_checklist c
+            JOIN scrum_sprint_item i ON i.id = c.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE c.id = ? AND c.item_id = ? AND s.team_id = ? AND i.assignee = ?
+            """,
+            (row_id, item_id, team_id, roster_name),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        ts = _utc_stamp()
+        updated_by = _scrum_portal_checklist_updated_by(pu, roster_name)
+        conn.execute(
+            f"UPDATE scrum_item_checklist SET {field} = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+            (value, ts, updated_by, row_id),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+
+    @app.post("/portal/scrum/api/item/checklist/delete")
+    def portal_scrum_api_item_checklist_delete():
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        roster_name = _portal_effective_roster_name(app, pu)
+        data = request.get_json(silent=True) or {}
+        row_id = _parse_optional_int(data.get("id"))
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        if not row_id or not item_id or not sprint_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None or not _item_belongs_to_sprint_team(
+            conn, item_id, sprint_id, team_id, roster_name
+        ):
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        fr = _sprint_board_frozen_reason(conn, sprint_id)
+        if fr:
+            conn.close()
+            return jsonify({"ok": False, "error": fr}), 403
+        row = conn.execute(
+            """
+            SELECT c.id FROM scrum_item_checklist c
+            JOIN scrum_sprint_item i ON i.id = c.item_id
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE c.id = ? AND c.item_id = ? AND s.team_id = ? AND i.assignee = ?
+            """,
+            (row_id, item_id, team_id, roster_name),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        conn.execute("DELETE FROM scrum_item_checklist WHERE id = ?", (row_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+
     @app.post("/portal/scrum/sprint/item/update")
     def portal_scrum_sprint_item_update():
         pu = _portal_session()
@@ -11325,6 +12088,7 @@ def create_app() -> Flask:
             "current_portal_sprint_id": current_portal_sprint_id,
             "microsoft_oauth_configured": bool(app.config.get("MICROSOFT_OAUTH_CLIENT_ID")),
             "email_otp_configured": _portal_otp_mail_configured(app),
+            "portal_access_codes_configured": _portal_access_codes_configured(app),
         }
 
     @app.errorhandler(404)
@@ -11948,20 +12712,8 @@ def create_app() -> Flask:
 
         leave_id = int(row["id"])
         work_date = (request.form.get("work_date") or "").strip()[:10]
-        ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        conn = get_db(app)
-        conn.execute(
-            """
-            INSERT INTO meet_leave_day (leave_id, work_date, decision, updated_at)
-            VALUES (?, ?, 'removed', ?)
-            ON CONFLICT(leave_id, work_date) DO UPDATE SET
-                decision = excluded.decision,
-                updated_at = excluded.updated_at
-            """,
-            (leave_id, work_date, ts),
-        )
-        conn.commit()
-        conn.close()
+        if not _apply_leave_tracker_day_removal(app, leave_id, work_date):
+            return jsonify({"ok": False, "error": "not_found"}), 404
         return jsonify({"ok": True})
 
     @app.route("/manager/audit.csv")
@@ -12182,20 +12934,8 @@ def create_app() -> Flask:
 
         leave_id = int(row["id"])
         work_date = (request.form.get("work_date") or "").strip()[:10]
-        ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        conn = get_db(app)
-        conn.execute(
-            """
-            INSERT INTO meet_leave_day (leave_id, work_date, decision, updated_at)
-            VALUES (?, ?, 'removed', ?)
-            ON CONFLICT(leave_id, work_date) DO UPDATE SET
-                decision = excluded.decision,
-                updated_at = excluded.updated_at
-            """,
-            (leave_id, work_date, ts),
-        )
-        conn.commit()
-        conn.close()
+        if not _apply_leave_tracker_day_removal(app, leave_id, work_date):
+            return jsonify({"ok": False, "error": "not_found"}), 404
         return jsonify({"ok": True})
 
     @app.route("/meet/quick-leave", methods=["POST"])
@@ -12545,6 +13285,11 @@ def create_app() -> Flask:
             )
         except ValueError:
             sprint_team_capacity_hours = None
+        meter_ctx = build_sprint_team_meter_context(
+            sprint_team_capacity_hours=sprint_team_capacity_hours,
+            kind_stack_total_est=float(kind_stack_ctx.get("kind_stack_total_est") or 0),
+            kind_stack_total_burnt=float(kind_stack_ctx.get("kind_stack_total_burnt") or 0),
+        )
         if sprint_team_capacity_hours is not None and not _sprint_board_frozen_reason_for_row(sprint):
             ts = _utc_stamp()
             conn.execute(
@@ -12574,6 +13319,7 @@ def create_app() -> Flask:
             portal_proposals_pending=portal_proposals_pending,
             **bd_ctx,
             **kind_stack_ctx,
+            **meter_ctx,
         )
 
     @app.route("/scrum/sprint/<int:sprint_id>/team-detailed", methods=["GET"])
@@ -12835,6 +13581,12 @@ def create_app() -> Flask:
                 "attachment_upload": url_for("scrum_sprint_item_attachment_upload"),
                 "attachment_delete": url_for("scrum_sprint_item_attachment_delete"),
             },
+            kb_checklist_urls={
+                "add": url_for("scrum_api_item_checklist_add"),
+                "update": url_for("scrum_api_item_checklist_update"),
+                "delete": url_for("scrum_api_item_checklist_delete"),
+            },
+            kb_item_detail_url=url_for("scrum_api_item_detail"),
             portal_kanban=False,
             sprint_readonly=tf["sprint_board_readonly"],
             sprint_freeze_mode=tf["sprint_freeze_mode"],
@@ -13838,18 +14590,16 @@ def create_app() -> Flask:
                 return redirect(url_for("dashboard"))
             if _portal_session() and not _manager_logged_in():
                 return _portal_employee_landing_response(app)
-            otp_ok = _portal_otp_mail_configured(app)
             return render_template(
                 "login.html",
                 hide_nav=True,
-                email_otp_configured=otp_ok,
-                portal_otp_pending_email=session.get("portal_otp_email"),
             )
 
         gate = (request.form.get("gate_kind") or "").strip().lower()
 
         if gate == "employee":
-            return redirect(url_for("portal_email_otp_send"), code=307)
+            flash("Email sign-in is disabled. Use your manager access code.", "error")
+            return redirect(url_for("login_page"))
 
         if gate == "manager":
             email = (request.form.get("email") or "").strip().lower()
@@ -13960,51 +14710,189 @@ def create_app() -> Flask:
         year = max(2000, min(2100, year))
         month = max(1, min(12, month))
 
-        team_roster: tuple[str, ...] = ()
-        team_name: str | None = None
-        month_ctx: dict = {}
-        months_with_leave: set[int] = set()
+        canonical_name = name
         if name:
-            team_roster = _portal_employee_team_roster(app, name)
-            team_rows = _portal_employee_team_rows(app, name)
-            team_id = _resolve_portal_selected_team_id(app, name, persist=False)
-            if team_id is None:
-                team_id = _portal_employee_primary_team_id(app, name)
-            team_name = _portal_team_name_for_id(team_rows, team_id)
-            if team_roster:
-                month_ctx = build_month_context(app, year, month, roster=team_roster)
-                months_with_leave = _team_leave_tracker_months_in_year(app, team_roster, year)
+            conn = get_db(app)
+            cn_row = conn.execute(
+                """
+                SELECT employee_name FROM leave_requests
+                WHERE employee_name = ? COLLATE NOCASE
+                ORDER BY id DESC LIMIT 1
+                """,
+                (name,),
+            ).fetchone()
+            if not cn_row:
+                cn_row = conn.execute(
+                    "SELECT employee_name FROM team_roster WHERE employee_name = ? COLLATE NOCASE LIMIT 1",
+                    (name,),
+                ).fetchone()
+            conn.close()
+            if cn_row:
+                canonical_name = str(cn_row["employee_name"]).strip()
 
-        prev_month = date(year, month, 1) - timedelta(days=1)
-        next_anchor = date(year, month, 28) + timedelta(days=4)
-        next_month = next_anchor.replace(day=1)
-        month_choices = [(i, calendar.month_name[i]) for i in range(1, 13)]
-        month_short_choices = [(i, calendar.month_abbr[i]) for i in range(1, 13)]
-        year_choices = list(range(today.year - 1, today.year + 2))
-        month_label = month_ctx.get("month_label") or date(year, month, 1).strftime("%B %Y")
+        month_tabs = [
+            {"num": m, "name": calendar.month_abbr[m], "full": calendar.month_name[m]}
+            for m in range(1, 13)
+        ]
+
+        last_day_num = monthrange(year, month)[1]
+        month_start_iso = date(year, month, 1).isoformat()
+        month_end_iso = date(year, month, last_day_num).isoformat()
+        base_reasons = dict(LEAVE_REASONS)
+
+        raw_leave_rows: list[sqlite3.Row] = []
+        if canonical_name:
+            conn = get_db(app)
+            raw_leave_rows = conn.execute(
+                """
+                SELECT id, reason, description, start_date, end_date, duration_type,
+                       status, created_at, portal_leave_label
+                FROM leave_requests
+                WHERE employee_name = ? COLLATE NOCASE
+                  AND status IN ('pending', 'approved')
+                  AND start_date <= ? AND end_date >= ?
+                ORDER BY start_date ASC, id ASC
+                """,
+                (canonical_name, month_end_iso, month_start_iso),
+            ).fetchall()
+            conn.close()
+
+        day_leave_map: dict[str, sqlite3.Row] = {}
+        for r in raw_leave_rows:
+            try:
+                sd = date.fromisoformat(str(r["start_date"])[:10])
+                ed = date.fromisoformat(str(r["end_date"])[:10])
+            except ValueError:
+                continue
+            for d in _daterange_inclusive(sd, ed):
+                d_iso = d.isoformat()
+                if d_iso < month_start_iso or d_iso > month_end_iso:
+                    continue
+                existing = day_leave_map.get(d_iso)
+                if existing is None or _leave_row_display_tiebreak(r) > _leave_row_display_tiebreak(existing):
+                    day_leave_map[d_iso] = r
+
+        days_meta: list[dict] = []
+        for d in _daterange_inclusive(date(year, month, 1), date(year, month, last_day_num)):
+            wd = d.weekday()
+            days_meta.append({
+                "date": d,
+                "iso": d.isoformat(),
+                "weekday": calendar.day_abbr[wd],
+                "day": d.day,
+                "is_weekend": wd >= 5,
+            })
+
+        cells: list[dict | None] = []
+        leave_days_total = 0.0
+        nokia_a_day_units = 0.0
+        for dm in days_meta:
+            row = day_leave_map.get(dm["iso"])
+            cell: dict | None = None
+            if row is not None:
+                dtype = (row["duration_type"] or "full").strip()
+                desc = str(row["description"] or "")
+                day_unit = 0.5 if dtype in ("half_am", "half_pm") else 1.0
+                if _leave_reason_counts_toward_day_units(row["reason"]):
+                    leave_days_total += day_unit
+                if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in desc:
+                    nokia_a_day_units += day_unit
+                eff = str(row["status"] or "approved")
+                code = leave_cell_code(row["reason"], dtype, eff, desc)
+                css = cell_css_class(row["reason"], eff, desc)
+                cell = {
+                    "code": code,
+                    "css": css,
+                    "status": eff,
+                    "leave_id": int(row["id"]),
+                    "work_date": dm["iso"],
+                    "title": f"{base_reasons.get(row['reason'], row['reason'])} · {eff}",
+                }
+            cells.append(cell)
+
+        grid_rows: list[dict] = []
+        if canonical_name:
+            grid_rows = [{
+                "employee": canonical_name,
+                "leave_days_total": round(leave_days_total, 2),
+                "eleave_days": round(nokia_a_day_units, 2),
+                "gap_days": round(nokia_a_day_units - leave_days_total, 2),
+                "cells": cells,
+            }]
+
+        leave_records: list[dict] = []
+        for r in raw_leave_rows:
+            try:
+                sd = date.fromisoformat(str(r["start_date"])[:10])
+                ed = date.fromisoformat(str(r["end_date"])[:10])
+            except ValueError:
+                sd = ed = date.today()
+            dtype = (r["duration_type"] or "full").strip()
+            if dtype in ("half_am", "half_pm"):
+                days_val: float = 0.5
+            elif dtype == "full":
+                days_val = 1.0
+            else:
+                days_val = float(_working_weekdays_count(sd, ed))
+            plab = (r["portal_leave_label"] if "portal_leave_label" in r.keys() else "") or ""
+            leave_type = plab.strip() if plab.strip() else base_reasons.get(r["reason"], r["reason"].upper())
+            half_str = " (½ AM)" if dtype == "half_am" else " (½ PM)" if dtype == "half_pm" else ""
+            desc_raw = (r["description"] or "").strip()
+            leave_records.append({
+                "leave_id": int(r["id"]),
+                "can_withdraw": NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER not in desc_raw,
+                "leave_type": leave_type + half_str,
+                "from_date": str(r["start_date"])[:10],
+                "to_date": str(r["end_date"])[:10],
+                "days": days_val,
+                "status": (r["status"] or "").capitalize(),
+                "description": desc_raw,
+                "nokia_approved": NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in desc_raw,
+            })
 
         return render_template(
             "my_requests.html",
             hide_nav=True,
-            viewer=name,
+            viewer=canonical_name,
             portal_employee_view=True,
             year=year,
             month=month,
-            month_label=month_label,
-            month_name=month_ctx.get("month_name") or date(year, month, 1).strftime("%B"),
-            days=month_ctx.get("days") or [],
-            grid_rows=month_ctx.get("grid_rows") or [],
-            team_roster=team_roster,
-            team_name=team_name,
-            prev_y=prev_month.year,
-            prev_m=prev_month.month,
-            next_y=next_month.year,
-            next_m=next_month.month,
-            month_choices=month_choices,
-            month_short_choices=month_short_choices,
-            year_choices=year_choices,
-            months_with_leave=sorted(months_with_leave),
+            month_name=calendar.month_name[month],
+            month_tabs=month_tabs,
+            days=days_meta,
+            grid_rows=grid_rows,
+            leave_records=leave_records,
         )
+
+    @app.route("/my-requests/withdraw", methods=["POST"])
+    def portal_my_requests_withdraw():
+        pu = _portal_session()
+        if not pu:
+            flash("Sign in to manage your leave requests.", "error")
+            return redirect(url_for("home"))
+        if not _csrf_form_ok():
+            flash("Session expired. Try again.", "error")
+            return redirect(url_for("my_requests"))
+        roster_name = _portal_effective_roster_name(app, pu)
+        try:
+            leave_id = int(request.form.get("leave_id") or 0)
+        except (TypeError, ValueError):
+            leave_id = 0
+        try:
+            year = int(request.form.get("year") or date.today().year)
+            month = int(request.form.get("month") or date.today().month)
+        except (TypeError, ValueError):
+            year, month = date.today().year, date.today().month
+        year = max(2000, min(2100, year))
+        month = max(1, min(12, month))
+        err = _portal_withdraw_leave_request(app, roster_name, leave_id)
+        if err == "nokia_locked":
+            flash("Nokia e-tool approved leave cannot be withdrawn here.", "error")
+        elif err:
+            flash("Could not withdraw that leave request.", "error")
+        else:
+            flash("Leave withdrawn and removed from the tracker.", "success")
+        return redirect(url_for("my_requests", year=year, month=month))
 
     @app.route("/leave", methods=["GET", "POST"])
     def leave_apply():
@@ -14171,7 +15059,7 @@ def create_app() -> Flask:
             return redirect(url_for("reports"))
         f = request.files.get("roster_csv")
         if not f or not f.filename:
-            flash("Choose a roster file (.xlsx or CSV).", "error")
+            flash("Choose a roster file (.xlsx, CSV, or JSON).", "error")
             return redirect(url_for("reports"))
         raw = f.read()
         if len(raw) > 2_000_000:
@@ -14179,7 +15067,9 @@ def create_app() -> Flask:
             return redirect(url_for("reports"))
         fn = (f.filename or "").lower()
         try:
-            if fn.endswith(".xlsx") or (len(raw) >= 4 and raw[:4] == b"PK\x03\x04"):
+            if fn.endswith(".json"):
+                n_teams, n_rows, warns = ingest_team_roster_json(app, raw)
+            elif fn.endswith(".xlsx") or (len(raw) >= 4 and raw[:4] == b"PK\x03\x04"):
                 n_teams, n_rows, warns = ingest_team_roster_xlsx(app, raw)
             else:
                 try:
@@ -14209,7 +15099,8 @@ def create_app() -> Flask:
         wb = Workbook()
         ws = wb.active
         ws.title = "Roster Template"
-        ws.append(["Team Name", "Name", "EMAIL"])
+        ws.append(["Team Name", "Employee Name", "Employee Email"])
+        ws.append(["Alpha", "Anas P", "anas.p@nokia.com"])
         buf = io.BytesIO()
         wb.save(buf)
         body = buf.getvalue()
@@ -14218,6 +15109,20 @@ def create_app() -> Flask:
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": 'attachment; filename="roster_template.xlsx"'},
         )
+
+    @app.route("/reports/roster-export.json")
+    def reports_roster_export_json():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard", next=request.path))
+        conn = get_db(app)
+        rows = build_team_roster_export_rows(conn)
+        conn.close()
+        payload = [
+            {"team_name": team, "employee_name": name, "employee_email": email}
+            for team, name, email in rows
+        ]
+        return jsonify({"rows": payload})
 
     @app.route("/reports/roster-export.xlsx")
     def reports_roster_export_xlsx():
@@ -14231,9 +15136,9 @@ def create_app() -> Flask:
         conn.close()
         wb = Workbook()
         ws = wb.active
-        ws.append(["TeamName", "EmployeeName"])
-        for team_name, emp_name in export_pairs:
-            ws.append([team_name, emp_name])
+        ws.append(["TeamName", "EmployeeName", "EmployeeEmail"])
+        for team_name, emp_name, emp_email in export_pairs:
+            ws.append([team_name, emp_name, emp_email])
         buf = io.BytesIO()
         wb.save(buf)
         body = buf.getvalue()
@@ -14261,9 +15166,38 @@ def create_app() -> Flask:
         ).fetchall()
         conn.close()
 
+        roster = getattr(g, "manager_roster", EMPLOYEES)
+        employee_access_codes = _portal_employee_access_code_status_for_roster(app, roster)
+        roster_table_rows: list[dict[str, str]] = []
+        tid = getattr(g, "manager_team_id", None)
+        if tid is not None:
+            conn = get_db(app)
+            rrows = conn.execute(
+                """
+                SELECT tr.employee_name, tr.employee_email, t.name AS team_name
+                FROM team_roster tr
+                JOIN teams t ON t.id = tr.team_id
+                WHERE tr.team_id = ?
+                ORDER BY tr.sort_order, tr.employee_name COLLATE NOCASE
+                """,
+                (int(tid),),
+            ).fetchall()
+            conn.close()
+            roster_table_rows = [
+                {
+                    "team_name": str(r["team_name"] or "").strip(),
+                    "employee_name": str(r["employee_name"] or "").strip(),
+                    "employee_email": normalize_email(str(r["employee_email"] or "")),
+                }
+                for r in rrows
+            ]
+
         return render_template(
             "reports.html",
             lpo_manager_emails=lpo_rows,
+            employee_access_codes=employee_access_codes,
+            roster_table_rows=roster_table_rows,
+            active_team_name=getattr(g, "manager_team_name", None),
         )
 
     @app.post("/reports/lpo-emails/add")
@@ -14325,6 +15259,86 @@ def create_app() -> Flask:
         conn.commit()
         conn.close()
         flash("LPO email removed.", "success")
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/employee-access-code/set")
+    def reports_employee_access_code_set():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        roster = getattr(g, "manager_roster", ())
+        raw_name = (request.form.get("employee_name") or "").strip()
+        canonical = _canonical_roster_name_on_manager_roster(roster, raw_name)
+        if not canonical:
+            flash("That employee is not on the active team roster.", "error")
+            return redirect(url_for("reports"))
+        code = (request.form.get("access_code") or "").strip()
+        err = _set_portal_employee_access_code(
+            app,
+            canonical,
+            code,
+            manager_email=str(session.get("manager_user_email") or ""),
+        )
+        if err:
+            flash(err, "error")
+            return redirect(url_for("reports"))
+        flash(
+            f"Access code saved for {canonical}. Share the 6-digit code with the employee; "
+            "it is not shown again here.",
+            "success",
+        )
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/employee-access-code/generate")
+    def reports_employee_access_code_generate():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        roster = getattr(g, "manager_roster", ())
+        raw_name = (request.form.get("employee_name") or "").strip()
+        canonical = _canonical_roster_name_on_manager_roster(roster, raw_name)
+        if not canonical:
+            flash("That employee is not on the active team roster.", "error")
+            return redirect(url_for("reports"))
+        code = f"{secrets.randbelow(900000) + 100000:06d}"
+        err = _set_portal_employee_access_code(
+            app,
+            canonical,
+            code,
+            manager_email=str(session.get("manager_user_email") or ""),
+        )
+        if err:
+            flash(err, "error")
+            return redirect(url_for("reports"))
+        flash(
+            f"New access code for {canonical}: {code}. Give this to the employee once; "
+            "it will not be displayed again.",
+            "success",
+        )
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/employee-access-code/clear")
+    def reports_employee_access_code_clear():
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        roster = getattr(g, "manager_roster", ())
+        raw_name = (request.form.get("employee_name") or "").strip()
+        canonical = _canonical_roster_name_on_manager_roster(roster, raw_name)
+        if not canonical:
+            flash("That employee is not on the active team roster.", "error")
+            return redirect(url_for("reports"))
+        _clear_portal_employee_access_code(app, canonical)
+        flash(f"Access code cleared for {canonical}.", "success")
         return redirect(url_for("reports"))
 
     @app.route("/worksheet/nokia-audit-compare.xlsx")
@@ -15116,6 +16130,25 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": str(exc)}), 502
 
     # ── Task Checklist API ─────────────────────────────────────────────────────
+
+    @app.get("/scrum/api/item/detail")
+    def scrum_api_item_detail():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        item_id = _parse_optional_int(request.args.get("item_id"))
+        sprint_id = _parse_optional_int(request.args.get("sprint_id"))
+        if not item_id or not sprint_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        if not _scrum_checklist_item_on_team(conn, item_id, team_id):
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        payload = _build_scrum_item_detail_payload(conn, team_id, sprint_id, item_id)
+        conn.close()
+        if not payload:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        return jsonify({"ok": True, **payload})
 
     @app.get("/scrum/api/item/checklist")
     def scrum_api_item_checklist_get():

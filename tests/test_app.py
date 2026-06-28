@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -97,7 +98,7 @@ def test_home_ok(client):
     res = client.get("/", follow_redirects=True)
     assert res.status_code == 200
     assert b"TEAM PORTAL" in res.data
-    assert b"Employee Portal" in res.data or b"Verify Code" in res.data
+    assert b"Employee Portal" in res.data or b"6-digit access code" in res.data
     assert b"Manager Access" in res.data
 
 
@@ -116,7 +117,7 @@ def test_home_shows_email_otp_when_smtp_only(tmp_path, monkeypatch):
     c = application.test_client()
     r = c.get("/", follow_redirects=True)
     assert r.status_code == 200
-    assert b"Employee Portal" in r.data or b"Continue as Employee" in r.data
+    assert b"Employee Portal" in r.data or b"6-digit access code" in r.data
 
 
 def test_home_auto_enables_dev_otp_when_unconfigured(tmp_path, monkeypatch):
@@ -135,7 +136,7 @@ def test_home_auto_enables_dev_otp_when_unconfigured(tmp_path, monkeypatch):
     application.config["TESTING"] = True
     r = application.test_client().get("/", follow_redirects=True)
     assert r.status_code == 200
-    assert b"Employee Portal" in r.data or b"Continue as Employee" in r.data
+    assert b"Employee Portal" in r.data or b"6-digit access code" in r.data
 
 
 def test_home_employee_signin_off_when_production_without_auth(tmp_path, monkeypatch):
@@ -155,6 +156,95 @@ def test_home_employee_signin_off_when_production_without_auth(tmp_path, monkeyp
     r = application.test_client().get("/", follow_redirects=True)
     assert r.status_code == 200
     assert b"Employee Portal" in r.data
+
+
+def test_portal_employee_access_code_requires_roster_email(client, app):
+    name = EMPLOYEES[0]
+    email = "test.employee@nokia.com"
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams WHERE name = 'Default'").fetchone()["id"])
+    conn.execute("DELETE FROM team_roster WHERE team_id = ? AND employee_name = ?", (tid, name))
+    conn.execute(
+        "INSERT INTO team_roster (team_id, employee_name, employee_email, sort_order) VALUES (?, ?, ?, 0)",
+        (tid, name, email),
+    )
+    conn.commit()
+    conn.close()
+    _manager_login(client)
+    client.post(
+        "/reports/employee-access-code/set",
+        data={"employee_name": name, "access_code": "482910"},
+        follow_redirects=True,
+    )
+    with client.session_transaction() as sess:
+        sess.pop("portal_user", None)
+    bad = client.post(
+        "/auth/employee-access-code",
+        data={"identifier": "wrong.user@nokia.com", "access_code": "482910"},
+        follow_redirects=True,
+    )
+    assert b"Invalid access code" in bad.data or b"could not match" in bad.data.lower()
+    ok = client.post(
+        "/auth/employee-access-code",
+        data={"identifier": email, "access_code": "482910"},
+        follow_redirects=True,
+    )
+    assert ok.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess.get("portal_user", {}).get("roster_name") == name
+
+
+def test_team_roster_json_upload_and_export(client, app):
+    _manager_login(client)
+    payload = json.dumps({
+        "rows": [
+            {"team_name": "Delta", "employee_name": "Json User", "employee_email": "json.user@nokia.com"},
+        ]
+    }).encode("utf-8")
+    up = client.post(
+        "/reports/roster-upload",
+        data={"roster_csv": (io.BytesIO(payload), "roster.json")},
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert up.status_code == 200
+    assert b"Roster updated" in up.data
+    exp = client.get("/reports/roster-export.json")
+    assert exp.status_code == 200
+    body = exp.get_json()
+    assert any(r.get("employee_email") == "json.user@nokia.com" for r in body.get("rows", []))
+
+
+def test_portal_employee_access_code_manager_set_and_signin(client, app):
+    """Manager sets a 6-digit code in Settings; employee signs in with it."""
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    res = client.post(
+        "/reports/employee-access-code/set",
+        data={"employee_name": name, "access_code": "482910"},
+        follow_redirects=True,
+    )
+    assert res.status_code == 200
+    assert b"Access code saved" in res.data
+
+    client.post("/manager/logout", follow_redirects=True)
+    signin = client.post(
+        "/auth/employee-access-code",
+        data={"identifier": name, "access_code": "482910"},
+        follow_redirects=True,
+    )
+    assert signin.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess.get("portal_user")
+        assert sess["portal_user"].get("roster_name") == name
+
+    client.post("/auth/logout", follow_redirects=True)
+    bad = client.post(
+        "/auth/employee-access-code",
+        data={"identifier": name, "access_code": "000000"},
+        follow_redirects=True,
+    )
+    assert b"Invalid access code" in bad.data
 
 
 def test_portal_email_otp_send_verify(tmp_path, monkeypatch):
@@ -323,8 +413,8 @@ def test_portal_flow_with_fake_session(client, app):
     hist = client.get("/my-requests")
     assert hist.status_code == 200
     assert b"My Leave Status" in hist.data
-    assert b"portal-leave-month-bar" in hist.data
-    assert b"read-only" in hist.data.lower()
+    assert b"mls-month-strip" in hist.data
+    assert b"withdraw" in hist.data.lower()
 
 
 def test_portal_roster_name_matches_team_roster_case_insensitive(client, app):
@@ -559,14 +649,14 @@ def test_portal_my_requests_blocks_name_change_post(client, app):
     assert b"only view" in res.data.lower() or b"own requests" in res.data.lower()
 
 
-def test_portal_my_requests_shows_month_grid_with_clickable_leaves(client, app):
-    """My Leave Status shows full team leave-tracker grid for the signed-in employee."""
+def test_portal_my_requests_shows_month_grid_with_applied_leaves(client, app):
+    """My Leave Status shows personal calendar grid and applied-leaves table."""
     conn = get_db(app)
     conn.execute(
         """
         INSERT INTO leave_requests
         (employee_name, reason, description, start_date, end_date, duration_type, status, created_at)
-        VALUES (?, 'pl', 'Nokia e-tool approved', '2026-06-04', '2026-06-05', 'full', 'approved', '2026-06-01T10:00:00Z')
+        VALUES (?, 'pl', '[nokia-audit-approved]', '2026-06-04', '2026-06-05', 'full', 'approved', '2026-06-01T10:00:00Z')
         """,
         ("Akanksha Jha",),
     )
@@ -589,19 +679,81 @@ def test_portal_my_requests_shows_month_grid_with_clickable_leaves(client, app):
         }
     res = client.get("/my-requests", query_string={"year": 2026, "month": 6})
     assert res.status_code == 200
-    assert b"portal-leave-month-bar" in res.data
-    assert b"portal-leave-cell-btn" in res.data
-    assert b"ws-rownum-col" in res.data
-    assert b"ws-eleave-col" in res.data
-    assert b"portal-leave-self-row" in res.data
-    assert b"leave tracker" in res.data.lower()
-    assert res.data.count(b"ws-month-grid-row") >= len(EMPLOYEES)
+    assert b"mls-month-strip" in res.data
+    assert b"Applied Leaves" in res.data
+    assert b"Akanksha Jha" in res.data
+    assert b"Nokia Approved" in res.data
+    assert res.data.count(b"ws-name") >= 1
     july = client.get("/my-requests", query_string={"year": 2026, "month": 7})
     assert july.status_code == 200
-    july_body = july.data.split(b"<tbody>")[1].split(b"</tbody>")[0]
-    assert b"portal-leave-cell-btn" not in july_body
-    assert re.search(rb'class="portal-leave-month-btn is-active"[^>]*>Jul</a>', july.data)
-    assert re.search(rb'class="portal-leave-month-btn has-leave"[^>]*>Jun</a>', july.data)
+    assert b"No leave applications found" in july.data or b"No leave recorded" in july.data
+    assert re.search(rb'class="mls-month-tab is-active"[^>]*>Jul</a>', july.data)
+
+
+def test_portal_my_requests_withdraw_non_nokia_leave(client, app):
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at)
+        VALUES (?, 'pl', '[nokia-audit-approved]', '2026-06-04', '2026-06-04', 'full', 'approved', '2026-06-01T10:00:00Z')
+        """,
+        ("Akanksha Jha",),
+    )
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at)
+        VALUES (?, 'pl', '', '2026-06-22', '2026-06-22', 'full', 'approved', '2026-06-01T10:00:00Z')
+        """,
+        ("Akanksha Jha",),
+    )
+    conn.commit()
+    nokia_id = int(
+        conn.execute(
+            "SELECT id FROM leave_requests WHERE start_date = '2026-06-04'"
+        ).fetchone()["id"]
+    )
+    local_id = int(
+        conn.execute(
+            "SELECT id FROM leave_requests WHERE start_date = '2026-06-22'"
+        ).fetchone()["id"]
+    )
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "akanksha.jha@nokia.com",
+            "name": "Akanksha Jha",
+            "roster_name": "Akanksha Jha",
+            "role": "employee",
+        }
+    page = client.get("/my-requests", query_string={"year": 2026, "month": 6})
+    assert page.status_code == 200
+    assert b"Withdraw" in page.data
+    blocked = client.post(
+        "/my-requests/withdraw",
+        data={"leave_id": nokia_id, "year": 2026, "month": 6},
+        follow_redirects=True,
+    )
+    assert blocked.status_code == 200
+    assert b"Nokia e-tool approved leave cannot be withdrawn" in blocked.data
+    ok = client.post(
+        "/my-requests/withdraw",
+        data={"leave_id": local_id, "year": 2026, "month": 6},
+        follow_redirects=True,
+    )
+    assert ok.status_code == 200
+    assert b"Leave withdrawn" in ok.data
+    conn = get_db(app)
+    assert conn.execute("SELECT id FROM leave_requests WHERE id = ?", (local_id,)).fetchone() is None
+    assert conn.execute("SELECT id FROM leave_requests WHERE id = ?", (nokia_id,)).fetchone() is not None
+    conn.close()
+    after = client.get("/my-requests", query_string={"year": 2026, "month": 6})
+    assert after.status_code == 200
+    table = after.data.split(b"Applied Leaves")[1]
+    assert b"2026-06-04" in table
+    assert b"2026-06-22" not in table
+    assert b"Withdraw" not in table
 
 
 def test_portal_leave_redirects_legacy_leave(client, app):
@@ -820,6 +972,90 @@ def test_dashboard_leave_tracker_meet_quick_leave_creates_row(client):
     assert name.encode("utf-8") in dash.data
 
 
+def test_dashboard_leave_tracker_double_click_remove_single_day(client, app):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-07-15', '2026-07-15', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    leave_id = int(conn.execute("SELECT id FROM leave_requests ORDER BY id DESC LIMIT 1").fetchone()["id"])
+    conn.close()
+
+    rv = client.post(
+        "/dashboard/api/leave-tracker-meet-remove-day",
+        data={
+            "leave_id": leave_id,
+            "work_date": "2026-07-15",
+            "year": "2026",
+            "month": "7",
+        },
+    )
+    assert rv.status_code == 200, rv.get_json()
+    assert rv.get_json() == {"ok": True}
+
+    ctx = build_month_context(app, 2026, 7, roster=(name,))
+    row = next(r for r in ctx["grid_rows"] if r["employee"] == name)
+    cell = row["cells"][14]
+    assert cell is None
+
+    conn = get_db(app)
+    assert conn.execute("SELECT id FROM leave_requests WHERE id = ?", (leave_id,)).fetchone() is None
+    conn.close()
+
+
+def test_dashboard_leave_tracker_remove_multi_day_marks_meet_leave_day(client, app):
+    _manager_login(client)
+    name = EMPLOYEES[0]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES (?, 'pl', '', '2026-07-20', '2026-07-22', 'full', 'approved', ?, '')
+        """,
+        (name, ts),
+    )
+    conn.commit()
+    leave_id = int(conn.execute("SELECT id FROM leave_requests ORDER BY id DESC LIMIT 1").fetchone()["id"])
+    conn.close()
+
+    rv = client.post(
+        "/dashboard/api/leave-tracker-meet-remove-day",
+        data={
+            "leave_id": leave_id,
+            "work_date": "2026-07-21",
+            "year": "2026",
+            "month": "7",
+        },
+    )
+    assert rv.status_code == 200
+    assert rv.get_json() == {"ok": True}
+
+    conn = get_db(app)
+    assert conn.execute("SELECT id FROM leave_requests WHERE id = ?", (leave_id,)).fetchone() is not None
+    mld = conn.execute(
+        "SELECT decision FROM meet_leave_day WHERE leave_id = ? AND work_date = ?",
+        (leave_id, "2026-07-21"),
+    ).fetchone()
+    assert mld["decision"] == "removed"
+    conn.close()
+
+    ctx = build_month_context(app, 2026, 7, roster=(name,))
+    row = next(r for r in ctx["grid_rows"] if r["employee"] == name)
+    assert row["cells"][20] is None
+    assert row["cells"][19] is not None
+    assert row["cells"][21] is not None
+
+
 def test_compoff_shown_on_leave_grid_but_not_in_leave_day_total(app):
     name = EMPLOYEES[0]
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -852,6 +1088,37 @@ def test_compoff_shown_on_leave_grid_but_not_in_leave_day_total(app):
     assert c1 and c1.get("code") == "CO"
     assert c1.get("css", "").startswith("cell-compoff")
     assert c2 and c2.get("code") == "PL"
+
+
+def test_build_month_context_team_roster_ignores_fuzzy_other_team_leaves(app):
+    """Team leave tracker must not show another employee's leaves via fuzzy name match."""
+    frontier = ("Gajendra Singh Thakur", "Harshitha K")
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = get_db(app)
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES ('Zaiba Nousheen Khanum', 'pl', '', '2026-03-10', '2026-03-10', 'full', 'approved', ?, '')
+        """,
+        (ts,),
+    )
+    conn.execute(
+        """
+        INSERT INTO leave_requests
+        (employee_name, reason, description, start_date, end_date, duration_type, status, created_at, submitted_ip)
+        VALUES ('Shruthi K', 'pl', '', '2026-03-11', '2026-03-11', 'full', 'approved', ?, '')
+        """,
+        (ts,),
+    )
+    conn.commit()
+    conn.close()
+
+    ctx = build_month_context(app, 2026, 3, roster=frontier)
+    for emp in frontier:
+        row = next(r for r in ctx["grid_rows"] if r["employee"] == emp)
+        assert all(c is None for c in row["cells"])
+        assert row["leave_days_total"] == 0.0
 
 
 def test_compoff_does_not_reduce_sprint_capacity_hours(app):
@@ -1926,10 +2193,14 @@ def test_reports_roster_export_xlsx_current_team(client, app):
         rows = [tuple(c for c in r) for r in ws.iter_rows(values_only=True)]
     finally:
         wb.close()
-    assert rows[0] == ("TeamName", "EmployeeName")
-    body_rows = [r for r in rows[1:] if any(x for x in r if x)]
-    assert ("ExportTestZ", "Person A") in body_rows
-    assert ("ExportTestZ", "Person B") in body_rows
+    assert rows[0] == ("TeamName", "EmployeeName", "EmployeeEmail")
+    body_rows = [
+        (r[0], r[1], r[2] if r[2] is not None else "")
+        for r in rows[1:]
+        if any(x for x in r if x)
+    ]
+    assert ("ExportTestZ", "Person A", "") in body_rows
+    assert ("ExportTestZ", "Person B", "") in body_rows
 
 
 def test_default_team_shows_union_of_all_rosters(client, app):
@@ -3295,7 +3566,8 @@ def test_scrum_kanban_capacity_strip_shows_daily_burnt_hours_including_weekend(c
     assert b"scrum-ws-cell-effort" in board.data
     assert b"3.0h" in board.data
     assert b"kb-capacity-view-toggle" in board.data
-    assert b"Detailed view" in board.data
+    assert b"scrum-kb-ws-name-toggle" in board.data
+    assert b"click the" in board.data.lower()
     assert b"StripCard" in board.data
     assert b"Improvement" in board.data
     assert b"process_tools" in board.data
@@ -3356,8 +3628,8 @@ def test_scrum_sprint_team_shows_ndy_fsy_burn_when_overall_below_67(client, app)
     team = c.get("/scrum/sprint/%d" % sid)
     assert team.status_code == 200
     html = team.get_data(as_text=True)
-    assert "Cap:" in html
-    assert "SCAPACITY" in html
+    assert "team-sprint-gauge" in html
+    assert "team-effort-gauge-legend" in html
     assert "scrum-member-kind-burn" in html
     assert "Sprint burnt" in html
     assert ">20%<" in html or "20%" in html  # NDY: 1/5
@@ -4773,6 +5045,132 @@ def test_portal_doing_estimate_change_queues_proposal_and_approve_updates_db(cli
     conn.close()
     assert abs(est_after - 8.0) < 0.001
     assert st == "approved"
+
+
+def test_portal_kanban_board_includes_task_detail_modal(client, app):
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.test@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-01T00:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Detail Modal Sprint', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind)
+        VALUES (?, ?, 'Trex testing', 15, 'open', '', 0, ?, ?, 'doing', 'fsy')
+        """,
+        (sid, name, ts, ts),
+    )
+    conn.commit()
+    conn.close()
+    res = client.get(f"/portal/sprint/{sid}/board")
+    assert res.status_code == 200
+    html = res.data.decode("utf-8", errors="replace")
+    assert "kb-item-detail-dialog" in html
+    assert "kb-item-detail-trigger" in html
+    assert "scrum_item_checklist.js" in html
+    assert "Trex testing" in html
+
+
+def test_portal_scrum_item_detail_and_checklist_crud(client, app):
+    name = EMPLOYEES[0]
+    with client.session_transaction() as sess:
+        sess["portal_user"] = {
+            "email": "portal.test@nokia.com",
+            "name": name,
+            "roster_name": name,
+            "role": "employee",
+        }
+    conn = get_db(app)
+    tid = int(conn.execute("SELECT id FROM teams ORDER BY id ASC LIMIT 1").fetchone()["id"])
+    ts = "2026-11-01T00:00:00Z"
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint (team_id, name, start_date, end_date, goal, created_at, updated_at)
+        VALUES (?, 'Checklist CRUD Sprint', '2026-11-01', '2026-11-10', '', ?, ?)
+        """,
+        (tid, ts, ts),
+    )
+    sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO scrum_sprint_item
+        (sprint_id, assignee, title, estimate_hours, status, notes, sort_order, created_at, updated_at, kanban_column, task_kind, area)
+        VALUES (?, ?, 'Checklist task', 8, 'open', '', 0, ?, ?, 'doing', 'task', 'POC and Migration')
+        """,
+        (sid, name, ts, ts),
+    )
+    iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    conn.close()
+
+    detail = client.get(
+        "/portal/scrum/api/item/detail",
+        query_string={"item_id": iid, "sprint_id": sid},
+    )
+    assert detail.status_code == 200
+    dj = detail.get_json()
+    assert dj["ok"] is True
+    assert dj["item"]["title"] == "Checklist task"
+    assert dj["item"]["area"] == "POC and Migration"
+    assert dj["checklist"] == []
+
+    add = client.post(
+        "/portal/scrum/api/item/checklist/add",
+        json={"item_id": iid, "sprint_id": sid, "items_to_finish": "TC1"},
+    )
+    assert add.status_code == 200
+    row_id = int(add.get_json()["id"])
+
+    upd = client.post(
+        "/portal/scrum/api/item/checklist/update",
+        json={
+            "id": row_id,
+            "item_id": iid,
+            "sprint_id": sid,
+            "field": "status",
+            "value": "ongoing",
+        },
+    )
+    assert upd.status_code == 200
+    assert upd.get_json()["ok"] is True
+
+    detail2 = client.get(
+        "/portal/scrum/api/item/detail",
+        query_string={"item_id": iid, "sprint_id": sid},
+    )
+    cl = detail2.get_json()["checklist"]
+    assert len(cl) == 1
+    assert cl[0]["items_to_finish"] == "TC1"
+    assert cl[0]["status"] == "ongoing"
+
+    delete = client.post(
+        "/portal/scrum/api/item/checklist/delete",
+        json={"id": row_id, "item_id": iid, "sprint_id": sid},
+    )
+    assert delete.status_code == 200
+    assert delete.get_json()["ok"] is True
+
+    conn = get_db(app)
+    n = int(
+        conn.execute("SELECT COUNT(*) AS c FROM scrum_item_checklist WHERE item_id = ?", (iid,)).fetchone()["c"]
+    )
+    conn.close()
+    assert n == 0
 
 
 def test_attendance_url_redirects_home(client):

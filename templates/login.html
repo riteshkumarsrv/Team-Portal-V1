@@ -63,38 +63,21 @@
   <div class="login-grid">
     {# ── LEFT: Employee Portal ── #}
     <div class="login-card">
-      {% if portal_otp_pending_email %}
-        <h2 class="login-card-title">Verify Code</h2>
-        <p class="login-card-desc">Enter the 6-digit code sent to <strong>{{ portal_otp_pending_email }}</strong>.</p>
-        <form method="post" action="{{ url_for('portal_email_otp_verify') }}">
-          {% include "partials/csrf.html" %}
-          <div class="login-field">
-            <label class="login-label" for="otp-code">One-Time Code</label>
-            <input class="login-input" id="otp-code" name="code" type="text" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" maxlength="14" required placeholder="123456" />
-          </div>
-          <button type="submit" class="login-btn login-btn-primary">Verify &amp; Sign In</button>
-        </form>
-        <div class="login-otp-meta">
-          <form method="post" action="{{ url_for('portal_email_otp_send') }}" style="display:inline">
-            {% include "partials/csrf.html" %}
-            <input type="hidden" name="email" value="{{ portal_otp_pending_email }}" />
-            <button type="submit" class="login-otp-link">Resend code</button>
-          </form>
-          <a href="{{ url_for('portal_email_otp_cancel') }}" class="login-otp-link">Use a different email</a>
-        </div>
-      {% else %}
         <h2 class="login-card-title">Employee Portal</h2>
-        <p class="login-card-desc">Access your dashboard, apply for leave, and manage your Sprint tasks.</p>
-        <form method="post" action="{{ url_for('login_page') }}">
+        <p class="login-card-desc">Sign in with the <strong>6-digit access code</strong> your manager set in Settings.</p>
+        <form method="post" action="{{ url_for('portal_employee_access_code_signin') }}">
           {% include "partials/csrf.html" %}
-          <input type="hidden" name="gate_kind" value="employee" />
           <div class="login-field">
-            <label class="login-label" for="emp-email">Work Email</label>
-            <input class="login-input" id="emp-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com" />
+            <label class="login-label" for="emp-access-id">Work email or roster name</label>
+            <input class="login-input" id="emp-access-id" name="identifier" type="text" autocomplete="username" required placeholder="you@nokia.com or your roster name" />
           </div>
-          <button type="submit" class="login-btn login-btn-primary">Continue as Employee</button>
+          <div class="login-field">
+            <label class="login-label" for="emp-access-code">6-digit access code</label>
+            <input class="login-input" id="emp-access-code" name="access_code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required placeholder="123456" />
+          </div>
+          <button type="submit" class="login-btn login-btn-primary">Sign in</button>
         </form>
-      {% endif %}
+        <p class="login-footer-text">Ask your manager to set or reset your code under <strong>Settings</strong>.</p>
     </div>
 
     {# ── RIGHT: Manager Access ── #}

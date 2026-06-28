@@ -16,6 +16,39 @@
     font-size: 0.82rem; padding: 0.2rem 0;
   }
   .lpo-access-item .small.secondary { min-width: 1.6rem; padding: 0.1rem 0.35rem; line-height: 1.2; }
+  .emp-code-card { padding: 0.85rem 1rem 1rem; margin-bottom: 1rem; }
+  .emp-code-table, .roster-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 0.65rem; }
+  .emp-code-table th,
+  .emp-code-table td,
+  .roster-table th,
+  .roster-table td {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    padding: 0.45rem 0.35rem;
+    text-align: left;
+    vertical-align: middle;
+  }
+  .emp-code-table th, .roster-table th {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted, #94a3b8);
+  }
+  .emp-code-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+  .emp-code-input {
+    width: 5.5rem;
+    padding: 0.28rem 0.45rem;
+    font-size: 0.82rem;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--surface2, #334155);
+    background: var(--bg, #0f172a);
+    color: inherit;
+  }
+  .emp-code-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.12rem 0.45rem;
+    border-radius: 999px;
+  }
+  .emp-code-badge.is-set { background: rgba(34, 197, 94, 0.18); color: #86efac; }
+  .emp-code-badge.is-unset { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
 </style>
 {% endblock %}
 {% block content %}
@@ -48,21 +81,122 @@
   {% endif %}
 </section>
 
+<section class="card emp-code-card">
+  <h3 class="section-subheading" style="margin-bottom: 0.35rem">Employee portal access codes</h3>
+  <p class="meet-hint" style="margin-top: 0">
+    Set a <strong>6-digit sign-in code</strong> per employee on the active team roster
+    {% if active_team_name %} (<strong>{{ active_team_name }}</strong>){% endif %}.
+    Employees sign in with the <strong>Employee Email</strong> from the roster (and the code). Codes are stored securely and are not shown again after you leave this page.
+  </p>
+  {% if employee_access_codes %}
+    <table class="emp-code-table" aria-label="Employee access codes">
+      <thead>
+        <tr>
+          <th>Employee name</th>
+          <th>Employee email</th>
+          <th>Status</th>
+          <th>Last updated</th>
+          <th>Set / reset code</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in employee_access_codes %}
+          <tr>
+            <td>{{ row.employee_name }}</td>
+            <td class="cell-mono" style="font-size: 0.78rem">{{ row.employee_email or '—' }}</td>
+            <td>
+              {% if row.is_set %}
+                <span class="emp-code-badge is-set">Code set</span>
+              {% else %}
+                <span class="emp-code-badge is-unset">Not set</span>
+              {% endif %}
+            </td>
+            <td class="cell-mono" style="font-size: 0.75rem">
+              {% if row.is_set %}{{ row.updated_at[:16] if row.updated_at else '—' }}{% else %}—{% endif %}
+            </td>
+            <td>
+              <div class="emp-code-actions">
+                <form method="post" action="{{ url_for('reports_employee_access_code_set') }}" class="inline-form">
+                  {% include "partials/csrf.html" %}
+                  <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
+                  <input
+                    class="emp-code-input"
+                    name="access_code"
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]{6}"
+                    maxlength="6"
+                    placeholder="000000"
+                    aria-label="6-digit code for {{ row.employee_name }}"
+                    required
+                  />
+                  <button type="submit" class="btn small">Set</button>
+                </form>
+                <form method="post" action="{{ url_for('reports_employee_access_code_generate') }}" class="inline-form">
+                  {% include "partials/csrf.html" %}
+                  <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
+                  <button type="submit" class="btn secondary small">Generate</button>
+                </form>
+                {% if row.is_set %}
+                  <form method="post" action="{{ url_for('reports_employee_access_code_clear') }}" class="inline-form">
+                    {% include "partials/csrf.html" %}
+                    <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
+                    <button type="submit" class="btn secondary small" title="Remove access code">Clear</button>
+                  </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="meet-hint">No roster members for the active team. Upload a roster below first.</p>
+  {% endif %}
+</section>
+
+{% if roster_table_rows %}
+<section class="card">
+  <h3 class="section-subheading">Team roster{% if active_team_name %} — {{ active_team_name }}{% endif %}</h3>
+  <table class="roster-table" aria-label="Team roster">
+    <thead>
+      <tr>
+        <th>Team name</th>
+        <th>Employee name</th>
+        <th>Employee email</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in roster_table_rows %}
+        <tr>
+          <td>{{ row.team_name }}</td>
+          <td>{{ row.employee_name }}</td>
+          <td class="cell-mono" style="font-size: 0.78rem">{{ row.employee_email or '—' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
 <section class="card">
   <h3 class="section-subheading">Create/Update Team</h3>
   <p class="meet-hint" style="margin-top: 0">
-    Upload an <strong>.xlsx</strong> workbook (first sheet) or a UTF-8 <strong>CSV</strong> with columns <strong>TeamName</strong> and <strong>EmployeeName</strong>
-    (legacy headers such as <strong>Team</strong> / <strong>Name</strong> still work).
-    Each row is one person. Teams that appear in the file have their roster <strong>replaced</strong> for this app; other teams are left unchanged.
+    Upload an <strong>.xlsx</strong> workbook (first sheet), UTF-8 <strong>CSV</strong>, or <strong>JSON</strong> with fields
+    <strong>Team Name</strong>, <strong>Employee Name</strong>, and <strong>Employee Email</strong>
+    (legacy two-column Team / Name files still work; email is optional).
+    Each row is one person. Teams that appear in the file have their roster <strong>replaced</strong> for this app.
     Example:
   </p>
-  <pre class="roster-csv-sample">TeamName,EmployeeName
-Alpha,Anas P
-Alpha,Farhan Thumalla
-Beta,Siya Chugh</pre>
+  <pre class="roster-csv-sample">Team Name,Employee Name,Employee Email
+Alpha,Anas P,anas.p@nokia.com
+Alpha,Farhan Thumalla,farhan.thumalla@nokia.com
+Beta,Siya Chugh,siya.chugh@nokia.com</pre>
   <p class="meet-hint" style="margin-top: 0.5rem">
-    <a class="btn secondary" href="{{ url_for('reports_roster_export_xlsx') }}">Export roster mapping (.xlsx)</a>
-    — every <strong>TeamName</strong> / <strong>EmployeeName</strong> row in the database, plus <strong>Default</strong> rows for seeded employees who are not on any team. (Edit and re-upload to replace rosters per team.)
+    <a class="btn secondary" href="{{ url_for('reports_roster_template_xlsx') }}">Download roster template (.xlsx)</a>
+    <a class="btn secondary" href="{{ url_for('reports_roster_export_xlsx') }}">Export roster (.xlsx)</a>
+    <a class="btn secondary" href="{{ url_for('reports_roster_export_json') }}">Export roster (.json)</a>
+    — all teams in the database (Team Name / Employee Name / Employee Email). Edit and re-upload to replace rosters per team.
   </p>
   <form
     method="post"
@@ -72,12 +206,12 @@ Beta,Siya Chugh</pre>
   >
     {% include "partials/csrf.html" %}
     <div class="field">
-      <label for="roster_csv">Roster file (.xlsx or CSV, max 2 MB)</label>
+      <label for="roster_csv">Roster file (.xlsx, CSV, or JSON, max 2 MB)</label>
       <input
         id="roster_csv"
         name="roster_csv"
         type="file"
-        accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+        accept=".xlsx,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,application/json"
         required
       />
     </div>

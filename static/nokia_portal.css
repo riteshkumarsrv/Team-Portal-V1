@@ -537,6 +537,20 @@ body.portal-dashboard-page .wrap.wrap-portal {
   min-width: 0;
 }
 
+.portal-leave-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  text-decoration: none;
+  margin-bottom: 0.75rem;
+}
+
+.portal-leave-back-link:hover {
+  color: #e2e8f0;
+}
+
 body.portal-employee-shell .portal-leave-ws.worksheet-wrap {
   max-width: 100%;
 }

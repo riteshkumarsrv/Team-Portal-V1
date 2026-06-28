@@ -988,19 +988,166 @@ body.page-scrum-board .scrum-hub-side-block .field select {
   margin-top: 1rem;
 }
 
-/* Sprint team hero: fixed-width sidebar + capped chart strip (type stack + burndown) */
+/* ── v2 hero card: full-width top bar + charts + footer pills ───────────── */
+body.page-scrum-board .card.scrum-board-hero.scrum-hero-v2 {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0.5rem 0.9rem 0;
+}
+
+.scrum-hero-v2-topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  min-width: 0;
+}
+
+.scrum-hero-v2-back {
+  font-size: 0.72rem;
+  color: #64748b;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.scrum-hero-v2-back:hover {
+  color: #94a3b8;
+}
+
+.scrum-hero-v2-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scrum-hero-v2-title .scrum-team-hero-title-name {
+  font-size: clamp(0.88rem, 1.4vw, 1.05rem);
+  color: #34d399;
+}
+
+.scrum-hero-v2-dates {
+  font-size: 0.72rem;
+  color: #475569;
+  white-space: nowrap;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.scrum-hero-v2-charts {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0.35rem 0 0.25rem !important;
+  min-height: 0;
+  align-items: stretch;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.scrum-team-charts-wrap.scrum-hero-v2-charts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.scrum-hero-v2-charts .scrum-bd-chart-wrap {
+  overflow: visible;
+  height: auto;
+  min-height: 0;
+}
+
+.scrum-hero-v2-charts .scrum-bd-svg {
+  width: 100%;
+  height: auto;
+  min-height: 210px;
+  max-height: min(320px, 42vh);
+  display: block;
+}
+
+.scrum-hero-v2-charts .scrum-team-burndown,
+.scrum-hero-v2-charts .scrum-team-kind-stack,
+.scrum-hero-v2-charts .scrum-team-sprint-meter {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.scrum-hero-v2-charts .scrum-bd-chart-wrap--gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 210px;
+  max-height: min(320px, 42vh);
+  padding-bottom: 0.35rem;
+}
+
+.scrum-hero-v2-charts .sprint-hero-meter-gauge {
+  width: min(100%, 200px);
+  height: auto;
+  max-height: min(240px, 36vh);
+}
+
+.scrum-hero-v2-charts .sprint-hero-meter-legend {
+  margin-top: 0.15rem;
+}
+
+.scrum-hero-v2-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0.3rem 0 0.25rem;
+}
+
+.scrum-hero-v2-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.scrum-sprint-lifecycle-pill--leave-link {
+  text-decoration: none;
+  color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.08);
+  border-color: rgba(125, 211, 252, 0.25);
+}
+
+.scrum-sprint-lifecycle-pill--leave-link:hover {
+  background: rgba(125, 211, 252, 0.16);
+}
+
+.scrum-sprint-lifecycle-pill--pending {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.3);
+  text-decoration: none;
+}
+
+.scrum-hero-v2 .scrum-team-hero-layout {
+  display: contents;
+}
+
+/* Sprint team hero: compact sidebar + full-width chart strip */
 .scrum-team-hero-layout {
   display: grid;
-  grid-template-columns: minmax(14.5rem, 19rem) minmax(0, 1fr);
-  gap: 1.1rem 1.35rem;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  gap: 0.65rem 0.85rem;
   align-items: stretch;
   width: 100%;
 }
 
 body.page-scrum-board .card.scrum-team-hero {
-  max-width: min(1180px, 100%);
-  margin-inline: auto;
-  padding: 1.15rem 1.35rem 1.25rem;
+  max-width: none;
+  width: 100%;
+  margin-inline: 0;
+  padding: 0.85rem 1rem 0.75rem;
   border-color: rgba(148, 163, 184, 0.14);
   box-shadow:
     var(--sc-shadow),
@@ -1021,17 +1168,139 @@ body.page-scrum-board .scrum-team-hero-main {
     0 10px 36px rgba(0, 0, 0, 0.35);
 }
 
+body.page-scrum-board .scrum-team-hero-main--compact {
+  padding: 0.45rem 0.65rem 0.5rem;
+  min-height: auto;
+  align-self: start;
+}
+
+.scrum-team-hero-main--compact .scrum-hero-back {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+}
+
+.scrum-team-hero-compact-title {
+  margin: 0;
+  font-size: clamp(0.82rem, 1.15vw, 0.96rem);
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(22rem, 34vw);
+}
+
+.scrum-team-hero-compact-title .scrum-team-hero-title-name {
+  font-size: inherit;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #34d399;
+}
+
+.scrum-team-hero-cap-inline {
+  font-weight: 600;
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+}
+
+.scrum-team-pending-banner--compact {
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+.scrum-team-hero-tab-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.85rem;
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--sc-border);
+}
+
+.scrum-team-hero-tab-footer .scrum-team-hero-lifecycle-pills {
+  margin: 0;
+  gap: 0.4rem 0.5rem;
+}
+
+.scrum-team-hero-tab-footer-link {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #7dd3fc;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.scrum-team-hero-tab-footer-link:hover {
+  color: #bae6fd;
+  text-decoration: underline;
+}
+
 .scrum-team-charts-wrap {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  gap: 0.65rem;
   align-items: stretch;
   min-width: 0;
 }
 
 .scrum-team-hero-layout > .scrum-team-charts-wrap {
-  width: min(100%, 56rem);
-  margin-inline: auto;
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+}
+
+.scrum-team-hero .scrum-team-burndown,
+.scrum-team-hero .scrum-team-kind-stack,
+.scrum-team-hero .scrum-team-sprint-meter {
+  padding: 0.55rem 0.65rem 0.65rem;
+}
+
+.scrum-team-hero .scrum-bd-head {
+  gap: 0.35rem 0.55rem;
+  margin-bottom: 0.35rem;
+}
+
+.scrum-team-hero .scrum-bd-stats {
+  gap: 0.25rem 0.75rem;
+  font-size: 0.68rem;
+}
+
+.scrum-team-hero .scrum-bd-stat strong {
+  font-size: 0.82rem;
+}
+
+.scrum-team-hero .scrum-bd-stat-label {
+  font-size: 0.64rem;
+}
+
+.scrum-team-hero .scrum-bd-title {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+}
+
+.scrum-team-hero .scrum-bd-legend {
+  gap: 0.25rem 0.55rem;
+  font-size: 0.64rem;
+}
+
+.scrum-team-hero .scrum-bd-chart-wrap {
+  padding: 0.15rem 0.1rem 0;
+}
+
+.scrum-team-hero .scrum-bd-svg {
+  max-height: min(320px, 42vh);
+  min-height: 210px;
+}
+
+.scrum-team-hero .scrum-bd-y-label,
+.scrum-team-hero .scrum-bd-x-label {
+  font-size: 10px;
+}
+
+.scrum-team-hero .scrum-bd-axis-title {
+  font-size: 9px;
 }
 
 .scrum-team-charts-wrap--solo {
@@ -1544,7 +1813,8 @@ body.page-scrum-board .scrum-team-hero-main {
 
 .scrum-team-burndown,
 .scrum-team-kind-stack,
-.scrum-team-area-stack {
+.scrum-team-area-stack,
+.scrum-team-sprint-meter {
   margin: 0;
   padding: 0.85rem 1rem 1rem;
   border-radius: 12px;
@@ -1699,10 +1969,17 @@ body.page-scrum-board .scrum-team-hero-main {
     grid-template-columns: 1fr;
   }
 
-  .scrum-team-hero-layout > .scrum-team-charts-wrap {
+  .scrum-team-hero-compact-title {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .scrum-team-hero-layout > .scrum-team-charts-wrap,
+  .scrum-team-charts-wrap.scrum-hero-v2-charts {
     grid-template-columns: 1fr;
     width: 100%;
     max-width: none;
+  }
     margin-inline: 0;
   }
 
@@ -2696,8 +2973,78 @@ body.page-scrum-board .scrum-team-hero-main {
 }
 
 .scrum-td-effort {
-  min-width: 14rem;
-  max-width: 22rem;
+  min-width: 11rem;
+  max-width: 16rem;
+  vertical-align: middle;
+}
+
+.team-effort-gauge-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: visible;
+}
+
+.team-effort-gauge-wrap--expanded {
+  flex-direction: column;
+  margin: 0.1rem 0 0;
+}
+
+.team-sprint-gauge {
+  overflow: visible;
+  display: block;
+}
+
+.team-effort-gauge-legend {
+  display: flex;
+  gap: 0.8rem;
+  font-size: 0.68rem;
+  color: #94a3b8;
+  margin-top: -0.15rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.team-effort-gauge-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.team-effort-gauge-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 5px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.team-effort-gauge-swatch--cap {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.team-effort-gauge-swatch--est {
+  background: #f59e0b;
+}
+
+.team-effort-gauge-swatch--burnt {
+  background: #ef4444;
+}
+
+.team-effort-gauge-swatch--stretch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+
+.team-effort-gauge-stretch {
+  color: #fca5a5;
+}
+
+.scrum-td-effort .scrum-td-collapsed-summary {
+  align-items: center;
+  justify-content: center;
 }
 
 .scrum-effort-meta {
@@ -3536,7 +3883,8 @@ body.page-scrum-board .scrum-team-hero-main {
 
 .scrum-move-dialog,
 .scrum-add-dialog,
-.scrum-welldone-dialog {
+.scrum-welldone-dialog,
+.kb-item-detail-dialog {
   border: none;
   border-radius: 14px;
   padding: 0;
@@ -3549,7 +3897,8 @@ body.page-scrum-board .scrum-team-hero-main {
 
 .scrum-move-dialog::backdrop,
 .scrum-add-dialog::backdrop,
-.scrum-welldone-dialog::backdrop {
+.scrum-welldone-dialog::backdrop,
+.kb-item-detail-dialog::backdrop {
   background: rgba(0, 0, 0, 0.72);
 }
 
@@ -3969,6 +4318,33 @@ body.page-scrum-board .scrum-team-hero-main {
   border: 1px solid rgba(248, 113, 113, 0.45);
 }
 
+.scrum-kb-capacity-gauge-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0.35rem 0 0.1rem;
+}
+
+.sprint-odometer {
+  overflow: visible;
+}
+
+.scrum-kb-capacity-gauge-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.65rem 1rem;
+  font-size: 0.72rem;
+  color: var(--sc-muted);
+  margin-top: -0.1rem;
+}
+
+.scrum-kb-capacity-gauge-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
 .scrum-kb-capacity-bars {
   margin-top: 0.35rem;
 }
@@ -4071,7 +4447,7 @@ body.page-scrum-board .scrum-team-hero-main {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.35rem;
+  gap: 0.15rem;
   min-width: 8.5rem;
 }
 
@@ -4080,10 +4456,28 @@ body.page-scrum-board .scrum-team-hero-main {
   line-height: 1.25;
 }
 
-.scrum-kb-ws-view-toggle {
-  font-size: 0.68rem;
-  padding: 0.2rem 0.45rem;
-  white-space: nowrap;
+button.scrum-kb-ws-name-toggle {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+button.scrum-kb-ws-name-toggle:hover,
+button.scrum-kb-ws-name-toggle:focus-visible {
+  color: var(--sc-accent, #7dd3fc);
+  outline: none;
+}
+
+button.scrum-kb-ws-name-toggle.is-detailed {
+  color: var(--sc-accent, #7dd3fc);
 }
 
 .scrum-kb-ws-task-row .ws-name {
@@ -5045,4 +5439,66 @@ details[open] > .scrum-lf-cred-summary::before { content: "▾ "; }
   background: rgba(251, 113, 133, 0.08);
   border-radius: 4px;
   border: 1px solid rgba(251, 113, 133, 0.2);
+}
+
+/* Kanban task detail modal (employee + manager boards) */
+
+.kb-item-detail-dialog {
+  max-width: min(960px, 96vw);
+  width: 96vw;
+}
+
+.kb-item-detail-dialog-inner {
+  padding: 1.1rem 1.25rem 1.35rem;
+  max-height: min(90vh, 880px);
+  overflow: auto;
+}
+
+.kb-item-detail-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.kb-item-detail-dialog-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.3;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kb-item-detail-body .kb-item-detail-sticky {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.kb-item-detail-loading,
+.kb-item-detail-error {
+  margin: 0.5rem 0;
+  font-size: 0.88rem;
+  color: var(--sc-muted);
+}
+
+.kb-item-detail-error {
+  color: var(--sc-red);
+}
+
+.scrum-sticky-title.kb-item-detail-trigger {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.scrum-sticky-title.kb-item-detail-trigger:hover,
+.scrum-sticky-title.kb-item-detail-trigger:focus-visible {
+  color: var(--sc-accent, #7dd3fc);
+  outline: none;
 }

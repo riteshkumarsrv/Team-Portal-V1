@@ -1,0 +1,59 @@
+<aside class="scrum-team-sprint-meter" aria-label="Estimated versus burnt">
+  <div class="scrum-bd-head">
+    <div class="scrum-bd-stats">
+      <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Cap.</span> <strong>{{ "%.1f"|format(sprint_meter_cap_hours) }}h</strong></span>
+      <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Est.</span> <strong>{{ "%.1f"|format(sprint_meter_est_hours) }}h</strong></span>
+      <span class="scrum-bd-stat"><span class="scrum-bd-stat-label">Burnt</span> <strong>{{ "%.1f"|format(sprint_meter_burnt_hours) }}h</strong></span>
+    </div>
+    <h3 class="scrum-bd-title">Estimated vs burnt</h3>
+    {% if sprint_meter_burnt_pct is not none %}
+      <div class="scrum-bd-legend">
+        <span class="scrum-bd-leg scrum-bd-leg-ideal"><i></i>{{ "%.0f"|format(sprint_meter_burnt_pct) }}% burnt</span>
+      </div>
+    {% endif %}
+  </div>
+  <div class="scrum-bd-chart-wrap scrum-bd-chart-wrap--gauge">
+    <svg class="team-sprint-gauge sprint-hero-meter-gauge"
+         viewBox="0 0 170 105" width="170" height="105"
+         data-cap="{{ sprint_meter_cap_hours }}"
+         data-est="{{ sprint_meter_est_hours }}"
+         data-burnt="{{ sprint_meter_burnt_hours }}"
+         data-max="{{ sprint_meter_scale_max }}"
+         data-stretch="{{ sprint_meter_stretch_hours }}"
+         role="img"
+         aria-label="Sprint gauge: capacity {{ sprint_meter_cap_hours }}h, estimate {{ sprint_meter_est_hours }}h, burnt {{ sprint_meter_burnt_hours }}h">
+      <g class="tg-ticks" stroke="rgba(255,255,255,0.1)" stroke-width="1"></g>
+      <path fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="14" stroke-linecap="butt"
+            d="M 15 92 A 70 70 0 0 1 155 92"/>
+      <path class="tg-cap" fill="none" stroke="rgba(255,255,255,0.82)" stroke-width="14"
+            stroke-linecap="butt" stroke-dasharray="0 220"
+            d="M 15 92 A 70 70 0 0 1 155 92"/>
+      <path class="tg-est" fill="none" stroke="#f59e0b" stroke-width="8"
+            stroke-linecap="butt" stroke-dasharray="0 220"
+            d="M 15 92 A 70 70 0 0 1 155 92"/>
+      <line class="tg-needle" x1="85" y1="92" x2="85" y2="26"
+            stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+      <text class="tg-burnt-pct" x="85" y="26"
+            fill="#4ade80" font-size="13" font-weight="800"
+            text-anchor="middle" font-family="inherit">0%</text>
+      <circle class="tg-stretch-dot" cx="155" cy="92" r="4" fill="#ef4444" opacity="0"/>
+      <circle cx="85" cy="92" r="5.5" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+      <circle cx="85" cy="92" r="2.2" fill="#e2e8f0"/>
+      <text class="tg-burnt-val" x="85" y="70"
+            fill="#f1f5f9" font-size="13" font-weight="800"
+            text-anchor="middle" font-family="inherit">0.0h</text>
+      <text x="85" y="82" fill="#64748b" font-size="7.5"
+            text-anchor="middle" font-family="inherit">burnt</text>
+      <text x="8" y="102" fill="#475569" font-size="8" text-anchor="middle" font-family="inherit">0</text>
+      <text class="tg-max-label" x="162" y="102" fill="#475569" font-size="8" text-anchor="middle" font-family="inherit">80h</text>
+    </svg>
+    <div class="team-effort-gauge-legend sprint-hero-meter-legend" aria-hidden="true">
+      <span><i class="team-effort-gauge-swatch team-effort-gauge-swatch--cap"></i>Cap {{ "%.1f"|format(sprint_meter_cap_hours) }}h</span>
+      <span><i class="team-effort-gauge-swatch team-effort-gauge-swatch--est"></i>Est {{ "%.1f"|format(sprint_meter_est_hours) }}h</span>
+      <span><i class="team-effort-gauge-swatch team-effort-gauge-swatch--burnt"></i>Burnt {{ "%.1f"|format(sprint_meter_burnt_hours) }}h</span>
+      {% if sprint_meter_stretch_hours > 0.0001 %}
+        <span class="team-effort-gauge-stretch"><i class="team-effort-gauge-swatch team-effort-gauge-swatch--stretch"></i>Stretch +{{ "%.1f"|format(sprint_meter_stretch_hours) }}h</span>
+      {% endif %}
+    </div>
+  </div>
+</aside>

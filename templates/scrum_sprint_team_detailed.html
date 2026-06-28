@@ -3,6 +3,7 @@
 {% block body_class %}page-scrum-board{% endblock %}
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='scrum_board.css', v=50) }}" />
+  <script defer src="{{ url_for('static', filename='scrum_item_checklist.js', v=3) }}"></script>
 {% endblock %}
 {% block content %}
   <section class="card scrum-team-detail-hero">
@@ -115,7 +116,7 @@
                         <h4 class="scrum-team-detail-subh scrum-checklist-title">Task Checklist</h4>
                         {% if not sprint_readonly %}
                           <button type="button" class="btn secondary small scrum-checklist-add-btn">+ Add row</button>
-                        {% endif %}
+                            {% endif %}
                       </div>
                       <div class="scrum-checklist-frame">
                         <table class="scrum-checklist-table">
@@ -141,12 +142,12 @@
                                   </td>
                                 {% endif %}
                               </tr>
-                            {% endfor %}
+                          {% endfor %}
                             {% if not s.checklist %}
                               <tr class="scrum-checklist-empty-row">
                                 <td colspan="{{ 5 if not sprint_readonly else 4 }}" class="scrum-checklist-empty-msg">No checklist items.{% if not sprint_readonly %} Click "+ Add row".{% endif %}</td>
                               </tr>
-                            {% endif %}
+                      {% endif %}
                           </tbody>
                         </table>
                       </div>
@@ -569,158 +570,8 @@
       });
     })();
 
-    (function initTaskChecklist() {
-      // Use the meta CSRF token so we don't depend on {{ csrf_token() }} rendering inside JS.
-      function getCsrfToken() {
-        var meta = document.querySelector('meta[name="csrf-token"]');
-        if (meta) return meta.getAttribute("content") || "";
-        // Fallback: read from the hidden input rendered anywhere on the page.
-        var inp = document.querySelector('input[name="csrf_token"]');
-        return inp ? inp.value : "";
-      }
-
-      function apiPost(url, body) {
-        var token = getCsrfToken();
-        body.csrf_token = token;
-        return fetch(url, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json", "X-CSRFToken": token },
-          body: JSON.stringify(body),
-        }).then(function (r) {
-          if (!r.ok) { return r.json().catch(function () { return { ok: false, error: "http_" + r.status }; }); }
-          return r.json();
-        });
-      }
-
-      function showErr(wrap, msg) {
-        var p = wrap.querySelector(".scrum-checklist-err-msg");
-        if (!p) return;
-        p.textContent = msg || "";
-        p.hidden = !msg;
-      }
-
-      function saveTimer(td, wrap, rowId, field) {
-        if (td._saveTimer) clearTimeout(td._saveTimer);
-        td._saveTimer = setTimeout(function () {
-          var ta = td.querySelector(".scrum-checklist-textarea");
-          var value = ta ? ta.value.trim() : td.textContent.trim();
-          var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
-          var url = wrap.getAttribute("data-url-update");
-          td.classList.add("scrum-checklist-saving");
-          apiPost(url, { id: rowId, item_id: itemId, field: field, value: value })
-            .then(function (j) {
-              td.classList.remove("scrum-checklist-saving");
-              if (!j || !j.ok) {
-                td.classList.add("scrum-checklist-err");
-                showErr(wrap, "Save failed: " + (j && j.error ? j.error : "unknown"));
-              } else {
-                td.classList.remove("scrum-checklist-err");
-                showErr(wrap, null);
-              }
-            })
-            .catch(function (e) {
-              td.classList.remove("scrum-checklist-saving");
-              showErr(wrap, "Network error saving cell.");
-            });
-        }, 700);
-      }
-
-      function wireRow(tr, wrap) {
-        var rowId = parseInt(tr.getAttribute("data-row-id"), 10);
-        // Wire contenteditable cells (all except Comments/textarea)
-        tr.querySelectorAll(".scrum-checklist-cell[contenteditable='true']").forEach(function (td) {
-          var field = td.getAttribute("data-field");
-          td.addEventListener("input", function () { saveTimer(td, wrap, rowId, field); });
-          td.addEventListener("keydown", function (e) {
-            if (e.key === "Enter") { e.preventDefault(); td.blur(); }
-            if (e.key === "Tab") { e.preventDefault(); var cells = Array.from(tr.querySelectorAll(".scrum-checklist-cell")); var idx = cells.indexOf(td); var next = cells[idx + 1]; if (next) { var ta = next.querySelector(".scrum-checklist-textarea"); if (ta) ta.focus(); else next.focus(); } }
-          });
-        });
-        // Wire the Comments textarea separately
-        var commentsTd = tr.querySelector(".scrum-checklist-cell--textarea");
-        var commentsTa = commentsTd && commentsTd.querySelector(".scrum-checklist-textarea");
-        if (commentsTa && !commentsTa.readOnly) {
-          commentsTa.addEventListener("input", function () { saveTimer(commentsTd, wrap, rowId, "done_till_date"); });
-        }
-        var delBtn = tr.querySelector(".scrum-checklist-del-btn");
-        if (delBtn) {
-          delBtn.addEventListener("click", function () {
-            if (!confirm("Remove this checklist row?")) return;
-            var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
-            var url = wrap.getAttribute("data-url-delete");
-            apiPost(url, { id: rowId, item_id: itemId }).then(function (j) {
-              if (j && j.ok) {
-                tr.remove();
-                var tbody = wrap.querySelector(".scrum-checklist-tbody");
-                if (tbody && !tbody.querySelector("tr[data-row-id]")) {
-                  var et = document.createElement("tr");
-                  et.className = "scrum-checklist-empty-row";
-                  et.innerHTML = '<td colspan="5" class="scrum-checklist-empty-msg">No checklist items. Click "+ Add row".</td>';
-                  tbody.appendChild(et);
-                }
-              } else {
-                showErr(wrap, "Delete failed: " + (j && j.error ? j.error : "unknown"));
-              }
-            }).catch(function () { showErr(wrap, "Network error deleting row."); });
-          });
-        }
-      }
-
-      document.querySelectorAll(".scrum-checklist-wrap").forEach(function (wrap) {
-        // Wire existing rows.
-        wrap.querySelectorAll("tr[data-row-id]").forEach(function (tr) { wireRow(tr, wrap); });
-
-        var addBtn = wrap.querySelector(".scrum-checklist-add-btn");
-        if (!addBtn) return;
-
-        addBtn.addEventListener("click", function () {
-          // Ask for the item name before creating the row.
-          var itemName = window.prompt("Item name:");
-          if (itemName === null) return;          // user cancelled
-          itemName = (itemName || "").trim();
-
-          var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
-          if (isNaN(itemId)) { showErr(wrap, "Invalid item id."); return; }
-          var url = wrap.getAttribute("data-url-add");
-          addBtn.disabled = true;
-          showErr(wrap, null);
-
-          apiPost(url, { item_id: itemId, items_to_finish: itemName })
-            .then(function (j) {
-              addBtn.disabled = false;
-              if (!j || !j.ok) {
-                showErr(wrap, "Could not add row: " + (j && j.error ? j.error : "unknown error"));
-                return;
-              }
-              // Remove empty-state row if present.
-              var tbody = wrap.querySelector(".scrum-checklist-tbody");
-              var emptyRow = tbody && tbody.querySelector(".scrum-checklist-empty-row");
-              if (emptyRow) emptyRow.remove();
-
-              var tr = document.createElement("tr");
-              tr.setAttribute("data-row-id", j.id);
-              tr.innerHTML =
-                '<td class="scrum-checklist-cell" data-field="items_to_finish" contenteditable="true" spellcheck="false">' + (itemName.replace(/</g, "&lt;").replace(/>/g, "&gt;")) + '</td>' +
-                '<td class="scrum-checklist-cell scrum-checklist-cell--status" data-field="status" contenteditable="true" spellcheck="false"></td>' +
-                '<td class="scrum-checklist-cell" data-field="le_to_complete" contenteditable="true" spellcheck="false"></td>' +
-                '<td class="scrum-checklist-cell scrum-checklist-cell--done scrum-checklist-cell--textarea" data-field="done_till_date"><textarea class="scrum-checklist-textarea" rows="2" spellcheck="false"></textarea></td>' +
-                '<td class="scrum-checklist-del-col"><button type="button" class="scrum-checklist-del-btn" title="Remove row">✕</button></td>';
-              if (tbody) { tbody.appendChild(tr); tbody.scrollTop = tbody.scrollHeight; }
-              wireRow(tr, wrap);
-
-              // If the user typed a name, immediately save the items_to_finish field.
-              if (itemName) {
-                var firstCell = tr.querySelector("[data-field='items_to_finish']");
-                if (firstCell) saveTimer(firstCell, wrap, j.id, "items_to_finish");
-              }
-            })
-            .catch(function (err) {
-              addBtn.disabled = false;
-              showErr(wrap, "Network error: " + (err && err.message ? err.message : String(err)));
-            });
-        });
-      });
-    })();
+    document.addEventListener("DOMContentLoaded", function () {
+      if (window.initScrumChecklistWraps) window.initScrumChecklistWraps();
+    });
   </script>
 {% endblock %}

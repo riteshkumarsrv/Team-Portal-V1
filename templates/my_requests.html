@@ -4,174 +4,319 @@
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='worksheet.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+  <style>
+    .mls-month-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-bottom: 1.25rem;
+    }
+    .mls-month-tab {
+      padding: 0.28rem 0.7rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.04);
+      color: #94a3b8;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mls-month-tab:hover { background: rgba(255,255,255,0.09); color: #e0e0ff; }
+    .mls-month-tab.is-active {
+      background: #4338ca;
+      border-color: #6d5de6;
+      color: #fff;
+    }
+    .mls-grid-wrap { overflow-x: auto; }
+    .mls-grid-wrap .ws-cell { cursor: default !important; }
+    .mls-grid-wrap .ws-cell:hover { opacity: 1 !important; filter: none !important; }
+    .mls-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 0.75rem;
+      font-size: 0.75rem;
+      color: #64748b;
+      align-items: center;
+    }
+    .mls-legend .legend-box {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 3px;
+      vertical-align: middle;
+    }
+    .mls-leave-table-wrap { margin-top: 1.5rem; }
+    .mls-leave-table-title {
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin: 0 0 0.6rem;
+    }
+    .mls-leave-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .mls-leave-table th {
+      text-align: left;
+      padding: 6px 10px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #64748b;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      white-space: nowrap;
+    }
+    .mls-leave-table td {
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: #cbd5e1;
+      vertical-align: middle;
+    }
+    .mls-leave-table tr:last-child td { border-bottom: none; }
+    .mls-leave-table tr:hover td { background: rgba(255,255,255,0.03); }
+    .mls-status-badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 99px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+    }
+    .mls-status-approved-nokia {
+      background: rgba(34,197,94,0.22);
+      color: #4ade80;
+      border: 1px solid rgba(34,197,94,0.45);
+      font-weight: 700;
+    }
+    .mls-status-approved-local {
+      background: rgba(239,68,68,0.15);
+      color: #f87171;
+      border: 1px solid rgba(239,68,68,0.35);
+    }
+    .mls-status-pending {
+      background: rgba(245,158,11,0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245,158,11,0.3);
+    }
+    .mls-status-rejected {
+      background: rgba(100,116,139,0.18);
+      color: #94a3b8;
+      border: 1px solid rgba(100,116,139,0.3);
+    }
+    .mls-days-pill {
+      display: inline-block;
+      background: rgba(99,102,241,0.18);
+      color: #a5b4fc;
+      border-radius: 6px;
+      padding: 1px 8px;
+      font-weight: 600;
+      font-size: 0.8rem;
+      min-width: 32px;
+      text-align: center;
+    }
+    .mls-withdraw-form {
+      margin: 0;
+      display: inline;
+    }
+    .mls-withdraw-btn {
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid rgba(248, 113, 113, 0.45);
+      background: rgba(239, 68, 68, 0.12);
+      color: #fca5a5;
+      font-size: 0.72rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .mls-withdraw-btn:hover {
+      background: rgba(239, 68, 68, 0.22);
+      color: #fecaca;
+    }
+  </style>
 {% endblock %}
 {% block content %}
-<section class="portal-leave-status-main">
+<section class="card portal-leave-status-main">
+  {% if portal_user %}
+  <a href="{{ url_for('portal_my_sprint_kanban') }}"
+     class="portal-leave-back-link">← Back to Sprint</a>
+  {% endif %}
   <div class="portal-leave-status-head">
     <h1 class="portal-dashboard-heading">My Leave Status</h1>
     <p class="portal-leave-status-meta">
       Signed in as <strong>{{ viewer }}</strong>
-      {% if team_name %} · team <strong>{{ team_name }}</strong>{% endif %}
-      · full team leave tracker for {{ month_label }} (read-only{% if viewer %}, your row highlighted{% endif %})
+      · you can withdraw non-Nokia leaves from the table below
     </p>
   </div>
 
   {% if viewer %}
-    <div class="portal-leave-year-row">
-      <a class="btn secondary small" href="{{ url_for('my_requests', year=prev_y, month=prev_m) }}" aria-label="Previous month">←</a>
-      <form method="get" action="{{ url_for('my_requests') }}" class="portal-leave-year-form">
-        <label class="sr-only" for="my-leave-year">Year</label>
-        <select id="my-leave-year" name="year" class="portal-leave-year-select" onchange="this.form.submit()">
-          {% for y in year_choices %}
-            <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
-          {% endfor %}
-        </select>
-        <input type="hidden" name="month" value="{{ month }}" />
-      </form>
-      <a class="btn secondary small" href="{{ url_for('my_requests', year=next_y, month=next_m) }}" aria-label="Next month">→</a>
-    </div>
-
-    <nav class="portal-leave-month-bar" aria-label="Month">
-      {% for m_num, m_short in month_short_choices|default(month_choices) %}
-        <a
-          href="{{ url_for('my_requests', year=year, month=m_num) }}"
-          class="portal-leave-month-btn{% if m_num == month %} is-active{% endif %}{% if m_num in months_with_leave|default([]) %} has-leave{% endif %}"
-          {% if m_num == month %}aria-current="page"{% endif %}
-          title="{% if m_num in months_with_leave|default([]) %}Leave on team tracker this month{% else %}No leave on team tracker this month{% endif %}"
-        >{{ m_short }}</a>
+    <nav class="mls-month-strip" aria-label="Select month">
+      {% for tab in month_tabs %}
+        <a href="{{ url_for('my_requests', year=year, month=tab.num) }}"
+           class="mls-month-tab{% if tab.num == month %} is-active{% endif %}"
+           {% if tab.num == month %}aria-current="page"{% endif %}
+           title="{{ tab.full }} {{ year }}">{{ tab.name }}</a>
       {% endfor %}
     </nav>
 
-    {% if grid_rows and days %}
-    <div class="worksheet-wrap ws-month-fit ws-lead-5 ws-has-rownum ws-readonly portal-leave-ws" style="--ws-days: {{ days|length }};">
-      <table class="ws-table" role="grid" aria-label="Team leave tracker {{ month_label }}">
-        <thead>
-          <tr>
-            <th class="ws-rownum-col" rowspan="2" title="Row">#</th>
-            <th class="ws-name" rowspan="2" title="Employee">{{ month_name }}</th>
-            <th class="ws-total-col" rowspan="2" title="Leave day-units this month (full weekday leave = 1, half-day = 0.5). Same rules as the day cells.">Total</th>
-            <th class="ws-eleave-col" rowspan="2" title="Nokia e-tool approved day-units this month (green A cells)">eLeave<br />Count</th>
-            <th class="ws-gap-col" rowspan="2" title="eLeaveCount minus Total">GAP</th>
-            {% for d in days %}
-              <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
-            {% endfor %}
-          </tr>
-          <tr>
-            {% for d in days %}
-              <th class="ws-datehead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.day }}</th>
-            {% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in grid_rows %}
-            <tr
-              class="ws-month-grid-row{% if row.employee == viewer %} portal-leave-self-row{% endif %}"
-              data-employee="{{ row.employee }}"
-            >
-              <td class="ws-rownum-col" aria-label="Row {{ loop.index }}">{{ loop.index }}</td>
-              <td class="ws-name" title="{{ row.employee }}">{{ row.employee }}</td>
-              <td class="ws-total-col" title="Leave day-units this month">{{ row.leave_days_total }}</td>
-              <td class="ws-eleave-col" title="Nokia-approved day-units (A) this month">
-                <span class="ws-eleave-display">{{ '%.2f'|format(row.eleave_days) if row.eleave_days is defined else '0.00' }}</span>
-              </td>
-              <td class="ws-gap-col{% if row.gap_days is defined and row.gap_days < -0.0001 %} ws-gap-col-negative{% endif %}">{{ row.gap_days if row.gap_days is defined else 0 }}</td>
-              {% for cell in row.cells %}
-                {% set wk = days[loop.index0].is_weekend %}
-                {% if cell %}
-                  <td class="ws-cell {{ cell.css }}{% if wk %} ws-col-weekend{% endif %}">
-                    <button
-                      type="button"
-                      class="portal-leave-cell-btn"
-                      data-leave-code="{{ cell.code }}"
-                      data-leave-status="{{ cell.status }}"
-                      data-leave-day="{{ cell.work_date }}"
-                      data-leave-summary="{{ cell.detail_summary|default(cell.title) }}"
-                      data-leave-range="{{ cell.detail_range|default('') }}"
-                      data-leave-description="{{ cell.description|default('') }}"
-                      data-employee="{{ row.employee }}"
-                      title="{{ row.employee }} · {{ cell.detail_summary|default(cell.title) }}"
-                    >{{ cell.code }}</button>
-                  </td>
-                {% else %}
-                  <td class="ws-cell ws-cell-empty{% if wk %} ws-col-weekend{% endif %}"></td>
-                {% endif %}
+    {% if days and grid_rows %}
+      <div class="mls-grid-wrap">
+        <table class="ws-table" style="pointer-events:none;user-select:text;">
+          <thead>
+            <tr>
+              <th class="ws-name" style="min-width:140px;">{{ month_name|upper }} {{ year }}</th>
+              <th class="ws-total-col" title="Total leave day-units">Total</th>
+              {% for d in days %}
+                <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}"
+                    title="{{ d.iso }}">{{ d.weekday }}</th>
               {% endfor %}
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="ws-legend portal-leave-legend" aria-label="Legend">
-      <span><span class="legend-box" style="background: #7dd3fc"></span>PL</span>
-      <span><span class="legend-box" style="background: #fcd34d"></span>UL</span>
-      <span><span class="legend-box" style="background: #fca5a5"></span>SL</span>
-      <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
-      <span><span class="legend-box" style="background: rgba(148, 163, 184, 0.35)"></span>CO</span>
-      <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
-      <span class="ws-legend-note">Total = leave day-units this month (1 = full day, 0.5 = half; <strong>CompOff</strong> is shown as CO but not counted) · ½ = half day · dashed = pending · <strong>A</strong> = approved via Nokia e-tool · <strong>eLeave Count</strong> = Nokia A day-units this month · <strong>GAP</strong> = eLeaveCount − Total · click a filled cell for details</span>
-    </div>
-
-    <dialog id="portal-leave-cell-dialog" class="portal-leave-cell-dialog">
-      <div class="portal-leave-cell-dialog-inner">
-        <h2 class="portal-leave-cell-dialog-title">Leave details</h2>
-        <dl class="portal-leave-cell-dialog-meta">
-          <div><dt>Employee</dt><dd id="portal-leave-dialog-employee">—</dd></div>
-          <div><dt>Day</dt><dd id="portal-leave-dialog-day">—</dd></div>
-          <div><dt>Type</dt><dd id="portal-leave-dialog-summary">—</dd></div>
-          <div><dt>Request range</dt><dd id="portal-leave-dialog-range">—</dd></div>
-          <div><dt>Status</dt><dd id="portal-leave-dialog-status">—</dd></div>
-        </dl>
-        <p id="portal-leave-dialog-description" class="portal-leave-cell-dialog-desc" hidden></p>
-        <form method="dialog">
-          <button type="submit" class="btn secondary small">Close</button>
-        </form>
+            <tr>
+              <th class="ws-name"></th>
+              <th class="ws-total-col"></th>
+              {% for d in days %}
+                <th class="ws-datehead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.day }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for grow in grid_rows %}
+              <tr>
+                <td class="ws-name">{{ grow.employee }}</td>
+                <td class="ws-total-col" style="text-align:center;">
+                  {{ grow.leave_days_total if grow.leave_days_total else '—' }}
+                </td>
+                {% for cell in grow.cells %}
+                  {% set wk = days[loop.index0].is_weekend %}
+                  <td class="ws-cell{% if cell %} {{ cell.css }}{% endif %}{% if wk %} ws-col-weekend{% endif %}"
+                      style="text-align:center;font-size:0.78rem;padding:0.25rem 0.2rem;">
+                    {% if cell %}{{ cell.code }}{% endif %}
+                  </td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
-    </dialog>
 
-    <script>
-      (function () {
-        var dlg = document.getElementById("portal-leave-cell-dialog");
-        if (!dlg) return;
-        var empEl = document.getElementById("portal-leave-dialog-employee");
-        var dayEl = document.getElementById("portal-leave-dialog-day");
-        var sumEl = document.getElementById("portal-leave-dialog-summary");
-        var rangeEl = document.getElementById("portal-leave-dialog-range");
-        var statusEl = document.getElementById("portal-leave-dialog-status");
-        var descEl = document.getElementById("portal-leave-dialog-description");
-        document.querySelectorAll(".portal-leave-cell-btn").forEach(function (btn) {
-          btn.addEventListener("click", function () {
-            var code = btn.getAttribute("data-leave-code") || "";
-            var day = btn.getAttribute("data-leave-day") || "";
-            var summary = btn.getAttribute("data-leave-summary") || "";
-            var range = btn.getAttribute("data-leave-range") || "";
-            var status = btn.getAttribute("data-leave-status") || "";
-            var employee = btn.getAttribute("data-employee") || "";
-            var desc = (btn.getAttribute("data-leave-description") || "").trim();
-            if (empEl) empEl.textContent = employee || "—";
-            if (dayEl) dayEl.textContent = day ? day + (code ? " (" + code + ")" : "") : "—";
-            if (sumEl) sumEl.textContent = summary || "—";
-            if (rangeEl) rangeEl.textContent = range || "—";
-            if (statusEl) statusEl.textContent = status ? status.charAt(0).toUpperCase() + status.slice(1) : "—";
-            if (descEl) {
-              if (desc) {
-                descEl.textContent = desc;
-                descEl.hidden = false;
-              } else {
-                descEl.textContent = "";
-                descEl.hidden = true;
-              }
-            }
-            if (typeof dlg.showModal === "function") dlg.showModal();
-          });
-        });
-      })();
-    </script>
+      <div class="mls-legend">
+        <span><span class="legend-box" style="background:rgba(96,165,250,0.35)"></span>PL</span>
+        <span><span class="legend-box" style="background:rgba(245,158,11,0.35)"></span>UL</span>
+        <span><span class="legend-box" style="background:rgba(239,68,68,0.35)"></span>SL</span>
+        <span><span class="legend-box" style="background:rgba(167,139,250,0.35)"></span>LL</span>
+        <span><span class="legend-box" style="background:rgba(148,163,184,0.35)"></span>CO</span>
+        <span><span class="legend-box" style="background:rgba(34,197,94,0.35)"></span>A — Nokia e-tool approved</span>
+        <span>½ = half day · dashed = pending approval</span>
+      </div>
     {% else %}
-    <p class="portal-sprint-empty">No team roster found for leave tracker. Ask your manager to upload the team roster.</p>
+      <p class="portal-sprint-empty">No leave recorded for {{ month_name }} {{ year }}.</p>
     {% endif %}
+
+    <div class="mls-leave-table-wrap">
+      <h2 class="mls-leave-table-title">Applied Leaves — {{ month_name }} {{ year }}</h2>
+      {% if leave_records %}
+        <div style="overflow-x:auto;">
+          <table class="mls-leave-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Leave Type</th>
+                <th>From</th>
+                <th>To</th>
+                <th style="text-align:center;">Days</th>
+                <th>Status</th>
+                <th>Description / Reason</th>
+                <th style="text-align:center;">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for rec in leave_records %}
+                <tr>
+                  <td style="color:#475569;font-size:0.75rem;">{{ loop.index }}</td>
+                  <td style="font-weight:600;color:#e2e8f0;">{{ rec.leave_type }}</td>
+                  <td style="white-space:nowrap;">{{ rec.from_date }}</td>
+                  <td style="white-space:nowrap;">
+                    {% if rec.to_date != rec.from_date %}{{ rec.to_date }}{% else %}—{% endif %}
+                  </td>
+                  <td style="text-align:center;">
+                    <span class="mls-days-pill">
+                      {{ rec.days|int if rec.days == rec.days|int else rec.days }}
+                    </span>
+                  </td>
+                  <td>
+                    {% if rec.status == 'Approved' %}
+                      {% if rec.nokia_approved %}
+                        <span class="mls-status-badge mls-status-approved-nokia">✓ Nokia Approved</span>
+                      {% else %}
+                        <span class="mls-status-badge mls-status-approved-local">Approved</span>
+                      {% endif %}
+                    {% elif rec.status == 'Pending' %}
+                      <span class="mls-status-badge mls-status-pending">Pending</span>
+                    {% else %}
+                      <span class="mls-status-badge mls-status-rejected">{{ rec.status }}</span>
+                    {% endif %}
+                  </td>
+                  <td style="color:#94a3b8;font-size:0.78rem;max-width:200px;">
+                    {% set clean_desc = rec.description | replace('[nokia-audit-approved]', '') | trim %}
+                    {{ clean_desc if clean_desc else '—' }}
+                  </td>
+                  <td style="text-align:center;white-space:nowrap;">
+                    {% if rec.can_withdraw %}
+                      <form method="post"
+                            action="{{ url_for('portal_my_requests_withdraw') }}"
+                            class="mls-withdraw-form"
+                            onsubmit="return confirm('Withdraw this leave? It will be removed from the tracker calendar.');">
+                        {% include "partials/csrf.html" %}
+                        <input type="hidden" name="leave_id" value="{{ rec.leave_id }}" />
+                        <input type="hidden" name="year" value="{{ year }}" />
+                        <input type="hidden" name="month" value="{{ month }}" />
+                        <button type="submit" class="mls-withdraw-btn">Withdraw</button>
+                      </form>
+                    {% else %}
+                      <span style="color:#475569;font-size:0.72rem;">—</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="4"
+                    style="text-align:right;padding:8px 10px;font-size:0.78rem;
+                           font-weight:600;color:#64748b;letter-spacing:.04em;">
+                  TOTAL
+                </td>
+                <td style="text-align:center;border-top:1px solid rgba(255,255,255,0.1);padding:8px 10px;">
+                  <span class="mls-days-pill" style="background:rgba(99,102,241,0.28);color:#c7d2fe;">
+                    {% set total = namespace(v=0) %}
+                    {% for rec in leave_records %}{% set total.v = total.v + rec.days %}{% endfor %}
+                    {{ total.v|int if total.v == total.v|int else total.v }}
+                  </span>
+                </td>
+                <td colspan="3"
+                    style="border-top:1px solid rgba(255,255,255,0.1);padding:8px 10px;
+                           font-size:0.75rem;color:#475569;">
+                  working day(s) this month
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      {% else %}
+        <p class="portal-sprint-empty" style="margin:0.4rem 0;">
+          No leave applications found for {{ month_name }} {{ year }}.
+        </p>
+      {% endif %}
+    </div>
   {% else %}
-    <p class="portal-sprint-empty">Sign in to view the team leave tracker.</p>
+    <p class="portal-sprint-empty">Your account is not linked to a roster name. Contact your manager.</p>
   {% endif %}
 </section>
 {% endblock %}
