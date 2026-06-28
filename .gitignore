@@ -11,6 +11,11 @@ data/**/*.sql
 data/**/*.sql.*
 .env
 .pytest_cache/
+Secret/
+Secrets/
+Secret
+*.pat
+*.token
 
 # Local DB snapshots (auto backup every N hours while app runs; see team_tracker_backup.py)
 Backup/
