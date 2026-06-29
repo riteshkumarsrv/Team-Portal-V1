@@ -3170,6 +3170,21 @@ def _migrate_teams_owner_email_v1(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO app_migrations (id) VALUES ('teams_owner_email_v1')")
 
 
+def _migrate_teams_assign_orphans_v2(conn: sqlite3.Connection) -> None:
+    """Assign teams with blank owner_email to the oldest manager account (primary admin)."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("teams_assign_orphans_v2",)).fetchone():
+        return
+    first_mgr = conn.execute(
+        "SELECT email FROM managers ORDER BY id LIMIT 1"
+    ).fetchone()
+    if first_mgr:
+        conn.execute(
+            "UPDATE teams SET owner_email = ? WHERE owner_email IS NULL OR TRIM(owner_email) = ''",
+            (first_mgr["email"],),
+        )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('teams_assign_orphans_v2')")
+
+
 def _migrate_lpo_manager_emails_v1(conn: sqlite3.Connection) -> None:
     if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("lpo_manager_emails_v1",)).fetchone():
         return
@@ -3593,6 +3608,7 @@ def init_db(app: Flask) -> None:
     _migrate_scrum_item_activity_committed_hours_nullable_v1(conn)
     _migrate_managers_table_v1(conn)
     _migrate_teams_owner_email_v1(conn)
+    _migrate_teams_assign_orphans_v2(conn)
     _migrate_lpo_manager_emails_v1(conn)
     _migrate_lpo_manager_code_v1(conn)
     _migrate_lpo_manager_team_access_v1(conn)
