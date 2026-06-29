@@ -49,7 +49,8 @@
           </div>
         {% endif %}
         <p class="gate-card-lead">
-          Same <strong>access-code</strong> sign-in and <strong>full manager privileges</strong> — enter the <strong>separate LPO/SM code</strong> (not the manager code).
+          Sign in with your <strong>Nokia email</strong> and the <strong>LPO/SM access code</strong>.
+          Your view will be scoped to the teams assigned to your email.
         </p>
         <form method="post" action="{{ url_for('dashboard') }}" class="stack-form" id="dashboard-gate-form-lpo">
           {% include "partials/csrf.html" %}
@@ -58,7 +59,18 @@
             <input type="hidden" name="next" value="{{ next_url }}" />
           {% endif %}
           <div class="field">
-            <label for="lpo_sm_code" class="gate-access-label">Access code</label>
+            <label for="lpo_email" class="gate-access-label">Your Nokia email</label>
+            <input
+              id="lpo_email"
+              name="lpo_email"
+              type="email"
+              autocomplete="email"
+              {% if lpo_sm_password_configured|default(false) %}required{% else %}disabled{% endif %}
+              placeholder="name@nokia.com"
+            />
+          </div>
+          <div class="field">
+            <label for="lpo_sm_code" class="gate-access-label">LPO/SM access code</label>
             <input
               id="lpo_sm_code"
               name="secret_code"
@@ -76,6 +88,14 @@
       </section>
     </div>
   {% else %}
+    {% if lpo_unregistered %}
+    <div class="flash error" role="alert" style="margin-bottom:1rem">
+      <strong>Access limited:</strong> Your email (<code>{{ manager_user_email }}</code>) is not registered in the LPO manager access list.
+      You are viewing a <strong>Default (empty) workspace</strong>.
+      Please ask the team administrator to add your email and assign teams in
+      <strong>Reports &rarr; LPO manager access</strong>.
+    </div>
+    {% endif %}
     {% if not grid_rows %}
     <section class="card" style="background:rgba(30,41,59,.55);backdrop-filter:blur(24px);border:1px solid rgba(148,163,184,.15);border-radius:1rem;padding:2rem;margin-bottom:1.5rem">
       <h2 class="page-heading" style="color:#f1f5f9">Welcome to your workspace</h2>

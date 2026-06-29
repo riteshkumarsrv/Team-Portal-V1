@@ -12112,12 +12112,14 @@ def create_app() -> Flask:
                 (normalize_email(manager_email),),
             ).fetchone()
             if not registered:
-                # Unknown email somehow got LPO session → blank Default sandbox
+                # Email not in the LPO access list → show Default null team,
+                # set flag so UI can prompt the admin to add this email.
                 conn.close()
                 g.manager_teams = [{"id": -1, "name": "Default", "hub_mode": "leave"}]
                 g.manager_team_id = None
                 g.manager_team_name = "Default"
                 g.manager_roster = ()
+                g.lpo_unregistered = True
                 return
             # Registered LPO — restrict to assigned teams only
             assigned_ids = set(_lpo_assigned_team_ids(conn, manager_email))
@@ -12129,6 +12131,7 @@ def create_app() -> Flask:
                 g.manager_team_id = None
                 g.manager_team_name = None
                 g.manager_roster = ()
+                g.lpo_unregistered = False
                 return
         elif manager_email and not is_lpo:
             teams = [t for t in all_teams if (t["owner_email"] or "").strip() == "" or
@@ -12239,6 +12242,8 @@ def create_app() -> Flask:
             "active_team_id": getattr(g, "manager_team_id", None),
             "active_team_name": getattr(g, "manager_team_name", None),
             "team_hub_mode": getattr(g, "team_hub_mode", "leave"),
+            "lpo_unregistered": getattr(g, "lpo_unregistered", False),
+            "manager_user_email": session.get("manager_user_email") or "",
             "portal_user": pu,
             "portal_employee_teams": portal_employee_teams,
             "portal_employee_team_name": portal_employee_team_name,
@@ -12334,13 +12339,19 @@ def create_app() -> Flask:
                 if not lpo_configured:
                     flash("LPO/SM access is not configured.", "error")
                     return _gate_render(next_raw or None)
+                lpo_email_input = normalize_email((request.form.get("lpo_email") or "").strip())
+                if not lpo_email_input:
+                    flash("Nokia email is required for LPO/SM sign-in.", "error")
+                    return _gate_render(next_raw or None)
                 pw = (request.form.get("secret_code") or request.form.get("lpo_sm_code") or "").strip()
                 if not pw:
-                    flash("Code required.", "error")
+                    flash("Access code required.", "error")
                     return _gate_render(next_raw or None)
                 if not _check_lpo_sm_password(app, pw):
                     flash("Invalid code.", "error")
                     return _gate_render(next_raw or None)
+                # Store the LPO email so _manager_team_roster_g() can scope teams.
+                session["manager_user_email"] = lpo_email_input
                 return _finish_signin("lpo_sm")
 
             if not pw_configured:
