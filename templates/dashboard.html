@@ -61,8 +61,8 @@
           </div>
         {% endif %}
         <p class="gate-card-lead">
-          Sign in with your <strong>Nokia email</strong> and the <strong>LPO/SM access code</strong>.
-          Your view will be scoped to the teams assigned to your email.
+          Sign in with your <strong>Nokia email</strong> and your <strong>personal 6-digit manager code</strong>
+          (set by the admin in Reports &rarr; LPO Manager Access). Your view will be scoped to your assigned teams.
         </p>
         <form method="post" action="{{ url_for('dashboard') }}" class="stack-form" id="dashboard-gate-form-lpo">
           {% include "partials/csrf.html" %}

@@ -120,11 +120,13 @@
       <tr>
         <th>LPO Email</th>
         <th>Assigned Teams</th>
+        <th>Manager Code</th>
         <th style="width:6rem"></th>
       </tr>
     </thead>
     <tbody>
       {% for row in lpo_manager_emails %}
+      {% set lc_dlg = 'lpo-code-dlg-' ~ row['id'] %}
       <tr>
         <td class="cell-mono" style="font-size:0.8rem">{{ row["email"] }}</td>
         <td>
@@ -137,6 +139,45 @@
           {% else %}
             <span class="lpo-no-teams">No teams assigned</span>
           {% endif %}
+        </td>
+        <td>
+          <div class="emp-code-actions">
+            {% if row["code_is_set"] %}
+              <span class="emp-code-stars">
+                <span class="emp-code-dots" id="lpo-dots-{{ row['id'] }}">&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;</span>
+                <span class="emp-code-plain" id="lpo-plain-{{ row['id'] }}" style="display:none;color:#facc15;font-weight:700;letter-spacing:0.18em">{{ row["code_plain"] }}</span>
+                <button type="button" class="emp-code-show-btn" id="lpo-showbtn-{{ row['id'] }}"
+                  onclick="lpoToggleCode({{ row['id'] }})">Show</button>
+              </span>
+            {% else %}
+              <span style="color:#facc15;letter-spacing:0.1em" title="No manager code set">&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;</span>
+            {% endif %}
+            <form method="post" action="{{ url_for('reports_lpo_manager_code_generate') }}" class="inline-form">
+              {% include "partials/csrf.html" %}
+              <input type="hidden" name="lpo_email" value="{{ row['email'] }}" />
+              <button type="submit" class="btn secondary small" title="Auto-generate a 6-digit manager code">&#x26A1; Auto</button>
+            </form>
+            <button type="button" class="btn small"
+              onclick="document.getElementById('{{ lc_dlg }}').showModal()">
+              {% if row["code_is_set"] %}Reset{% else %}Set{% endif %}
+            </button>
+          </div>
+          <dialog id="{{ lc_dlg }}" class="emp-set-dialog">
+            <h4>{% if row["code_is_set"] %}Reset{% else %}Set{% endif %} manager code — {{ row["email"] }}</h4>
+            <form method="post" action="{{ url_for('reports_lpo_manager_code_set') }}">
+              {% include "partials/csrf.html" %}
+              <input type="hidden" name="lpo_email" value="{{ row['email'] }}" />
+              <label for="{{ lc_dlg }}-inp">Enter a 6-digit numeric code</label>
+              <input id="{{ lc_dlg }}-inp" name="manager_code" type="text"
+                inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                placeholder="000000" autocomplete="off" required />
+              <div class="emp-set-dialog-actions">
+                <button type="button" class="btn secondary small"
+                  onclick="document.getElementById('{{ lc_dlg }}').close()">Cancel</button>
+                <button type="submit" class="btn small">{% if row["code_is_set"] %}Reset{% else %}Set{% endif %}</button>
+              </div>
+            </form>
+          </dialog>
         </td>
         <td>
           <div class="lpo-row-actions">
@@ -200,6 +241,17 @@
     const dots  = document.getElementById('dots-'    + idx);
     const plain = document.getElementById('plain-'   + idx);
     const btn   = document.getElementById('showbtn-' + idx);
+    if (!dots || !plain || !btn) return;
+    const showing = plain.style.display !== 'none';
+    dots.style.display  = showing ? '' : 'none';
+    plain.style.display = showing ? 'none' : '';
+    btn.textContent     = showing ? 'Show' : 'Hide';
+  }
+
+  function lpoToggleCode(id) {
+    const dots  = document.getElementById('lpo-dots-'    + id);
+    const plain = document.getElementById('lpo-plain-'   + id);
+    const btn   = document.getElementById('lpo-showbtn-' + id);
     if (!dots || !plain || !btn) return;
     const showing = plain.style.display !== 'none';
     dots.style.display  = showing ? '' : 'none';

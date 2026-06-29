@@ -3204,6 +3204,18 @@ def _migrate_strip_approved_employee_change_prefix_v1(conn: sqlite3.Connection) 
     conn.execute("INSERT INTO app_migrations (id) VALUES ('strip_approved_employee_change_prefix_v1')")
 
 
+def _migrate_lpo_manager_code_v1(conn: sqlite3.Connection) -> None:
+    """Add per-LPO manager access code columns to lpo_manager_emails."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("lpo_manager_code_v1",)).fetchone():
+        return
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(lpo_manager_emails)").fetchall()}
+    if "code_hmac" not in existing:
+        conn.execute("ALTER TABLE lpo_manager_emails ADD COLUMN code_hmac TEXT NOT NULL DEFAULT ''")
+    if "code_plain" not in existing:
+        conn.execute("ALTER TABLE lpo_manager_emails ADD COLUMN code_plain TEXT NOT NULL DEFAULT ''")
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('lpo_manager_code_v1')")
+
+
 def _migrate_lpo_manager_team_access_v1(conn: sqlite3.Connection) -> None:
     """Per-LPO team access: which teams each LPO email is allowed to manage."""
     if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("lpo_manager_team_access_v1",)).fetchone():
@@ -3582,6 +3594,7 @@ def init_db(app: Flask) -> None:
     _migrate_managers_table_v1(conn)
     _migrate_teams_owner_email_v1(conn)
     _migrate_lpo_manager_emails_v1(conn)
+    _migrate_lpo_manager_code_v1(conn)
     _migrate_lpo_manager_team_access_v1(conn)
     _migrate_strip_approved_employee_change_prefix_v1(conn)
     _migrate_scrum_item_linked_files_v1(conn)
@@ -4045,6 +4058,64 @@ def _check_lpo_sm_password(app: Flask, candidate: str) -> bool:
         return secrets.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
     except Exception:
         return False
+
+
+def _lpo_manager_code_hmac(app: Flask, code: str) -> str:
+    secret = (app.config.get("SECRET_KEY") or "dev").encode("utf-8")
+    payload = f"lpo-manager-access:{code.strip()}".encode("utf-8")
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def _set_lpo_manager_code(app: Flask, lpo_email: str, code: str) -> str | None:
+    """Set a 6-digit manager access code for one LPO email. Returns error or None."""
+    normalized = _normalize_portal_access_code(code)
+    if not normalized:
+        return "Enter a 6-digit numeric code."
+    em = normalize_email(lpo_email)
+    if not em:
+        return "LPO email is required."
+    digest = _lpo_manager_code_hmac(app, normalized)
+    conn = get_db(app)
+    conn.execute(
+        "UPDATE lpo_manager_emails SET code_hmac = ?, code_plain = ? WHERE email = ? COLLATE NOCASE",
+        (digest, normalized, em),
+    )
+    conn.commit()
+    conn.close()
+    return None
+
+
+def _clear_lpo_manager_code(app: Flask, lpo_email: str) -> None:
+    em = normalize_email(lpo_email)
+    if not em:
+        return
+    conn = get_db(app)
+    conn.execute(
+        "UPDATE lpo_manager_emails SET code_hmac = '', code_plain = '' WHERE email = ? COLLATE NOCASE",
+        (em,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _verify_lpo_manager_code(app: Flask, lpo_email: str, code: str) -> bool:
+    """Returns True if the 6-digit code matches the stored LPO manager code."""
+    normalized = _normalize_portal_access_code(code)
+    if not normalized:
+        return False
+    em = normalize_email(lpo_email)
+    if not em:
+        return False
+    digest = _lpo_manager_code_hmac(app, normalized)
+    conn = get_db(app)
+    row = conn.execute(
+        "SELECT code_hmac FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
+        (em,),
+    ).fetchone()
+    conn.close()
+    if not row or not str(row["code_hmac"] or ""):
+        return False
+    return str(row["code_hmac"]) == digest
 
 
 def _lpo_assigned_team_ids(conn: sqlite3.Connection, email: str) -> list[int]:
@@ -12355,9 +12426,6 @@ def create_app() -> Flask:
                 return redirect(url_for("dashboard"), code=303)
 
             if gate == "lpo_sm":
-                if not lpo_configured:
-                    flash("LPO/SM access is not configured.", "error")
-                    return _gate_render(next_raw or None)
                 lpo_email_input = normalize_email((request.form.get("lpo_email") or "").strip())
                 if not lpo_email_input:
                     flash("Nokia email is required for LPO/SM sign-in.", "error")
@@ -12365,6 +12433,15 @@ def create_app() -> Flask:
                 pw = (request.form.get("secret_code") or request.form.get("lpo_sm_code") or "").strip()
                 if not pw:
                     flash("Access code required.", "error")
+                    return _gate_render(next_raw or None)
+                # Try individual 6-digit LPO manager code first (from lpo_manager_emails table).
+                digits_only = re.sub(r"\D", "", pw)
+                if len(digits_only) == 6 and _verify_lpo_manager_code(app, lpo_email_input, digits_only):
+                    session["manager_user_email"] = lpo_email_input
+                    return _finish_signin("lpo_sm")
+                # Fall back to shared LPO/SM password.
+                if not lpo_configured:
+                    flash("LPO/SM access is not configured and no individual code is set for this email.", "error")
                     return _gate_render(next_raw or None)
                 if not _check_lpo_sm_password(app, pw):
                     flash("Invalid code.", "error")
@@ -15396,7 +15473,7 @@ def create_app() -> Flask:
 
         conn = get_db(app)
         lpo_raw = conn.execute(
-            "SELECT id, email, created_at FROM lpo_manager_emails ORDER BY email COLLATE NOCASE"
+            "SELECT id, email, created_at, COALESCE(code_plain,'') AS code_plain FROM lpo_manager_emails ORDER BY email COLLATE NOCASE"
         ).fetchall()
         all_teams = conn.execute("SELECT id, name FROM teams ORDER BY name COLLATE NOCASE").fetchall()
         # Build per-LPO assigned team ids set
@@ -15414,6 +15491,8 @@ def create_app() -> Flask:
                 "email": r["email"],
                 "created_at": r["created_at"],
                 "assigned_team_ids": assigned,
+                "code_plain": str(r["code_plain"] or ""),
+                "code_is_set": bool(str(r["code_plain"] or "").strip()),
             })
         conn.close()
 
@@ -15567,6 +15646,65 @@ def create_app() -> Flask:
         conn.commit()
         conn.close()
         flash(f"Teams updated for {email} ({len(selected_ids)} assigned).", "success")
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/lpo-manager-code/set")
+    def reports_lpo_manager_code_set():
+        """Set a manual 6-digit manager access code for an LPO email."""
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        lpo_email = normalize_email((request.form.get("lpo_email") or "").strip())
+        code = (request.form.get("manager_code") or "").strip()
+        if not lpo_email:
+            flash("LPO email is required.", "error")
+            return redirect(url_for("reports"))
+        err = _set_lpo_manager_code(app, lpo_email, code)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("reports"))
+        flash(f"Manager access code saved for {lpo_email}.", "success")
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/lpo-manager-code/generate")
+    def reports_lpo_manager_code_generate():
+        """Auto-generate a 6-digit manager access code for an LPO email."""
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        lpo_email = normalize_email((request.form.get("lpo_email") or "").strip())
+        if not lpo_email:
+            flash("LPO email is required.", "error")
+            return redirect(url_for("reports"))
+        code = f"{secrets.randbelow(900000) + 100000:06d}"
+        err = _set_lpo_manager_code(app, lpo_email, code)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("reports"))
+        flash(f"Manager access code auto-generated for {lpo_email}. Click 'Show' to view it.", "success")
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/lpo-manager-code/clear")
+    def reports_lpo_manager_code_clear():
+        """Remove the manager access code for an LPO email."""
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        lpo_email = normalize_email((request.form.get("lpo_email") or "").strip())
+        if not lpo_email:
+            flash("LPO email is required.", "error")
+            return redirect(url_for("reports"))
+        _clear_lpo_manager_code(app, lpo_email)
+        flash(f"Manager access code cleared for {lpo_email}.", "success")
         return redirect(url_for("reports"))
 
     @app.post("/reports/employee-access-code/set")
