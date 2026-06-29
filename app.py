@@ -3162,6 +3162,27 @@ def _migrate_lpo_manager_emails_v1(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO app_migrations (id) VALUES ('lpo_manager_emails_v1')")
 
 
+def _migrate_lpo_manager_team_access_v1(conn: sqlite3.Connection) -> None:
+    """Per-LPO team access: which teams each LPO email is allowed to manage."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("lpo_manager_team_access_v1",)).fetchone():
+        return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lpo_manager_team_access (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lpo_email TEXT NOT NULL COLLATE NOCASE,
+            team_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (lpo_email, team_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lpo_team_access_email ON lpo_manager_team_access(lpo_email)"
+    )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('lpo_manager_team_access_v1')")
+
+
 def _migrate_scrum_item_linked_files_v1(conn: sqlite3.Connection) -> None:
     """URL-linked reference files per sprint item (no upload needed)."""
     if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("scrum_item_linked_files_v1",)).fetchone():
@@ -3518,6 +3539,7 @@ def init_db(app: Flask) -> None:
     _migrate_managers_table_v1(conn)
     _migrate_teams_owner_email_v1(conn)
     _migrate_lpo_manager_emails_v1(conn)
+    _migrate_lpo_manager_team_access_v1(conn)
     _migrate_scrum_item_linked_files_v1(conn)
     _migrate_scrum_item_linked_file_auth_v1(conn)
     _migrate_scrum_item_checklist_v1(conn)
@@ -3979,6 +4001,15 @@ def _check_lpo_sm_password(app: Flask, candidate: str) -> bool:
         return secrets.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
     except Exception:
         return False
+
+
+def _lpo_assigned_team_ids(conn: sqlite3.Connection, email: str) -> list[int]:
+    """Return team IDs explicitly assigned to this LPO email (empty = none assigned yet)."""
+    rows = conn.execute(
+        "SELECT team_id FROM lpo_manager_team_access WHERE lpo_email = ? COLLATE NOCASE",
+        (normalize_email(email),),
+    ).fetchall()
+    return [int(r["team_id"]) for r in rows]
 
 
 def _fetch_lpo_manager_emails(conn: sqlite3.Connection) -> list[str]:
@@ -11963,14 +11994,42 @@ def create_app() -> Flask:
         if not _manager_logged_in():
             return
         conn = get_db(app)
-        manager_email = session.get("manager_user_email")
-        if manager_email:
-            teams = list(conn.execute(
-                "SELECT id, name, hub_mode FROM teams WHERE owner_email = ? OR owner_email = '' ORDER BY name COLLATE NOCASE",
-                (manager_email,)
-            ))
+        manager_email = session.get("manager_user_email") or ""
+        manager_role = (session.get("manager_role") or "").strip()
+        is_lpo = manager_role == "lpo_sm"
+
+        all_teams = list(conn.execute("SELECT id, name, hub_mode, COALESCE(owner_email,'') AS owner_email FROM teams ORDER BY name COLLATE NOCASE"))
+
+        if is_lpo and manager_email:
+            registered = conn.execute(
+                "SELECT 1 FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
+                (normalize_email(manager_email),),
+            ).fetchone()
+            if not registered:
+                # Unknown email somehow got LPO session → blank Default sandbox
+                conn.close()
+                g.manager_teams = [{"id": -1, "name": "Default", "hub_mode": "leave"}]
+                g.manager_team_id = None
+                g.manager_team_name = "Default"
+                g.manager_roster = ()
+                return
+            # Registered LPO — restrict to assigned teams only
+            assigned_ids = set(_lpo_assigned_team_ids(conn, manager_email))
+            teams = [t for t in all_teams if int(t["id"]) in assigned_ids]
+            if not teams:
+                # Registered but no teams assigned yet → show empty placeholder
+                conn.close()
+                g.manager_teams = []
+                g.manager_team_id = None
+                g.manager_team_name = None
+                g.manager_roster = ()
+                return
+        elif manager_email and not is_lpo:
+            teams = [t for t in all_teams if (t["owner_email"] or "").strip() == "" or
+                     normalize_email(str(t["owner_email"] or "")) == normalize_email(manager_email)]
         else:
-            teams = list(conn.execute("SELECT id, name, hub_mode FROM teams ORDER BY name COLLATE NOCASE"))
+            teams = all_teams
+
         if not teams:
             conn.close()
             return
@@ -15155,9 +15214,26 @@ def create_app() -> Flask:
             return redirect(url_for("dashboard", next=request.path))
 
         conn = get_db(app)
-        lpo_rows = conn.execute(
+        lpo_raw = conn.execute(
             "SELECT id, email, created_at FROM lpo_manager_emails ORDER BY email COLLATE NOCASE"
         ).fetchall()
+        all_teams = conn.execute("SELECT id, name FROM teams ORDER BY name COLLATE NOCASE").fetchall()
+        # Build per-LPO assigned team ids set
+        lpo_team_map: dict[str, set[int]] = {}
+        for r in conn.execute("SELECT lpo_email, team_id FROM lpo_manager_team_access").fetchall():
+            key = normalize_email(str(r["lpo_email"] or ""))
+            lpo_team_map.setdefault(key, set()).add(int(r["team_id"]))
+        # Enrich lpo_rows with assigned teams info
+        lpo_rows = []
+        for r in lpo_raw:
+            em = normalize_email(str(r["email"] or ""))
+            assigned = lpo_team_map.get(em, set())
+            lpo_rows.append({
+                "id": r["id"],
+                "email": r["email"],
+                "created_at": r["created_at"],
+                "assigned_team_ids": assigned,
+            })
         conn.close()
 
         roster = getattr(g, "manager_roster", EMPLOYEES)
@@ -15189,6 +15265,7 @@ def create_app() -> Flask:
         return render_template(
             "reports.html",
             lpo_manager_emails=lpo_rows,
+            all_teams=all_teams,
             employee_access_codes=employee_access_codes,
             roster_table_rows=roster_table_rows,
             active_team_name=getattr(g, "manager_team_name", None),
@@ -15249,10 +15326,55 @@ def create_app() -> Flask:
             flash("CSRF validation failed. Please try again.", "error")
             return redirect(url_for("reports"))
         conn = get_db(app)
+        row = conn.execute("SELECT email FROM lpo_manager_emails WHERE id = ?", (lpo_id,)).fetchone()
+        if row:
+            conn.execute(
+                "DELETE FROM lpo_manager_team_access WHERE lpo_email = ? COLLATE NOCASE",
+                (str(row["email"]),),
+            )
         conn.execute("DELETE FROM lpo_manager_emails WHERE id = ?", (lpo_id,))
         conn.commit()
         conn.close()
         flash("LPO email removed.", "success")
+        return redirect(url_for("reports"))
+
+    @app.post("/reports/lpo-emails/<int:lpo_id>/teams")
+    def reports_lpo_emails_set_teams(lpo_id: int):
+        """Save which teams this LPO email can access (checkbox list)."""
+        if not _manager_logged_in():
+            flash("Manager sign-in required.", "error")
+            return redirect(url_for("dashboard"))
+        if not _csrf_form_ok():
+            flash("CSRF validation failed. Please try again.", "error")
+            return redirect(url_for("reports"))
+        conn = get_db(app)
+        row = conn.execute("SELECT email FROM lpo_manager_emails WHERE id = ?", (lpo_id,)).fetchone()
+        if not row:
+            conn.close()
+            flash("LPO email not found.", "error")
+            return redirect(url_for("reports"))
+        email = normalize_email(str(row["email"]))
+        selected_ids = [int(v) for v in request.form.getlist("team_ids") if v.strip().isdigit()]
+        valid_ids = {
+            int(r["id"])
+            for r in conn.execute("SELECT id FROM teams").fetchall()
+        }
+        selected_ids = [tid for tid in selected_ids if tid in valid_ids]
+        ts = _utc_stamp()
+        conn.execute(
+            "DELETE FROM lpo_manager_team_access WHERE lpo_email = ? COLLATE NOCASE", (email,)
+        )
+        for tid in selected_ids:
+            try:
+                conn.execute(
+                    "INSERT INTO lpo_manager_team_access (lpo_email, team_id, created_at) VALUES (?, ?, ?)",
+                    (email, tid, ts),
+                )
+            except sqlite3.IntegrityError:
+                pass
+        conn.commit()
+        conn.close()
+        flash(f"Teams updated for {email} ({len(selected_ids)} assigned).", "success")
         return redirect(url_for("reports"))
 
     @app.post("/reports/employee-access-code/set")
