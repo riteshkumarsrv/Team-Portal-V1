@@ -15,7 +15,8 @@
           <div class="flash error" role="alert">Manager access is not configured on this server.</div>
         {% endif %}
         <p class="gate-card-lead">
-          Enter the team <strong>manager access code</strong> to open the full leave tracker, approvals, Scrum boards, Meet, and reports.
+          Enter your <strong>Nokia email</strong> and the <strong>manager access code</strong>.
+          Your view will be scoped to the teams assigned to your email.
         </p>
         <form method="post" action="{{ url_for('dashboard') }}" class="stack-form" id="dashboard-gate-form-manager">
           {% include "partials/csrf.html" %}
@@ -23,6 +24,17 @@
           {% if next_url %}
             <input type="hidden" name="next" value="{{ next_url }}" />
           {% endif %}
+          <div class="field">
+            <label for="manager_email" class="gate-access-label">Your Nokia email</label>
+            <input
+              id="manager_email"
+              name="manager_email"
+              type="email"
+              autocomplete="email"
+              {% if password_configured %}required{% else %}disabled{% endif %}
+              placeholder="name@nokia.com"
+            />
+          </div>
           <div class="field">
             <label for="secret_code" class="gate-access-label">Access code</label>
             <input

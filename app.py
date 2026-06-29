@@ -12134,8 +12134,27 @@ def create_app() -> Flask:
                 g.lpo_unregistered = False
                 return
         elif manager_email and not is_lpo:
-            teams = [t for t in all_teams if (t["owner_email"] or "").strip() == "" or
-                     normalize_email(str(t["owner_email"] or "")) == normalize_email(manager_email)]
+            # Manager login with email: check if this email is in the LPO access list.
+            # If yes → scope to their assigned teams only (same as LPO/SM).
+            # If no → they are the super-admin and see all teams.
+            lpo_check = conn.execute(
+                "SELECT 1 FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
+                (normalize_email(manager_email),),
+            ).fetchone()
+            if lpo_check:
+                # Email is a registered LPO → restrict to their assigned teams
+                assigned_ids = set(_lpo_assigned_team_ids(conn, manager_email))
+                teams = [t for t in all_teams if int(t["id"]) in assigned_ids]
+                if not teams:
+                    conn.close()
+                    g.manager_teams = []
+                    g.manager_team_id = None
+                    g.manager_team_name = None
+                    g.manager_roster = ()
+                    return
+            else:
+                # Not in LPO list → super admin, sees all teams
+                teams = all_teams
         else:
             teams = all_teams
 
@@ -12357,6 +12376,10 @@ def create_app() -> Flask:
             if not pw_configured:
                 flash("Manager access is not configured.", "error")
                 return _gate_render(next_raw or None)
+            manager_email_input = normalize_email((request.form.get("manager_email") or "").strip())
+            if not manager_email_input:
+                flash("Nokia email is required.", "error")
+                return _gate_render(next_raw or None)
             pw = (request.form.get("secret_code") or request.form.get("manager_password") or "").strip()
             if not pw:
                 flash("Code required.", "error")
@@ -12364,6 +12387,8 @@ def create_app() -> Flask:
             if not _check_manager_password(app, pw):
                 flash("Invalid code.", "error")
                 return _gate_render(next_raw or None)
+            # Store email — used by _manager_team_roster_g() to scope teams.
+            session["manager_user_email"] = manager_email_input
             return _finish_signin("manager")
 
         if not _manager_logged_in():
