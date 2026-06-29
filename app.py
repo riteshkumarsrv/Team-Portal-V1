@@ -15314,6 +15314,17 @@ def create_app() -> Flask:
         if invalid:
             parts.append(f"{invalid} invalid")
         flash(". ".join(parts) + ".", "success" if added else "info")
+        # When a single new email was added, redirect back with its id so the
+        # team-selection modal auto-opens on the page.
+        if added == 1 and len(candidates) == 1:
+            conn2 = get_db(app)
+            new_row = conn2.execute(
+                "SELECT id FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
+                (candidates[0],),
+            ).fetchone()
+            conn2.close()
+            if new_row:
+                return redirect(url_for("reports", edit_lpo=int(new_row["id"])))
         return redirect(url_for("reports"))
 
     @app.post("/reports/lpo-emails/<int:lpo_id>/delete")

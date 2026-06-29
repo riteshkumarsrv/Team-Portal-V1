@@ -3,28 +3,43 @@
 {% block extra_head %}
 <style>
   .lpo-access-card { padding: 0.85rem 1rem 0.75rem; }
-  .lpo-access-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.35rem; }
+  .lpo-access-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
   .lpo-access-input {
     flex: 1 1 14rem; min-width: 10rem; max-width: 22rem;
     padding: 0.35rem 0.55rem; font-size: 0.85rem;
     border-radius: var(--radius-sm, 6px); border: 1px solid var(--surface2, #334155);
     background: var(--bg, #0f172a); color: inherit;
   }
-  .lpo-access-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
-  .lpo-access-item {
-    display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem;
-    font-size: 0.82rem; padding: 0.25rem 0; border-bottom: 1px solid rgba(148,163,184,0.08);
+  /* LPO mapping table */
+  .lpo-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 0.25rem; }
+  .lpo-table th {
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted,#94a3b8); padding: 0.3rem 0.5rem; text-align: left;
+    border-bottom: 1px solid rgba(148,163,184,0.2);
   }
-  .lpo-access-item:last-child { border-bottom: none; }
-  .lpo-access-item-main { display: flex; align-items: center; gap: 0.5rem; flex: 1 1 100%; }
-  .lpo-access-item .small.secondary { min-width: 1.6rem; padding: 0.1rem 0.35rem; line-height: 1.2; }
-  .lpo-teams-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.6rem; margin-left: 0.1rem; }
-  .lpo-teams-label { font-size: 0.72rem; color: var(--muted,#94a3b8); text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
-  .lpo-teams-checks { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
-  .lpo-team-check { display: flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; cursor: pointer; }
-  .lpo-team-check input[type=checkbox] { accent-color: var(--accent,#3b82f6); width: 0.9rem; height: 0.9rem; }
-  .lpo-teams-save { margin-left: 0.25rem; padding: 0.18rem 0.65rem; font-size: 0.75rem; }
+  .lpo-table td { padding: 0.45rem 0.5rem; border-bottom: 1px solid rgba(148,163,184,0.08); vertical-align: middle; }
+  .lpo-table tr:last-child td { border-bottom: none; }
+  .lpo-team-badge {
+    display: inline-block; font-size: 0.7rem; padding: 0.1rem 0.45rem;
+    border-radius: 999px; background: rgba(59,130,246,0.18); color: #93c5fd;
+    margin: 0.1rem 0.2rem 0.1rem 0;
+  }
   .lpo-no-teams { font-size: 0.75rem; color: var(--muted,#94a3b8); font-style: italic; }
+  .lpo-row-actions { display: flex; gap: 0.35rem; align-items: center; }
+  /* Team-select dialog modal */
+  .lpo-teams-dialog {
+    background: var(--surface1, #1e293b); color: inherit;
+    border: 1px solid var(--surface2, #334155); border-radius: 10px;
+    padding: 1.2rem 1.4rem 1rem; min-width: 280px; max-width: 480px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .lpo-teams-dialog::backdrop { background: rgba(0,0,0,0.55); }
+  .lpo-teams-dialog h4 { margin: 0 0 0.75rem; font-size: 0.9rem; color: var(--accent,#3b82f6); }
+  .lpo-teams-dialog .lpo-email-label { font-size: 0.78rem; color: var(--muted,#94a3b8); margin-bottom: 0.75rem; word-break: break-all; }
+  .lpo-dialog-checks { display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 1rem; }
+  .lpo-dialog-check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; }
+  .lpo-dialog-check input[type=checkbox] { accent-color: var(--accent,#3b82f6); width: 1rem; height: 1rem; }
+  .lpo-dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.25rem; }
   .emp-code-card { padding: 0.85rem 1rem 1rem; margin-bottom: 1rem; }
   .emp-code-table, .roster-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 0.65rem; }
   .emp-code-table th,
@@ -73,43 +88,91 @@
       placeholder="email@nokia.com"
       autocomplete="off"
     />
-    <button type="submit" class="btn small">Add</button>
+    <button type="submit" class="btn small">Add &amp; Assign Teams</button>
   </form>
+
   {% if lpo_manager_emails %}
-    <ul class="lpo-access-list">
+  <table class="lpo-table" aria-label="LPO manager team assignments">
+    <thead>
+      <tr>
+        <th>LPO Email</th>
+        <th>Assigned Teams</th>
+        <th style="width:6rem"></th>
+      </tr>
+    </thead>
+    <tbody>
       {% for row in lpo_manager_emails %}
-        <li class="lpo-access-item">
-          <div class="lpo-access-item-main">
-            <span class="cell-mono">{{ row["email"] }}</span>
-            <form class="inline-form" method="post" action="{{ url_for('reports_lpo_emails_delete', lpo_id=row['id']) }}">
+      <tr>
+        <td class="cell-mono" style="font-size:0.8rem">{{ row["email"] }}</td>
+        <td>
+          {% set assigned = row["assigned_team_ids"] %}
+          {% set matching = all_teams | selectattr("id", "in", assigned) | list %}
+          {% if matching %}
+            {% for team in matching %}
+              <span class="lpo-team-badge">{{ team["name"] }}</span>
+            {% endfor %}
+          {% else %}
+            <span class="lpo-no-teams">No teams assigned</span>
+          {% endif %}
+        </td>
+        <td>
+          <div class="lpo-row-actions">
+            <button type="button" class="btn small"
+              onclick="document.getElementById('lpo-modal-{{ row['id'] }}').showModal()">
+              Edit Teams
+            </button>
+            <form class="inline-form" method="post"
+              action="{{ url_for('reports_lpo_emails_delete', lpo_id=row['id']) }}">
               {% include "partials/csrf.html" %}
-              <button type="submit" class="small secondary" title="Remove">×</button>
+              <button type="submit" class="btn small secondary" title="Remove LPO">×</button>
             </form>
           </div>
-          {# Team access assignment #}
-          <form class="lpo-teams-form" method="post" action="{{ url_for('reports_lpo_emails_set_teams', lpo_id=row['id']) }}">
-            {% include "partials/csrf.html" %}
-            <span class="lpo-teams-label">Teams:</span>
-            {% if all_teams %}
-              <span class="lpo-teams-checks">
-                {% for team in all_teams %}
-                  <label class="lpo-team-check">
-                    <input type="checkbox" name="team_ids" value="{{ team['id'] }}"
-                      {% if team['id'] in row['assigned_team_ids'] %}checked{% endif %} />
-                    {{ team['name'] }}
-                  </label>
-                {% endfor %}
-              </span>
-              <button type="submit" class="btn small lpo-teams-save">Save</button>
-            {% else %}
-              <span class="lpo-no-teams">No teams created yet</span>
-            {% endif %}
-          </form>
-        </li>
+        </td>
+      </tr>
       {% endfor %}
-    </ul>
+    </tbody>
+  </table>
+
+  {# One <dialog> modal per LPO row for team selection #}
+  {% for row in lpo_manager_emails %}
+  <dialog id="lpo-modal-{{ row['id'] }}" class="lpo-teams-dialog">
+    <form method="post" action="{{ url_for('reports_lpo_emails_set_teams', lpo_id=row['id']) }}">
+      {% include "partials/csrf.html" %}
+      <h4>Assign Teams</h4>
+      <p class="lpo-email-label">{{ row["email"] }}</p>
+      {% if all_teams %}
+        <div class="lpo-dialog-checks">
+          {% for team in all_teams %}
+          <label class="lpo-dialog-check">
+            <input type="checkbox" name="team_ids" value="{{ team['id'] }}"
+              {% if team['id'] in row['assigned_team_ids'] %}checked{% endif %} />
+            {{ team["name"] }}
+          </label>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="lpo-no-teams" style="margin-bottom:1rem">No teams created yet.</p>
+      {% endif %}
+      <div class="lpo-dialog-actions">
+        <button type="button" class="btn small secondary"
+          onclick="this.closest('dialog').close()">Cancel</button>
+        <button type="submit" class="btn small">Save</button>
+      </div>
+    </form>
+  </dialog>
+  {% endfor %}
   {% endif %}
 </section>
+<script>
+  (function () {
+    const p = new URLSearchParams(location.search).get('edit_lpo');
+    if (p) {
+      const m = document.getElementById('lpo-modal-' + p);
+      if (m) { m.showModal(); }
+      history.replaceState({}, '', location.pathname + location.hash);
+    }
+  })();
+</script>
 
 <section class="card emp-code-card">
   <h3 class="section-subheading" style="margin-bottom: 0.35rem">Employee portal access codes</h3>
