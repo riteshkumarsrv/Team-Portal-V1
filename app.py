@@ -3162,6 +3162,22 @@ def _migrate_lpo_manager_emails_v1(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO app_migrations (id) VALUES ('lpo_manager_emails_v1')")
 
 
+def _migrate_strip_approved_employee_change_prefix_v1(conn: sqlite3.Connection) -> None:
+    """Strip the obsolete '[approved employee change] ' prefix from all activity bodies."""
+    if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("strip_approved_employee_change_prefix_v1",)).fetchone():
+        return
+    prefix = "[approved employee change] "
+    conn.execute(
+        """
+        UPDATE scrum_item_activity
+        SET body = SUBSTR(body, ?)
+        WHERE body LIKE ?
+        """,
+        (len(prefix) + 1, prefix + "%"),
+    )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('strip_approved_employee_change_prefix_v1')")
+
+
 def _migrate_lpo_manager_team_access_v1(conn: sqlite3.Connection) -> None:
     """Per-LPO team access: which teams each LPO email is allowed to manage."""
     if conn.execute("SELECT 1 FROM app_migrations WHERE id = ?", ("lpo_manager_team_access_v1",)).fetchone():
@@ -3540,6 +3556,7 @@ def init_db(app: Flask) -> None:
     _migrate_teams_owner_email_v1(conn)
     _migrate_lpo_manager_emails_v1(conn)
     _migrate_lpo_manager_team_access_v1(conn)
+    _migrate_strip_approved_employee_change_prefix_v1(conn)
     _migrate_scrum_item_linked_files_v1(conn)
     _migrate_scrum_item_linked_file_auth_v1(conn)
     _migrate_scrum_item_checklist_v1(conn)
@@ -10160,10 +10177,10 @@ SCRUM_PORTAL_PROPOSAL_ACTIONS: frozenset[str] = frozenset(
 
 def _approved_portal_activity_note(note: str) -> str:
     b = (note or "").strip()
-    p = "[approved employee change] "
-    if b.startswith(p):
-        return b[:2000]
-    return (p + b)[:2000]
+    prefix = "[approved employee change] "
+    if b.startswith(prefix):
+        b = b[len(prefix):]
+    return b[:2000]
 
 
 def _insert_scrum_portal_proposal(
