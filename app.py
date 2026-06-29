@@ -12385,8 +12385,8 @@ def create_app() -> Flask:
     def dashboard():
         """Secret code on /dashboard when not signed in; full leave tracker after success."""
         pw_configured = _manager_password_configured(app)
-        lpo_configured = _lpo_sm_password_configured(app)
-        any_gate = pw_configured or lpo_configured
+        # LPO gate is always available — uses individual 6-digit codes from lpo_manager_emails.
+        any_gate = pw_configured or True
 
         def _gate_render(next_url_val: str | None, **extra):
             return render_template(
@@ -12394,7 +12394,6 @@ def create_app() -> Flask:
                 gate_only=True,
                 next_url=next_url_val,
                 password_configured=pw_configured,
-                lpo_sm_password_configured=lpo_configured,
                 **extra,
             )
 
@@ -12402,7 +12401,8 @@ def create_app() -> Flask:
             return redirect(url_for("dashboard", **request.args))
 
         if request.method == "POST" and not _manager_logged_in():
-            if not any_gate:
+            gate = (request.form.get("gate_kind") or "manager").strip().lower()
+            if False:  # any_gate always true; kept for structure
                 flash("Manager and LPO/SM access are not configured.", "error")
                 return _gate_render((request.form.get("next") or request.args.get("next")))
             gate = (request.form.get("gate_kind") or "manager").strip().lower()
@@ -12428,25 +12428,16 @@ def create_app() -> Flask:
             if gate == "lpo_sm":
                 lpo_email_input = normalize_email((request.form.get("lpo_email") or "").strip())
                 if not lpo_email_input:
-                    flash("Nokia email is required for LPO/SM sign-in.", "error")
+                    flash("Nokia email is required.", "error")
                     return _gate_render(next_raw or None)
-                pw = (request.form.get("secret_code") or request.form.get("lpo_sm_code") or "").strip()
-                if not pw:
-                    flash("Access code required.", "error")
-                    return _gate_render(next_raw or None)
-                # Try individual 6-digit LPO manager code first (from lpo_manager_emails table).
+                pw = (request.form.get("secret_code") or "").strip()
                 digits_only = re.sub(r"\D", "", pw)
-                if len(digits_only) == 6 and _verify_lpo_manager_code(app, lpo_email_input, digits_only):
-                    session["manager_user_email"] = lpo_email_input
-                    return _finish_signin("lpo_sm")
-                # Fall back to shared LPO/SM password.
-                if not lpo_configured:
-                    flash("LPO/SM access is not configured and no individual code is set for this email.", "error")
+                if not digits_only or len(digits_only) != 6:
+                    flash("Enter the 6-digit manager code set for your email.", "error")
                     return _gate_render(next_raw or None)
-                if not _check_lpo_sm_password(app, pw):
-                    flash("Invalid code.", "error")
+                if not _verify_lpo_manager_code(app, lpo_email_input, digits_only):
+                    flash("Invalid code or email not registered. Ask the admin to set your code in Reports.", "error")
                     return _gate_render(next_raw or None)
-                # Store the LPO email so _manager_team_roster_g() can scope teams.
                 session["manager_user_email"] = lpo_email_input
                 return _finish_signin("lpo_sm")
 

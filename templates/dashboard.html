@@ -55,11 +55,6 @@
 
       <section class="card gate-card">
         <h2 class="page-heading">LPO/SM access</h2>
-        {% if not lpo_sm_password_configured|default(false) %}
-          <div class="flash error" role="alert">
-            LPO/SM access is not configured. Set <strong>LPO_SM_DASHBOARD_PASSWORD</strong> in <code>.env</code> (different from the manager code) and restart.
-          </div>
-        {% endif %}
         <p class="gate-card-lead">
           Sign in with your <strong>Nokia email</strong> and your <strong>personal 6-digit manager code</strong>
           (set by the admin in Reports &rarr; LPO Manager Access). Your view will be scoped to your assigned teams.
@@ -77,23 +72,25 @@
               name="lpo_email"
               type="email"
               autocomplete="email"
-              {% if lpo_sm_password_configured|default(false) %}required{% else %}disabled{% endif %}
+              required
               placeholder="name@nokia.com"
             />
           </div>
           <div class="field">
-            <label for="lpo_sm_code" class="gate-access-label">LPO/SM access code</label>
+            <label for="lpo_sm_code" class="gate-access-label">6-digit manager code</label>
             <input
               id="lpo_sm_code"
               name="secret_code"
               type="password"
               autocomplete="current-password"
-              {% if lpo_sm_password_configured|default(false) %}required{% else %}disabled{% endif %}
-              placeholder="LPO/SM code"
+              required
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="6-digit code"
             />
           </div>
           <div class="form-actions">
-            <button type="submit" class="btn" {% if not lpo_sm_password_configured|default(false) %}disabled{% endif %}>Sign in as LPO/SM</button>
+            <button type="submit" class="btn">Sign in as LPO/SM</button>
             <a class="btn secondary" href="{{ url_for('home') }}">Cancel</a>
           </div>
         </form>
