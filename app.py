@@ -12505,7 +12505,8 @@ def create_app() -> Flask:
             _, last_day = _mrange(yr, mo)
 
             # ── collect all leave data from the sheet ────────────────────────
-            sheet_data: dict[str, dict[int, str]] = {}  # emp → {day: normalised code}
+            # blank cells are stored as "" — they will clear any existing "A" on that day.
+            sheet_data: dict[str, dict[int, str]] = {}  # emp → {day: normalised code or ""}
             for row in ws.iter_rows(min_row=3, values_only=True):
                 emp_raw = str(row[1] or "").strip() if len(row) > 1 else ""
                 if not emp_raw or emp_raw not in roster_set:
@@ -12514,55 +12515,36 @@ def create_app() -> Flask:
                 for day_num, col_idx in day_col_map.items():
                     raw_val = str(row[col_idx - 1] or "").strip() if len(row) >= col_idx else ""
                     if not raw_val:
+                        emp_days[day_num] = ""  # explicit blank → clears any existing A
                         continue
                     cell_val = _normalise_upload_code(raw_val)
-                    if cell_val and cell_val in valid_codes:
-                        emp_days[day_num] = cell_val
+                    emp_days[day_num] = cell_val if (cell_val and cell_val in valid_codes) else ""
                 sheet_data[emp_raw] = emp_days
 
             if not sheet_data:
                 continue
 
-            # ── upsert: delete NON-Nokia-approved leaves for this month/employees,
-            #    then re-insert what the sheet says (Nokia "A" cells are preserved) ──
+            # ── upsert: the uploaded sheet is the full source of truth for the month.
+            #    Delete ALL pending/approved leaves (including Nokia "A" rows) for the
+            #    covered month, then re-insert only days that have a non-blank code. ──
             for emp, emp_days in sheet_data.items():
                 month_start = date(yr, mo, 1).isoformat()
                 month_end = date(yr, mo, last_day).isoformat()
-                # Collect days that already have Nokia e-tool approved leaves so we
-                # can skip them during insert.
-                nokia_approved_days: set[int] = set()
-                for row_db in conn.execute(
-                    """
-                    SELECT start_date FROM leave_requests
-                    WHERE employee_name = ?
-                      AND start_date >= ? AND start_date <= ?
-                      AND status IN ('pending', 'approved')
-                      AND description LIKE ?
-                    """,
-                    (emp, month_start, month_end, f"%{NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER}%"),
-                ):
-                    try:
-                        nokia_approved_days.add(date.fromisoformat(row_db[0]).day)
-                    except (TypeError, ValueError):
-                        pass
-                # Remove only NON-Nokia-approved pending/approved leaves that touch
-                # this month for this employee.
+                # Remove ALL pending/approved leaves for this employee in the month
+                # (including Nokia e-tool approved — blank cells override them).
                 conn.execute(
                     """
                     DELETE FROM leave_requests
                     WHERE employee_name = ?
                       AND start_date <= ? AND end_date >= ?
                       AND status IN ('pending', 'approved')
-                      AND description NOT LIKE ?
                     """,
-                    (emp, month_end, month_start, f"%{NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER}%"),
+                    (emp, month_end, month_start),
                 )
-                # insert each day found in the sheet, skipping Nokia-approved days
+                # Insert each day that has a non-blank code in the sheet.
                 for day_num, code in emp_days.items():
-                    if day_num > last_day:
+                    if not code or day_num > last_day:
                         continue
-                    if day_num in nokia_approved_days:
-                        continue  # preserve existing Nokia e-tool approval
                     work_date = date(yr, mo, day_num).isoformat()
                     # Nokia-approved "A" / "A½" cells
                     is_nokia = code.startswith("a")
