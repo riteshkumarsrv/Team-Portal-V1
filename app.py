@@ -12205,15 +12205,13 @@ def create_app() -> Flask:
                 g.lpo_unregistered = False
                 return
         elif manager_email and not is_lpo:
-            # Manager login with email: check if this email is in the LPO access list.
-            # If yes → scope to their assigned teams only (same as LPO/SM).
-            # If no → they are the super-admin and see all teams.
+            em_norm = normalize_email(manager_email)
+            # 1. LPO access list takes priority → scope to assigned teams
             lpo_check = conn.execute(
                 "SELECT 1 FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
-                (normalize_email(manager_email),),
+                (em_norm,),
             ).fetchone()
             if lpo_check:
-                # Email is a registered LPO → restrict to their assigned teams
                 assigned_ids = set(_lpo_assigned_team_ids(conn, manager_email))
                 teams = [t for t in all_teams if int(t["id"]) in assigned_ids]
                 if not teams:
@@ -12224,8 +12222,27 @@ def create_app() -> Flask:
                     g.manager_roster = ()
                     return
             else:
-                # Not in LPO list → super admin, sees all teams
-                teams = all_teams
+                # 2. Check if this is a registered individual manager account
+                mgr_check = conn.execute(
+                    "SELECT 1 FROM managers WHERE email = ? COLLATE NOCASE",
+                    (em_norm,),
+                ).fetchone()
+                if mgr_check:
+                    # Individual manager → see only teams they own
+                    teams = [
+                        t for t in all_teams
+                        if normalize_email(str(t["owner_email"] or "")) == em_norm
+                    ]
+                    if not teams:
+                        conn.close()
+                        g.manager_teams = []
+                        g.manager_team_id = None
+                        g.manager_team_name = None
+                        g.manager_roster = ()
+                        return
+                else:
+                    # 3. Not in any access list → super admin (shared .env password), sees all
+                    teams = all_teams
         else:
             teams = all_teams
 
