@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}LPO Manager Sign-in — TEAM MANAGEMENT PORTAL{% endblock %}
+{% block body_class %}portal-nokia-body{% endblock %}
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='nokia_portal.css') }}" />
+  <style>
+    .lpo-login-wrap {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+    .lpo-login-card {
+      background: var(--surface, #1e293b);
+      border: 1px solid rgba(148,163,184,0.15);
+      border-radius: var(--radius, 12px);
+      padding: 2.2rem 2rem 1.8rem;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.35);
+    }
+    .lpo-login-brand {
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      color: var(--accent, #3b82f6);
+      text-transform: uppercase;
+      margin-bottom: 0.3rem;
+    }
+    .lpo-login-title {
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin: 0 0 0.25rem;
+    }
+    .lpo-login-sub {
+      font-size: 0.82rem;
+      color: var(--muted, #94a3b8);
+      margin: 0 0 1.6rem;
+      line-height: 1.55;
+    }
+    .lpo-field { margin-bottom: 1rem; }
+    .lpo-field label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--muted, #94a3b8);
+      margin-bottom: 0.3rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .lpo-field input {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      border-radius: var(--radius-sm, 7px);
+      border: 1px solid var(--surface2, #334155);
+      background: var(--bg, #0f172a);
+      color: #f1f5f9;
+      font-size: 0.95rem;
+      box-sizing: border-box;
+      transition: border-color .15s;
+    }
+    .lpo-field input:focus { outline: none; border-color: var(--accent, #3b82f6); }
+    .lpo-field input[type=password] { letter-spacing: 0.15em; font-size: 1.1rem; }
+    .lpo-submit {
+      width: 100%;
+      margin-top: 0.5rem;
+      padding: 0.65rem 1rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    .lpo-footer {
+      margin-top: 1.2rem;
+      font-size: 0.78rem;
+      color: var(--muted, #94a3b8);
+      text-align: center;
+    }
+    .lpo-footer a { color: var(--accent, #3b82f6); text-decoration: none; }
+    .lpo-footer a:hover { text-decoration: underline; }
+    .lpo-divider { border: none; border-top: 1px solid rgba(148,163,184,0.12); margin: 1rem 0; }
+  </style>
+{% endblock %}
+{% block content %}
+<div class="lpo-login-wrap">
+  <div class="lpo-login-card">
+    <p class="lpo-login-brand">Nokia &mdash; Team Management Portal</p>
+    <h1 class="lpo-login-title">LPO Manager Sign-in</h1>
+    <p class="lpo-login-sub">
+      Enter your Nokia email and the <strong>6-digit manager code</strong> set for you in
+      LPO Manager Access. You will only see your assigned team(s).
+    </p>
+
+    <form method="post" action="{{ url_for('lpo_login') }}" class="stack-form">
+      {% include "partials/csrf.html" %}
+      {% if next_url %}
+        <input type="hidden" name="next" value="{{ next_url }}" />
+      {% endif %}
+      <div class="lpo-field">
+        <label for="lpo-email">Nokia email</label>
+        <input
+          id="lpo-email"
+          name="lpo_email"
+          type="email"
+          autocomplete="email"
+          required
+          autofocus
+          placeholder="name@nokia.com"
+        />
+      </div>
+      <div class="lpo-field">
+        <label for="lpo-code">6-digit manager code</label>
+        <input
+          id="lpo-code"
+          name="lpo_code"
+          type="password"
+          inputmode="numeric"
+          maxlength="6"
+          autocomplete="current-password"
+          required
+          placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;"
+        />
+      </div>
+      <button type="submit" class="btn lpo-submit">Sign in</button>
+    </form>
+
+    <hr class="lpo-divider" />
+    <p class="lpo-footer">
+      Not an LPO? &nbsp;
+      <a href="{{ url_for('home') }}">Employee sign-in</a>
+      &nbsp;&middot;&nbsp;
+      <a href="{{ url_for('dashboard') }}">Manager access</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

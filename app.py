@@ -12360,6 +12360,42 @@ def create_app() -> Flask:
         matches = fuzzy_employee_matches(q, 5, roster=union)
         return jsonify({"matches": matches})
 
+    @app.route("/lpo-login", methods=["GET", "POST"])
+    def lpo_login():
+        """Standalone LPO manager login — email + 6-digit code from lpo_manager_emails table."""
+        if _manager_logged_in():
+            return redirect(url_for("dashboard"))
+
+        next_raw = (request.args.get("next") or request.form.get("next") or "").strip()
+
+        if request.method == "POST":
+            lpo_email_input = normalize_email((request.form.get("lpo_email") or "").strip())
+            code_raw = re.sub(r"\D", "", (request.form.get("lpo_code") or "").strip())
+
+            if not lpo_email_input:
+                flash("Nokia email is required.", "error")
+                return render_template("lpo_login.html", next_url=next_raw or None)
+            if not code_raw or len(code_raw) != 6:
+                flash("Enter your 6-digit manager code.", "error")
+                return render_template("lpo_login.html", next_url=next_raw or None)
+
+            if not _verify_lpo_manager_code(app, lpo_email_input, code_raw):
+                flash(
+                    "Invalid email or code. Ask the admin to set your code in Reports \u2192 LPO Manager Access.",
+                    "error",
+                )
+                return render_template("lpo_login.html", next_url=next_raw or None)
+
+            session["manager"] = True
+            session["manager_role"] = "lpo_sm"
+            session["manager_user_email"] = lpo_email_input
+            session.pop("my_employee_name", None)
+            flash("Signed in as LPO manager.", "success")
+            dest = _safe_next_path(next_raw)
+            return redirect(dest or url_for("dashboard"), code=303)
+
+        return render_template("lpo_login.html", next_url=next_raw or None)
+
     @app.route("/manager/login", methods=["GET", "POST"])
     def manager_login():
         """Legacy URL — forwards to /dashboard (307 keeps POST body for old bookmarks)."""
@@ -12426,20 +12462,8 @@ def create_app() -> Flask:
                 return redirect(url_for("dashboard"), code=303)
 
             if gate == "lpo_sm":
-                lpo_email_input = normalize_email((request.form.get("lpo_email") or "").strip())
-                if not lpo_email_input:
-                    flash("Nokia email is required.", "error")
-                    return _gate_render(next_raw or None)
-                pw = (request.form.get("secret_code") or "").strip()
-                digits_only = re.sub(r"\D", "", pw)
-                if not digits_only or len(digits_only) != 6:
-                    flash("Enter the 6-digit manager code set for your email.", "error")
-                    return _gate_render(next_raw or None)
-                if not _verify_lpo_manager_code(app, lpo_email_input, digits_only):
-                    flash("Invalid code or email not registered. Ask the admin to set your code in Reports.", "error")
-                    return _gate_render(next_raw or None)
-                session["manager_user_email"] = lpo_email_input
-                return _finish_signin("lpo_sm")
+                # LPO login has moved to /lpo-login — redirect there.
+                return redirect(url_for("lpo_login", next=next_raw) if next_raw else url_for("lpo_login"))
 
             if not pw_configured:
                 flash("Manager access is not configured.", "error")

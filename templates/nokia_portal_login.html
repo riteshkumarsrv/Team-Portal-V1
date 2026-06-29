@@ -110,25 +110,14 @@
       </section>
 
       <section class="nokia-login-card nokia-login-card--manager nokia-login-card--lpo">
-        <h2 class="nokia-manager-heading">LPO/SM access</h2>
+        <h2 class="nokia-manager-heading">LPO / SM access</h2>
         <p class="nokia-login-lead nokia-manager-lead">
-          Same <strong>access-code</strong> sign-in and <strong>full manager privileges</strong> (leave tracker, approvals, Scrum, Meet, reports) — use the <strong>separate LPO/SM code</strong> configured for this server (not the manager code).
+          LPO and SM managers sign in with their Nokia email and personal 6-digit code
+          (set by the admin in Reports &rarr; LPO Manager Access).
+          Access is scoped to assigned teams only.
         </p>
-        {% if lpo_sm_password_configured %}
-          <form method="post" action="{{ url_for('dashboard') }}" class="stack-form nokia-manager-form">
-            {% include "partials/csrf.html" %}
-            <input type="hidden" name="gate_kind" value="lpo_sm" />
-            <div class="field">
-              <label for="lpo-secret" class="nokia-access-label">Access code</label>
-              <input id="lpo-secret" name="secret_code" type="password" autocomplete="current-password" required placeholder="LPO/SM code" />
-            </div>
-            <button type="submit" class="btn secondary" style="width: 100%">Sign in as LPO/SM</button>
-          </form>
-        {% else %}
-          <p class="nokia-login-foot">
-            Set <strong>LPO_SM_DASHBOARD_PASSWORD</strong> in your <code>.env</code> (project root, beside <code>main.py</code>) to a secret <strong>different from</strong> <strong>MANAGER_DASHBOARD_PASSWORD</strong>, then restart the app.
-          </p>
-        {% endif %}
+        <a class="btn secondary" style="display:block;width:100%;text-align:center;box-sizing:border-box"
+          href="{{ url_for('lpo_login') }}">LPO / SM sign-in &rarr;</a>
       </section>
     </div>
   </div>
