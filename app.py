@@ -9435,13 +9435,16 @@ def _fetch_item_attachments_map(conn: sqlite3.Connection, item_ids: list[int]) -
         iid = int(r["item_id"])
         if iid not in out:
             continue
+        rp = (str(r["rel_path"] or "")).strip()
+        is_link = rp.startswith(("http://", "https://"))
         out[iid].append(
             {
                 "id": int(r["id"]),
                 "original_filename": (str(r["original_filename"] or "")).strip()[:200],
                 "size_bytes": int(r["size_bytes"] or 0),
                 "created_at": str(r["created_at"] or ""),
-                "rel_path": (str(r["rel_path"] or "")).strip(),
+                "rel_path": rp,
+                "is_link": is_link,
             }
         )
     return out
@@ -11354,6 +11357,7 @@ def create_app() -> Flask:
                 "item_delete": url_for("portal_scrum_sprint_item_delete"),
                 "attachment_upload": url_for("portal_scrum_item_attachment_upload"),
                 "attachment_delete": url_for("portal_scrum_item_attachment_delete"),
+                "attach_link": url_for("portal_scrum_api_item_attach_link"),
             },
             kb_checklist_urls={
                 "add": url_for("portal_scrum_api_item_checklist_add"),
@@ -11486,6 +11490,64 @@ def create_app() -> Flask:
         conn.close()
         flash(msg, "success" if ok else "error")
         return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+
+    @app.post("/portal/scrum/api/item/attach-link")
+    def portal_scrum_api_item_attach_link():
+        """Save a URL as a link attachment on a sticky (employee portal flow)."""
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        roster_name = _portal_effective_roster_name(app, pu)
+        if not roster_name:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        url_raw = (data.get("url") or "").strip()
+        label_raw = (data.get("label") or "").strip()
+        if not item_id or not sprint_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        if not url_raw.startswith(("http://", "https://")):
+            return jsonify({"ok": False, "error": "invalid_url"}), 400
+        url_raw = url_raw[:2000]
+        label = (label_raw or url_raw)[:200]
+        conn = get_db(app)
+        team_id = _sprint_team_id(conn, sprint_id)
+        if team_id is None:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        item_row = conn.execute(
+            "SELECT id, assignee FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            (item_id, sprint_id),
+        ).fetchone()
+        if not item_row or str(item_row["assignee"] or "").strip() != roster_name:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM scrum_sprint_item_attachment WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+        if int(count["c"] or 0) >= 20:
+            conn.close()
+            return jsonify({"ok": False, "error": "too_many"}), 400
+        ts = _utc_stamp()
+        conn.execute(
+            """
+            INSERT INTO scrum_sprint_item_attachment
+            (item_id, original_filename, size_bytes, rel_path, created_at)
+            VALUES (?, ?, 0, ?, ?)
+            """,
+            (item_id, label, url_raw, ts),
+        )
+        conn.commit()
+        new_id = conn.execute(
+            "SELECT id FROM scrum_sprint_item_attachment WHERE item_id = ? AND rel_path = ? ORDER BY id DESC LIMIT 1",
+            (item_id, url_raw),
+        ).fetchone()
+        conn.close()
+        return jsonify({"ok": True, "attachment_id": int(new_id["id"]) if new_id else None})
 
     @app.get("/portal/sprint/<int:sprint_id>/api/areas")
     def portal_scrum_api_areas(sprint_id: int):
@@ -13449,6 +13511,7 @@ def create_app() -> Flask:
             kb_form_urls={
                 "attachment_upload": url_for("scrum_sprint_item_attachment_upload"),
                 "attachment_delete": url_for("scrum_sprint_item_attachment_delete"),
+                "attach_link": url_for("scrum_api_item_attach_link"),
             },
         )
 
@@ -13632,6 +13695,7 @@ def create_app() -> Flask:
                 "item_delete": url_for("scrum_sprint_item_delete"),
                 "attachment_upload": url_for("scrum_sprint_item_attachment_upload"),
                 "attachment_delete": url_for("scrum_sprint_item_attachment_delete"),
+                "attach_link": url_for("scrum_api_item_attach_link"),
             },
             kb_checklist_urls={
                 "add": url_for("scrum_api_item_checklist_add"),
@@ -14572,6 +14636,61 @@ def create_app() -> Flask:
         if not ok and not assignee:
             return redirect(url_for("scrum_sprint_team", sprint_id=sprint_id))
         return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee_redir or assignee))
+
+    @app.post("/scrum/api/item/attach-link")
+    def scrum_api_item_attach_link():
+        """Save a URL as a link attachment on a sticky (manager flow)."""
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        url_raw = (data.get("url") or "").strip()
+        label_raw = (data.get("label") or "").strip()
+        if not item_id or not sprint_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        if not url_raw.startswith(("http://", "https://")):
+            return jsonify({"ok": False, "error": "invalid_url"}), 400
+        url_raw = url_raw[:2000]
+        label = (label_raw or url_raw)[:200]
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        row = conn.execute(
+            """
+            SELECT i.id FROM scrum_sprint_item i
+            JOIN scrum_sprint s ON s.id = i.sprint_id
+            WHERE i.id = ? AND i.sprint_id = ? AND s.team_id = ?
+            """,
+            (item_id, sprint_id, team_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM scrum_sprint_item_attachment WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+        if int(count["c"] or 0) >= 20:
+            conn.close()
+            return jsonify({"ok": False, "error": "too_many"}), 400
+        ts = _utc_stamp()
+        conn.execute(
+            """
+            INSERT INTO scrum_sprint_item_attachment
+            (item_id, original_filename, size_bytes, rel_path, created_at)
+            VALUES (?, ?, 0, ?, ?)
+            """,
+            (item_id, label, url_raw, ts),
+        )
+        conn.commit()
+        new_id = conn.execute(
+            "SELECT id FROM scrum_sprint_item_attachment WHERE item_id = ? AND rel_path = ? ORDER BY id DESC LIMIT 1",
+            (item_id, url_raw),
+        ).fetchone()
+        conn.close()
+        return jsonify({"ok": True, "attachment_id": int(new_id["id"]) if new_id else None})
 
     @app.get("/scrum/sprint/item/attachment/<int:attachment_id>/file")
     def scrum_sprint_item_attachment_download(attachment_id: int):

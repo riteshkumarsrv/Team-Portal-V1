@@ -428,17 +428,26 @@
                   onmousedown="event.stopPropagation();"
                 >
                   <summary class="scrum-sticky-attachments-summary">
-                    Attachments{% if card.attachments %} ({{ card.attachments|length }}){% endif %}
+                    Attach links{% if card.attachments %} ({{ card.attachments|length }}){% endif %}
                   </summary>
                   {% if card.attachments %}
                     <ul class="scrum-sticky-attachment-list">
                       {% for a in card.attachments %}
                         <li class="scrum-sticky-attachment-row">
-                          <a
-                            class="scrum-sticky-attachment-name"
-                            href="{% if _portal %}{{ url_for('portal_scrum_item_attachment_download', attachment_id=a.id) }}{% else %}{{ url_for('scrum_sprint_item_attachment_download', attachment_id=a.id) }}{% endif %}"
-                          >{{ a.original_filename|e }}</a>
-                          <span class="scrum-sticky-attachment-size">{{ (a.size_bytes / 1024)|round(1) }} KB</span>
+                          {% if a.is_link %}
+                            <a
+                              class="scrum-sticky-attachment-name"
+                              href="{{ a.rel_path|e }}"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >{{ a.original_filename|e }}</a>
+                          {% else %}
+                            <a
+                              class="scrum-sticky-attachment-name"
+                              href="{% if _portal %}{{ url_for('portal_scrum_item_attachment_download', attachment_id=a.id) }}{% else %}{{ url_for('scrum_sprint_item_attachment_download', attachment_id=a.id) }}{% endif %}"
+                            >{{ a.original_filename|e }}</a>
+                            <span class="scrum-sticky-attachment-size">{{ (a.size_bytes / 1024)|round(1) }} KB</span>
+                          {% endif %}
                           {% if not sprint_readonly %}
                             <form
                               method="post"
@@ -446,7 +455,7 @@
                               class="inline-form scrum-sticky-attachment-del"
                               onclick="event.stopPropagation();"
                               onmousedown="event.stopPropagation();"
-                              onsubmit="return confirm('Remove this attachment?');"
+                              onsubmit="return confirm('Remove this link?');"
                             >
                               {% include "partials/csrf.html" %}
                               <input type="hidden" name="attachment_id" value="{{ a.id }}" />
@@ -460,29 +469,28 @@
                     </ul>
                   {% endif %}
                   {% if not sprint_readonly %}
-                    <form
-                      class="scrum-sticky-attachment-upload"
-                      method="post"
-                      action="{{ kb_form_urls.attachment_upload }}"
-                      enctype="multipart/form-data"
+                    <div
+                      class="scrum-sticky-attach-link-form"
+                      data-item-id="{{ card.id }}"
+                      data-sprint-id="{{ sprint_id }}"
+                      data-attach-link-url="{{ kb_form_urls.attach_link }}"
                       onclick="event.stopPropagation();"
                       onmousedown="event.stopPropagation();"
                     >
-                      {% include "partials/csrf.html" %}
-                      <input type="hidden" name="item_id" value="{{ card.id }}" />
-                      <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                      <input type="hidden" name="assignee" value="{{ assignee }}" />
-                      <label class="scrum-sticky-attachment-file-label">
-                        Add file(s)
-                        <input type="file" name="files" class="scrum-sticky-attachment-file" multiple required />
-                      </label>
-                      <button type="submit" class="btn secondary small">Upload</button>
-                    </form>
+                      <input
+                        type="url"
+                        class="scrum-sticky-attach-link-input"
+                        placeholder="https://…  paste URL"
+                        autocomplete="off"
+                      />
+                      <button type="button" class="btn secondary small scrum-sticky-attach-link-btn">Add link</button>
+                      <span class="scrum-sticky-attach-link-err" style="display:none;color:var(--danger,#f87171);font-size:0.75rem"></span>
+                    </div>
                     <p class="scrum-sticky-attachment-hint">
-                      Select one or more files (Ctrl/Cmd+click). Same types as before (e.g. PDF, PNG, XLSX). Max 10 MB per file, up to 20 files per sticky. Remove any file with the button beside its name.
+                      Paste any https:// link (e.g. SharePoint, Confluence, Git PR). Up to 20 links per sticky.
                     </p>
                   {% elif sprint_readonly and _portal and not card.attachments %}
-                    <p class="scrum-sticky-attachment-hint">No attachments on this sticky.</p>
+                    <p class="scrum-sticky-attachment-hint">No links on this sticky.</p>
                   {% endif %}
                 </details>
                 {% if col == 'doing' and not sprint_readonly %}
@@ -1122,58 +1130,75 @@
           return;
         }
 
-        pending = { itemId: data.itemId, from: fromCol, to: toCol, mode: "standard" };
         var bl2do = fromCol === "backlog" && toCol === "do";
-        if (bl2do) pending.mode = "bl2do";
+        var do2doing = fromCol === "do" && toCol === "doing";
+
+        // Backlog → To DO: auto-move if estimate already set, else ask for estimate
+        if (bl2do) {
+          var existEst = typeof data.estimateHours === "number" && !isNaN(data.estimateHours)
+            ? data.estimateHours
+            : parseFloat(String(data.estimateHours || "0").replace(",", ".")) || 0;
+          if (existEst > 0) {
+            sendKanbanMove({
+              item_id: parseInt(data.itemId, 10),
+              sprint_id: cfg.sprintId,
+              assignee: cfg.assignee,
+              to_column: toCol,
+              note: "",
+              committed_hours: "0",
+              estimate_hours: String(existEst),
+            });
+            return;
+          }
+          // No estimate yet — show dialog to collect estimate only
+          pending = { itemId: data.itemId, from: fromCol, to: toCol, mode: "bl2do" };
+          document.getElementById("kb-move-summary").textContent =
+            "Card #" + data.itemId + ": Backlog → To DO.";
+          setKbMoveBl2doMode(true);
+          var hintBl = document.getElementById("kb-move-reset-hint");
+          if (hintBl) { hintBl.textContent = ""; hintBl.classList.add("is-hidden"); }
+          var artWrapBl = document.getElementById("kb-move-artifacts-wrap");
+          var artTaBl = document.getElementById("kb-move-artifacts");
+          if (artWrapBl && artTaBl) { artWrapBl.classList.add("is-hidden"); artTaBl.value = ""; }
+          var estEl = document.getElementById("kb-move-est");
+          if (estEl) estEl.value = "";
+          if (typeof dlg.showModal === "function") dlg.showModal();
+          return;
+        }
+
+        // To DO → In progress: auto-move without asking for burnt hours
+        if (do2doing) {
+          sendKanbanMove({
+            item_id: parseInt(data.itemId, 10),
+            sprint_id: cfg.sprintId,
+            assignee: cfg.assignee,
+            to_column: toCol,
+            note: "",
+            committed_hours: null,
+          });
+          return;
+        }
+
+        // All other moves — show the standard dialog
+        pending = { itemId: data.itemId, from: fromCol, to: toCol, mode: "standard" };
         document.getElementById("kb-move-summary").textContent =
           "Card #" + data.itemId + ": " + fromCol + " → " + toCol + ".";
         var hint = document.getElementById("kb-move-reset-hint");
         var artWrap = document.getElementById("kb-move-artifacts-wrap");
         var artTa = document.getElementById("kb-move-artifacts");
-        if (bl2do) {
-          setKbMoveBl2doMode(true);
-          if (hint) {
-            hint.textContent = "";
-            hint.classList.add("is-hidden");
-          }
-          if (artWrap && artTa) {
+        setKbMoveBl2doMode(false);
+        if (hint) { hint.textContent = ""; hint.classList.add("is-hidden"); }
+        document.getElementById("kb-move-hrs").value = "0";
+        document.getElementById("kb-move-note").value = "";
+        var verTa = document.getElementById("kb-move-verify");
+        if (verTa) verTa.value = "";
+        if (artWrap && artTa) {
+          if (toCol === "done") {
+            artWrap.classList.remove("is-hidden");
+            artTa.value = "";
+          } else {
             artWrap.classList.add("is-hidden");
             artTa.value = "";
-          }
-          var estEl = document.getElementById("kb-move-est");
-          if (estEl) {
-            var re = data.estimateHours;
-            if (re !== undefined && re !== null && String(re).trim() !== "" && !isNaN(Number(re))) {
-              estEl.value = String(Number(re));
-            } else {
-              estEl.value = "";
-            }
-          }
-        } else {
-          setKbMoveBl2doMode(false);
-          if (hint) {
-            if (fromCol === "do" && toCol === "doing") {
-              hint.textContent =
-                "Prior Burnt hours on this sticky are cleared when you leave To DO for In progress. Leave Burnt hours empty unless you are logging time for this move (empty is not stored as zero).";
-              hint.classList.remove("is-hidden");
-            } else {
-              hint.textContent = "";
-              hint.classList.add("is-hidden");
-            }
-          }
-          document.getElementById("kb-move-hrs").value =
-            fromCol === "do" && toCol === "doing" ? "" : "0";
-          document.getElementById("kb-move-note").value = "";
-          var verTa = document.getElementById("kb-move-verify");
-          if (verTa) verTa.value = "";
-          if (artWrap && artTa) {
-            if (toCol === "done") {
-              artWrap.classList.remove("is-hidden");
-              artTa.value = "";
-            } else {
-              artWrap.classList.add("is-hidden");
-              artTa.value = "";
-            }
           }
         }
         if (typeof dlg.showModal === "function") dlg.showModal();
@@ -1579,7 +1604,7 @@
 
           postJson(apiUrls.item_activity_update, payload).then(function (res) {
             if (res.ok) {
-              if (res.j && res.j.pending_approval) {
+              if (res.j && (res.j.saved || res.j.pending_approval)) {
                 window.location.reload();
                 return;
               }
@@ -1981,6 +2006,50 @@
           }
         }
       }
+
+      /* ── Attach-link buttons ──────────────────────────────────────────── */
+      document.querySelectorAll(".scrum-sticky-attach-link-form").forEach(function (wrap) {
+        var btn = wrap.querySelector(".scrum-sticky-attach-link-btn");
+        var inp = wrap.querySelector(".scrum-sticky-attach-link-input");
+        var errEl = wrap.querySelector(".scrum-sticky-attach-link-err");
+        if (!btn || !inp) return;
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var url = (inp.value || "").trim();
+          if (!url) { inp.focus(); return; }
+          if (!/^https?:\/\//i.test(url)) {
+            if (errEl) { errEl.textContent = "URL must start with http:// or https://"; errEl.style.display = ""; }
+            inp.focus();
+            return;
+          }
+          if (errEl) errEl.style.display = "none";
+          btn.disabled = true;
+          inp.disabled = true;
+          postJson(wrap.getAttribute("data-attach-link-url"), {
+            item_id: parseInt(wrap.getAttribute("data-item-id"), 10),
+            sprint_id: parseInt(wrap.getAttribute("data-sprint-id"), 10),
+            url: url,
+            label: url,
+          }).then(function (res) {
+            btn.disabled = false;
+            inp.disabled = false;
+            if (res.ok) {
+              inp.value = "";
+              window.location.reload();
+            } else {
+              var code = (res.j && res.j.error) || "error";
+              var msg = code === "invalid_url" ? "URL must start with https://" :
+                        code === "too_many"    ? "Up to 20 links per sticky." :
+                        code === "forbidden"   ? "Not authorised." : "Could not save link.";
+              if (errEl) { errEl.textContent = msg; errEl.style.display = ""; }
+            }
+          }).catch(function () {
+            btn.disabled = false;
+            inp.disabled = false;
+            if (errEl) { errEl.textContent = "Request failed. Try again."; errEl.style.display = ""; }
+          });
+        });
+      });
     })();
   </script>
 {% endblock %}

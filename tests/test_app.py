@@ -3421,7 +3421,7 @@ def test_portal_sticky_attachment_upload_delete_and_download(client, app):
 
     board = client.get("/portal/sprint/%d/board" % sid)
     assert board.status_code == 200
-    assert b"/portal/scrum/sprint/item/attachment" in board.data
+    assert b"/portal/scrum/api/item/attach-link" in board.data
 
     up = client.post(
         "/portal/scrum/sprint/item/attachment",
