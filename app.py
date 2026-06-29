@@ -10163,20 +10163,14 @@ def _insert_scrum_portal_proposal(
             ts,
         ),
     )
-    # Optional: skip manager review (not default). Tests and normal deployments expect pending proposals.
-    if (os.environ.get("TEAM_TRACKER_PORTAL_AUTO_APPROVE", "") or "").strip().lower() not in (
-        "1",
-        "true",
-        "yes",
-    ):
-        return
+    # Always apply employee changes immediately — no manager approval step.
     proposal_id = cursor.lastrowid
     prop = conn.execute("SELECT * FROM scrum_portal_proposal WHERE id = ?", (proposal_id,)).fetchone()
     if prop:
-        ok, err = _apply_scrum_portal_proposal_core(conn, prop, int(team_id))
+        ok, _err = _apply_scrum_portal_proposal_core(conn, prop, int(team_id))
         if ok:
             conn.execute(
-                "UPDATE scrum_portal_proposal SET status = 'approved', resolved_at = ?, resolution_note = 'Auto-approved for employee full access' WHERE id = ?",
+                "UPDATE scrum_portal_proposal SET status = 'approved', resolved_at = ?, resolution_note = 'Auto-saved' WHERE id = ?",
                 (_utc_stamp(), proposal_id),
             )
 
@@ -10390,7 +10384,7 @@ def _redirect_after_portal_proposal(next_raw: str | None):
     n = (next_raw or "").strip()
     if n.startswith("/") and not n.startswith("//") and ".." not in n and "\n" not in n and "\r" not in n:
         return redirect(n)
-    return redirect(url_for("scrum_portal_proposals"))
+    return redirect(url_for("portal_my_sprint_kanban"))
 
 
 def _apply_scrum_portal_proposal_core(
@@ -11240,7 +11234,7 @@ def create_app() -> Flask:
         conn.commit()
         sid = int(row["sprint_id"])
         conn.close()
-        flash("Change submitted for manager approval.", "success")
+        flash("Change saved.", "success")
         return redirect(url_for("portal_scrum_kanban_board", sprint_id=sid))
 
     @app.route("/portal/sprint/<int:sprint_id>/board", methods=["GET"])
@@ -11528,7 +11522,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_move", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": True})
+        return jsonify({"ok": True, "saved": True})
 
     @app.post("/portal/scrum/api/item/note")
     def portal_scrum_api_item_note():
@@ -11569,7 +11563,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_note", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": True})
+        return jsonify({"ok": True, "saved": True})
 
     @app.post("/portal/scrum/api/item/activity_update")
     def portal_scrum_api_activity_update():
@@ -11601,7 +11595,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, item_id, "item_activity_update", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": True})
+        return jsonify({"ok": True, "saved": True})
 
     @app.post("/portal/scrum/api/item/add")
     def portal_scrum_api_item_add():
@@ -11651,7 +11645,7 @@ def create_app() -> Flask:
         _insert_scrum_portal_proposal(conn, team_id, sprint_id, None, "item_add", roster_name, pl)
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "pending_approval": True})
+        return jsonify({"ok": True, "saved": True})
 
     @app.get("/portal/scrum/api/item/detail")
     def portal_scrum_api_item_detail():
@@ -11881,7 +11875,7 @@ def create_app() -> Flask:
             )
             conn.commit()
             conn.close()
-            flash("Plan estimate change queued for manager approval.", "success")
+            flash("Plan estimate updated.", "success")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
 
         if cur_col != "do":

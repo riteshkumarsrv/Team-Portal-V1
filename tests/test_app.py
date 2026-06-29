@@ -4722,40 +4722,27 @@ def test_portal_scrum_api_move_queues_proposal_manager_approve_writes_activity(c
     assert r.status_code == 200
     j = r.get_json()
     assert j["ok"] is True
-    assert j.get("pending_approval") is True
+    # Changes are now auto-saved immediately — no approval step needed.
     conn = get_db(app)
     n_act = int(
         conn.execute("SELECT COUNT(*) AS c FROM scrum_item_activity WHERE item_id = ?", (iid,)).fetchone()["c"]
     )
-    assert n_act == 0
+    assert n_act >= 1, "activity should be written immediately on employee move"
     col = conn.execute("SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()["kanban_column"]
-    assert col == "backlog"
-    pid = int(
-        conn.execute(
-            "SELECT id FROM scrum_portal_proposal WHERE item_id = ? AND status = 'pending'",
-            (iid,),
-        ).fetchone()["id"]
-    )
-    conn.close()
-
-    _manager_login(client)
-    res = client.post(
-        "/scrum/portal-proposal/resolve",
-        data={"proposal_id": str(pid), "decision": "approve", "note": "ok", "manager_attest": "1"},
-        follow_redirects=False,
-    )
-    assert res.status_code in (302, 303)
-
-    conn = get_db(app)
+    assert col == "doing", "item should be moved immediately without manager approval"
+    # Proposal record exists and is already approved (auto-saved).
+    prop = conn.execute(
+        "SELECT status FROM scrum_portal_proposal WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+        (iid,),
+    ).fetchone()
+    assert prop is not None
+    assert prop["status"] == "approved"
     body = conn.execute(
         "SELECT body FROM scrum_item_activity WHERE item_id = ? ORDER BY id DESC LIMIT 1",
         (iid,),
     ).fetchone()["body"]
-    col2 = conn.execute("SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()["kanban_column"]
     conn.close()
-    assert "[approved employee change]" in body
     assert "picked up" in body
-    assert col2 == "doing"
 
 
 def test_portal_scrum_api_move_backlog_to_do_requires_estimate(client, app):
@@ -4849,32 +4836,16 @@ def test_portal_scrum_api_move_backlog_to_do_estimate_applied_on_approve(client,
     )
     assert r.status_code == 200
     assert r.get_json().get("ok") is True
-    conn = get_db(app)
-    pid = int(
-        conn.execute(
-            "SELECT id FROM scrum_portal_proposal WHERE item_id = ? AND status = 'pending'",
-            (iid,),
-        ).fetchone()["id"]
-    )
-    conn.close()
-    _manager_login(client)
-    res = client.post(
-        "/scrum/portal-proposal/resolve",
-        data={"proposal_id": str(pid), "decision": "approve", "note": "ok", "manager_attest": "1"},
-        follow_redirects=False,
-    )
-    assert res.status_code in (302, 303)
+    # Auto-saved immediately — verify the move and estimate are already applied.
     conn = get_db(app)
     row = conn.execute(
         "SELECT kanban_column, estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)
     ).fetchone()
-    last_h = float(
-        conn.execute(
-            "SELECT committed_hours FROM scrum_item_activity WHERE item_id = ? ORDER BY id DESC LIMIT 1",
-            (iid,),
-        ).fetchone()["committed_hours"]
-        or 0
-    )
+    act = conn.execute(
+        "SELECT committed_hours FROM scrum_item_activity WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+        (iid,),
+    ).fetchone()
+    last_h = float((act["committed_hours"] if act else None) or 0)
     conn.close()
     assert str(row["kanban_column"]).lower() == "do"
     assert abs(float(row["estimate_hours"]) - 6.5) < 0.001
@@ -4912,7 +4883,7 @@ def test_portal_proposal_approve_without_attest_does_not_apply(client, app):
     iid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     conn.commit()
     conn.close()
-    assert client.post(
+    r = client.post(
         "/portal/scrum/api/item/move",
         json={
             "item_id": iid,
@@ -4922,27 +4893,17 @@ def test_portal_proposal_approve_without_attest_does_not_apply(client, app):
             "committed_hours": "0",
             "note": "x",
         },
-    ).get_json()["ok"]
-    conn = get_db(app)
-    pid = int(
-        conn.execute(
-            "SELECT id FROM scrum_portal_proposal WHERE item_id = ? AND status = 'pending'",
-            (iid,),
-        ).fetchone()["id"]
     )
-    conn.close()
-    _manager_login(client)
-    client.post(
-        "/scrum/portal-proposal/resolve",
-        data={"proposal_id": str(pid), "decision": "approve", "note": "no checkbox"},
-        follow_redirects=False,
-    )
+    assert r.get_json()["ok"]
+    # With auto-save, the move is applied immediately.
     conn = get_db(app)
     col = conn.execute("SELECT kanban_column FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()["kanban_column"]
-    st = conn.execute("SELECT status FROM scrum_portal_proposal WHERE id = ?", (pid,)).fetchone()["status"]
+    prop = conn.execute(
+        "SELECT status FROM scrum_portal_proposal WHERE item_id = ? ORDER BY id DESC LIMIT 1", (iid,)
+    ).fetchone()
     conn.close()
-    assert col == "backlog"
-    assert st == "pending"
+    assert col == "doing"
+    assert prop is not None and prop["status"] == "approved"
 
 
 def test_manager_scrum_item_update_doing_column_updates_estimate_only(client, app):
@@ -5021,30 +4982,17 @@ def test_portal_doing_estimate_change_queues_proposal_and_approve_updates_db(cli
         follow_redirects=False,
     )
     assert r.status_code in (302, 303)
+    # Auto-saved immediately — estimate is updated without manager approval.
     conn = get_db(app)
-    est_before = float(conn.execute("SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()[0])
+    est_after = float(conn.execute("SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()[0])
     prow = conn.execute(
-        "SELECT id, action FROM scrum_portal_proposal WHERE item_id = ? AND status = 'pending'",
+        "SELECT status, action FROM scrum_portal_proposal WHERE item_id = ? ORDER BY id DESC LIMIT 1",
         (iid,),
     ).fetchone()
     conn.close()
-    assert abs(est_before - 3.0) < 0.001
-    assert prow is not None
-    assert prow["action"] == "item_update_doing_estimate"
-    pid = int(prow["id"])
-    _manager_login(client)
-    res = client.post(
-        "/scrum/portal-proposal/resolve",
-        data={"proposal_id": str(pid), "decision": "approve", "note": "ok", "manager_attest": "1"},
-        follow_redirects=False,
-    )
-    assert res.status_code in (302, 303)
-    conn = get_db(app)
-    est_after = float(conn.execute("SELECT estimate_hours FROM scrum_sprint_item WHERE id = ?", (iid,)).fetchone()[0])
-    st = conn.execute("SELECT status FROM scrum_portal_proposal WHERE id = ?", (pid,)).fetchone()["status"]
-    conn.close()
     assert abs(est_after - 8.0) < 0.001
-    assert st == "approved"
+    assert prow is not None and prow["action"] == "item_update_doing_estimate"
+    assert prow["status"] == "approved"
 
 
 def test_portal_kanban_board_includes_task_detail_modal(client, app):
