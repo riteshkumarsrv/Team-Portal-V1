@@ -89,6 +89,45 @@ from wsgi import app as application
 '''
 
 
+# Directories/files to skip when uploading source code
+SKIP_DIRS = {
+    "__pycache__", ".git", ".pytest_cache", "deploy", "pa_vendor",
+    "Latest Database", "LiveDatabaseBackup", "Backup", "data",
+    ".cursor", ".github", "node_modules", "scripts",
+}
+SKIP_EXTS = {".pyc", ".pyo", ".db", ".sqlite", ".log", ".zip"}
+SKIP_FILES = {"Secret", ".env", "docker-compose.yml", "Dockerfile",
+              "fly.toml", "render.yaml", "open-website.bat", "open-website.ps1"}
+
+# Only upload these top-level Python/config files
+UPLOAD_ROOT_FILES = {
+    "app.py", "wsgi.py", "config.py", "main.py",
+    "nokia_portal_roster.py", "leave_grid_image.py",
+    "sprint_hub_snapshot_png.py", "team_tracker_backup.py",
+    "requirements.txt", "requirements-deploy.txt",
+}
+
+# Directories to upload recursively
+UPLOAD_DIRS = {"templates", "static", "team_portal"}
+
+
+def upload_dir(base: str, headers: dict, local_dir: Path, remote_dir: str) -> int:
+    """Recursively upload a local directory. Returns number of files uploaded."""
+    count = 0
+    for path in sorted(local_dir.rglob("*")):
+        if path.is_dir():
+            continue
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if path.suffix in SKIP_EXTS:
+            continue
+        rel = path.relative_to(local_dir)
+        remote = f"{remote_dir}/{rel.as_posix()}"
+        upload_bytes(base, headers, remote, path.read_bytes(), path.name)
+        count += 1
+    return count
+
+
 def main() -> int:
     username = (os.environ.get("PA_USERNAME") or "").strip()
     token = (os.environ.get("PA_API_TOKEN") or "").strip()
@@ -112,7 +151,23 @@ def main() -> int:
     db = ROOT / "Latest Database" / "team_tracker.db"
     if "--seed-db" in sys.argv and db.is_file():
         upload_bytes(base, headers, f"{project}/data/team_tracker.db", db.read_bytes(), "team_tracker.db")
-        print("Uploaded database (seed — only on first deploy)")
+        print("Uploaded database (seed - only on first deploy)")
+
+    # Upload root Python/config source files
+    uploaded_root = 0
+    for fname in UPLOAD_ROOT_FILES:
+        fpath = ROOT / fname
+        if fpath.is_file():
+            upload_bytes(base, headers, f"{project}/{fname}", fpath.read_bytes(), fname)
+            uploaded_root += 1
+    print(f"Uploaded {uploaded_root} root source files")
+
+    # Upload templates/, static/, team_portal/ recursively
+    for dname in UPLOAD_DIRS:
+        local = ROOT / dname
+        if local.is_dir():
+            n = upload_dir(base, headers, local, f"{project}/{dname}")
+            print(f"Uploaded {n} files from {dname}/")
 
     vendor_zip = ROOT / "deploy" / "pa_vendor.zip"
     if not vendor_zip.is_file():
