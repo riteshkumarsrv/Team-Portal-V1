@@ -577,6 +577,9 @@
                       <path class="tg-est" fill="none" stroke="#f59e0b" stroke-width="8"
                             stroke-linecap="butt" stroke-dasharray="0 220"
                             d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <path class="tg-burnt-over" fill="none" stroke="#ef4444" stroke-width="8"
+                            stroke-linecap="butt" stroke-dasharray="0 220" opacity="0"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
                       <line class="tg-needle" x1="85" y1="92" x2="85" y2="26"
                             stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
                       <text class="tg-burnt-pct" x="85" y="26"
@@ -614,6 +617,9 @@
                             d="M 15 92 A 70 70 0 0 1 155 92"/>
                       <path class="tg-est" fill="none" stroke="#f59e0b" stroke-width="8"
                             stroke-linecap="butt" stroke-dasharray="0 220"
+                            d="M 15 92 A 70 70 0 0 1 155 92"/>
+                      <path class="tg-burnt-over" fill="none" stroke="#ef4444" stroke-width="8"
+                            stroke-linecap="butt" stroke-dasharray="0 220" opacity="0"
                             d="M 15 92 A 70 70 0 0 1 155 92"/>
                       <line class="tg-needle" x1="85" y1="92" x2="85" y2="26"
                             stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
@@ -932,6 +938,22 @@
       var estLen = frac(est) * arcLen;
       svg.querySelector(".tg-est").setAttribute(
         "stroke-dasharray", estLen.toFixed(2) + " " + (arcLen - estLen + 0.01).toFixed(2));
+
+      /* overburn arc — red segment from estimate endpoint to burnt endpoint */
+      var burntLen = frac(burnt) * arcLen;
+      var overLen  = Math.max(0, burntLen - estLen);
+      var overArc  = svg.querySelector(".tg-burnt-over");
+      if (overArc) {
+        if (overLen > 0.05) {
+          overArc.setAttribute("stroke-dasharray",
+            overLen.toFixed(2) + " " + (arcLen - overLen + 0.01).toFixed(2));
+          overArc.setAttribute("stroke-dashoffset", (-estLen).toFixed(2));
+          overArc.setAttribute("opacity", "1");
+        } else {
+          overArc.setAttribute("stroke-dasharray", "0 " + (arcLen + 1).toFixed(2));
+          overArc.setAttribute("opacity", "0");
+        }
+      }
 
       var burntFrac = frac(burnt);
       var angleDeg = burntFrac * 180;

@@ -2,7 +2,7 @@
 """Configure/reload Team Portal V1 on PythonAnywhere via API (optional).
 
 Set environment variables:
-  PA_USERNAME=your_pythonanywhere_username
+  PA_USERNAME=your_pythonanywhere_username  (case-sensitive, e.g. Riteshkumarsrv)
   PA_API_TOKEN=from Account → API token tab
   PA_REGION=www   (or eu)
 
@@ -29,17 +29,17 @@ def main() -> int:
         return 1
 
     host = "www.pythonanywhere.com" if region == "www" else "eu.pythonanywhere.com"
-    base = f"https://{host}/api/v0/user/{username}/"
+    user = username
+    base = f"https://{host}/api/v0/user/{user}/"
     headers = {"Authorization": f"Token {token}"}
 
-    domain = f"{username}.{host.replace('www.', '')}"
-    if domain.endswith(".pythonanywhere.com.pythonanywhere.com"):
-        domain = f"{username}.pythonanywhere.com"
+    domain = f"{user}.pythonanywhere.com"
     if region == "eu":
-        domain = f"{username}.eu.pythonanywhere.com"
+        domain = f"{user}.eu.pythonanywhere.com"
 
-    project_home = f"/home/{username}/{PROJECT}"
-    venv_path = f"/home/{username}/.virtualenvs/{VENV_NAME}"
+    project_home = f"/home/{user}/{PROJECT}"
+    venv_path = f"/home/{user}/.virtualenvs/{VENV_NAME}"
+    wsgi_path = f"/var/www/{user.lower()}_pythonanywhere_com_wsgi.py"
 
     wsgi_body = f'''import os
 import sys
@@ -74,42 +74,42 @@ from wsgi import app as application
             return 1
         print("Created webapp", domain)
 
+    patch_data: dict[str, str] = {
+        "source_directory": project_home,
+        "force_https": "true",
+    }
     r = requests.patch(
         base + f"webapps/{domain}/",
         headers=headers,
-        data={
-            "source_directory": project_home,
-            "virtualenv_path": venv_path,
-            "force_https": "true",
-        },
+        data=patch_data,
         timeout=60,
     )
-    if r.status_code not in (200,):
+    if r.status_code != 200:
         print("Patch webapp failed:", r.status_code, r.text, file=sys.stderr)
         return 1
     print("Updated webapp config")
 
     r = requests.post(
-        base + f"webapps/{domain}/wsgi/",
+        base + f"files/path{wsgi_path}",
         headers=headers,
-        data={"content": wsgi_body},
+        files={"content": ("wsgi.py", wsgi_body.encode())},
         timeout=60,
     )
     if r.status_code not in (200, 201):
-        print("Upload WSGI failed:", r.status_code, r.text, file=sys.stderr)
+        print("Upload WSGI failed:", r.status_code, r.text[:300], file=sys.stderr)
         return 1
     print("Uploaded WSGI")
 
-    static_url = "/static/"
-    static_dir = f"{project_home}/static/"
-    r = requests.post(
-        base + f"webapps/{domain}/static_paths/",
-        headers=headers,
-        data={"url": static_url, "directory": static_dir},
-        timeout=60,
-    )
-    if r.status_code not in (200, 201):
-        print("Static path note:", r.status_code, r.text)
+    static = requests.get(base + f"webapps/{domain}/static_files/", headers=headers, timeout=60)
+    if static.status_code == 200 and not static.json():
+        r = requests.post(
+            base + f"webapps/{domain}/static_files/",
+            headers=headers,
+            data={"url": "/static/", "path": f"{project_home}/static/"},
+            timeout=60,
+        )
+        if r.status_code not in (200, 201):
+            print("Static path note:", r.status_code, r.text[:200])
 
     r = requests.post(base + f"webapps/{domain}/reload/", headers=headers, timeout=120)
     if r.status_code != 200:

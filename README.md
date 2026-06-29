@@ -1,4 +1,4 @@
-# TEAM MANAGEMENT PORTAL
+# Team Portal V1
 
 Flask + SQLite app: roster-based leave requests, manager **leave tracker**, optional **Scrum dashboard** per team, approvals, CSV exports (with submitter IP), and name typeahead (`/api/employees?q=`).
 
