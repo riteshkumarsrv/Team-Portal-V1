@@ -47,32 +47,55 @@
   .roster-table th,
   .roster-table td {
     border-bottom: 1px solid rgba(148, 163, 184, 0.15);
-    padding: 0.45rem 0.35rem;
+    padding: 0.45rem 0.5rem;
     text-align: left;
     vertical-align: middle;
   }
   .emp-code-table th, .roster-table th {
     font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted, #94a3b8);
   }
-  .emp-code-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
-  .emp-code-input {
-    width: 5.5rem;
-    padding: 0.28rem 0.45rem;
-    font-size: 0.82rem;
-    border-radius: var(--radius-sm, 6px);
-    border: 1px solid var(--surface2, #334155);
-    background: var(--bg, #0f172a);
-    color: inherit;
-  }
-  .emp-code-badge {
+  .emp-code-actions { display: flex; flex-wrap: nowrap; gap: 0.35rem; align-items: center; }
+  .emp-team-badge {
     display: inline-block;
-    font-size: 0.72rem;
-    font-weight: 600;
-    padding: 0.12rem 0.45rem;
-    border-radius: 999px;
+    font-size: 0.7rem; font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    background: rgba(59,130,246,0.18); color: #93c5fd;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
   }
-  .emp-code-badge.is-set { background: rgba(34, 197, 94, 0.18); color: #86efac; }
-  .emp-code-badge.is-unset { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+  .emp-code-stars {
+    font-size: 0.8rem; letter-spacing: 0.12em; color: var(--muted,#94a3b8);
+    display: inline-flex; align-items: center; gap: 0.4rem;
+  }
+  .emp-code-show-btn {
+    font-size: 0.72rem; padding: 0.12rem 0.45rem;
+    border-radius: var(--radius-sm,6px);
+    border: 1px solid var(--surface2,#334155);
+    background: transparent; color: var(--muted,#94a3b8);
+    cursor: pointer;
+  }
+  .emp-code-show-btn:hover { background: rgba(148,163,184,0.12); }
+  .emp-code-not-linked { color: var(--muted,#94a3b8); font-style: italic; font-size: 0.78rem; }
+  /* dialog for manual code entry */
+  .emp-set-dialog {
+    background: var(--surface,#1e293b); color: inherit;
+    border: 1px solid var(--surface2,#334155);
+    border-radius: var(--radius,10px);
+    padding: 1.2rem 1.4rem 1rem;
+    min-width: 300px; max-width: 400px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  }
+  .emp-set-dialog::backdrop { background: rgba(0,0,0,0.55); }
+  .emp-set-dialog h4 { margin: 0 0 0.6rem; font-size: 0.95rem; }
+  .emp-set-dialog label { font-size: 0.8rem; color: var(--muted,#94a3b8); display: block; margin-bottom: 0.3rem; }
+  .emp-set-dialog input[type=text] {
+    width: 100%; padding: 0.4rem 0.55rem; font-size: 1rem; letter-spacing: 0.15em;
+    border-radius: var(--radius-sm,6px); border: 1px solid var(--surface2,#334155);
+    background: var(--bg,#0f172a); color: inherit; box-sizing: border-box;
+    margin-bottom: 0.75rem;
+  }
+  .emp-set-dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 </style>
 {% endblock %}
 {% block content %}
@@ -172,48 +195,92 @@
       history.replaceState({}, '', location.pathname + location.hash);
     }
   })();
+
+  function empToggleCode(idx) {
+    const dots  = document.getElementById('dots-'    + idx);
+    const plain = document.getElementById('plain-'   + idx);
+    const btn   = document.getElementById('showbtn-' + idx);
+    if (!dots || !plain || !btn) return;
+    const showing = plain.style.display !== 'none';
+    dots.style.display  = showing ? '' : 'none';
+    plain.style.display = showing ? 'none' : '';
+    btn.textContent     = showing ? 'Show' : 'Hide';
+  }
 </script>
 
 <section class="card emp-code-card">
-  <h3 class="section-subheading" style="margin-bottom: 0.35rem">Employee portal access codes</h3>
+  <h3 class="section-subheading" style="margin-bottom: 0.35rem">Employee Access Codes</h3>
   <p class="meet-hint" style="margin-top: 0">
-    Set a <strong>6-digit sign-in code</strong> per employee on the active team roster
-    {% if active_team_name %} (<strong>{{ active_team_name }}</strong>){% endif %}.
-    Employees sign in with the <strong>Employee Email</strong> from the roster (and the code). Codes are stored securely and are not shown again after you leave this page.
+    Set a <strong>6-digit code</strong> per employee. They use their name + this code to sign in to the portal.
+    Only you can set, reset, or clear codes.
   </p>
   {% if employee_access_codes %}
     <table class="emp-code-table" aria-label="Employee access codes">
       <thead>
         <tr>
-          <th>Employee name</th>
-          <th>Employee email</th>
-          <th>Status</th>
-          <th>Last updated</th>
-          <th>Set / reset code</th>
+          <th>Team</th>
+          <th>Employee Name</th>
+          <th>Employee Email</th>
+          <th>Code Linked Email</th>
+          <th>Current Code</th>
+          <th>Set / Reset</th>
         </tr>
       </thead>
       <tbody>
         {% for row in employee_access_codes %}
+          {% set dlg_id = 'emp-set-dlg-' ~ loop.index %}
           <tr>
-            <td>{{ row.employee_name }}</td>
+            <td>
+              {% if row.team_name %}
+                <span class="emp-team-badge">{{ row.team_name | upper }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td style="font-weight:500">{{ row.employee_name }}</td>
             <td class="cell-mono" style="font-size: 0.78rem">{{ row.employee_email or '—' }}</td>
             <td>
-              {% if row.is_set %}
-                <span class="emp-code-badge is-set">Code set</span>
+              {% if row.code_email %}
+                <span class="cell-mono" style="font-size:0.78rem">{{ row.code_email }}</span>
               {% else %}
-                <span class="emp-code-badge is-unset">Not set</span>
+                <span class="emp-code-not-linked">not yet linked</span>
               {% endif %}
             </td>
-            <td class="cell-mono" style="font-size: 0.75rem">
-              {% if row.is_set %}{{ row.updated_at[:16] if row.updated_at else '—' }}{% else %}—{% endif %}
+            <td>
+              {% if row.is_set %}
+                <span class="emp-code-stars">
+                  <span class="emp-code-dots" id="dots-{{ loop.index }}">&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;</span>
+                  <span class="emp-code-plain" id="plain-{{ loop.index }}" style="display:none;color:#facc15;font-weight:700;letter-spacing:0.18em">{{ row.code_plain or '------' }}</span>
+                  <button type="button" class="emp-code-show-btn" id="showbtn-{{ loop.index }}"
+                    onclick="empToggleCode({{ loop.index }})">Show</button>
+                </span>
+              {% else %}
+                <span style="color:#facc15;letter-spacing:0.12em;font-size:0.85rem" title="No code set yet">&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;&#x25CF;</span>
+              {% endif %}
             </td>
             <td>
               <div class="emp-code-actions">
-                <form method="post" action="{{ url_for('reports_employee_access_code_set') }}" class="inline-form">
+                <!-- Auto-generate -->
+                <form method="post" action="{{ url_for('reports_employee_access_code_generate') }}" class="inline-form">
                   {% include "partials/csrf.html" %}
                   <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
+                  <button type="submit" class="btn secondary small" title="Auto-generate a 6-digit code">
+                    &#x26A1; Auto
+                  </button>
+                </form>
+                <!-- Manual set / reset -->
+                <button type="button" class="btn small"
+                  onclick="document.getElementById('{{ dlg_id }}').showModal()">
+                  {% if row.is_set %}Reset{% else %}Set{% endif %}
+                </button>
+              </div>
+              <!-- Dialog for manual code entry -->
+              <dialog id="{{ dlg_id }}" class="emp-set-dialog">
+                <h4>{% if row.is_set %}Reset{% else %}Set{% endif %} code — {{ row.employee_name }}</h4>
+                <form method="post" action="{{ url_for('reports_employee_access_code_set') }}">
+                  {% include "partials/csrf.html" %}
+                  <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
+                  <label for="{{ dlg_id }}-inp">Enter a 6-digit numeric code</label>
                   <input
-                    class="emp-code-input"
+                    id="{{ dlg_id }}-inp"
                     name="access_code"
                     type="text"
                     inputmode="numeric"
@@ -221,23 +288,16 @@
                     maxlength="6"
                     placeholder="000000"
                     aria-label="6-digit code for {{ row.employee_name }}"
+                    autocomplete="off"
                     required
                   />
-                  <button type="submit" class="btn small">Set</button>
+                  <div class="emp-set-dialog-actions">
+                    <button type="button" class="btn secondary small"
+                      onclick="document.getElementById('{{ dlg_id }}').close()">Cancel</button>
+                    <button type="submit" class="btn small">{% if row.is_set %}Reset{% else %}Set{% endif %}</button>
+                  </div>
                 </form>
-                <form method="post" action="{{ url_for('reports_employee_access_code_generate') }}" class="inline-form">
-                  {% include "partials/csrf.html" %}
-                  <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
-                  <button type="submit" class="btn secondary small">Generate</button>
-                </form>
-                {% if row.is_set %}
-                  <form method="post" action="{{ url_for('reports_employee_access_code_clear') }}" class="inline-form">
-                    {% include "partials/csrf.html" %}
-                    <input type="hidden" name="employee_name" value="{{ row.employee_name }}" />
-                    <button type="submit" class="btn secondary small" title="Remove access code">Clear</button>
-                  </form>
-                {% endif %}
-              </div>
+              </dialog>
             </td>
           </tr>
         {% endfor %}

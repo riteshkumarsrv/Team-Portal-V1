@@ -2476,7 +2476,8 @@ def _portal_employee_access_code_status_for_roster(
     conn = get_db(app)
     rows = conn.execute(
         f"""
-        SELECT employee_name, employee_email, updated_at, updated_by_manager_email
+        SELECT employee_name, employee_email, updated_at, updated_by_manager_email,
+               COALESCE(code_plain, '') AS code_plain
         FROM portal_employee_access_code
         WHERE employee_name IN ({ph})
         """,
@@ -2484,20 +2485,27 @@ def _portal_employee_access_code_status_for_roster(
     ).fetchall()
     email_rows = conn.execute(
         f"""
-        SELECT employee_name, employee_email
-        FROM team_roster
-        WHERE employee_name IN ({ph})
+        SELECT tr.employee_name, tr.employee_email,
+               COALESCE(t.name, '') AS team_name
+        FROM team_roster tr
+        LEFT JOIN teams t ON t.id = tr.team_id
+        WHERE tr.employee_name IN ({ph})
         """,
         names,
     ).fetchall()
     conn.close()
     by_name = {str(r["employee_name"]): r for r in rows}
     roster_email_by_name: dict[str, str] = {}
+    team_name_by_name: dict[str, str] = {}
     for r in email_rows:
         nm = str(r["employee_name"] or "").strip()
         em = normalize_email(str(r["employee_email"] or ""))
-        if nm and em and nm not in roster_email_by_name:
-            roster_email_by_name[nm] = em
+        tn = str(r["team_name"] or "").strip()
+        if nm:
+            if em and nm not in roster_email_by_name:
+                roster_email_by_name[nm] = em
+            if tn and nm not in team_name_by_name:
+                team_name_by_name[nm] = tn
     out: list[dict[str, Any]] = []
     for name in names:
         row = by_name.get(name)
@@ -2507,6 +2515,9 @@ def _portal_employee_access_code_status_for_roster(
             {
                 "employee_name": name,
                 "employee_email": roster_email or code_email,
+                "team_name": team_name_by_name.get(name, ""),
+                "code_email": code_email,
+                "code_plain": str(row["code_plain"] or "") if row else "",
                 "is_set": row is not None,
                 "updated_at": str(row["updated_at"] or "") if row else "",
                 "updated_by": str(row["updated_by_manager_email"] or "") if row else "",
@@ -2592,15 +2603,16 @@ def _set_portal_employee_access_code(
     conn.execute(
         """
         INSERT INTO portal_employee_access_code
-            (employee_name, employee_email, code_hmac, updated_at, updated_by_manager_email)
-        VALUES (?, ?, ?, ?, ?)
+            (employee_name, employee_email, code_hmac, code_plain, updated_at, updated_by_manager_email)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(employee_name) DO UPDATE SET
             employee_email = excluded.employee_email,
             code_hmac = excluded.code_hmac,
+            code_plain = excluded.code_plain,
             updated_at = excluded.updated_at,
             updated_by_manager_email = excluded.updated_by_manager_email
         """,
-        (canonical, roster_email, digest, ts, (manager_email or "").strip()),
+        (canonical, roster_email, digest, normalized, ts, (manager_email or "").strip()),
     )
     conn.commit()
     conn.close()
@@ -3034,6 +3046,20 @@ def _migrate_portal_employee_access_code_email_v1(conn: sqlite3.Connection) -> N
             "ALTER TABLE portal_employee_access_code ADD COLUMN employee_email TEXT NOT NULL DEFAULT ''"
         )
     conn.execute("INSERT INTO app_migrations (id) VALUES ('portal_employee_access_code_email_v1')")
+
+
+def _migrate_portal_employee_access_code_plain_v1(conn: sqlite3.Connection) -> None:
+    """Add code_plain column so managers can view the code they set."""
+    if conn.execute(
+        "SELECT 1 FROM app_migrations WHERE id = ?", ("portal_employee_access_code_plain_v1",)
+    ).fetchone():
+        return
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(portal_employee_access_code)").fetchall()}
+    if "code_plain" not in existing:
+        conn.execute(
+            "ALTER TABLE portal_employee_access_code ADD COLUMN code_plain TEXT NOT NULL DEFAULT ''"
+        )
+    conn.execute("INSERT INTO app_migrations (id) VALUES ('portal_employee_access_code_plain_v1')")
 
 
 def _migrate_scrum_portal_proposal_v1(conn: sqlite3.Connection) -> None:
@@ -3540,6 +3566,7 @@ def init_db(app: Flask) -> None:
     _migrate_roster_email_v1(conn)
     _migrate_portal_employee_access_code_v1(conn)
     _migrate_portal_employee_access_code_email_v1(conn)
+    _migrate_portal_employee_access_code_plain_v1(conn)
     _seed_default_team_if_empty(conn)
     _seed_portal_demo_scrum_items_if_requested(conn)
     _migrate_scrum_team_task_kinds(conn)
@@ -15530,11 +15557,7 @@ def create_app() -> Flask:
         if err:
             flash(err, "error")
             return redirect(url_for("reports"))
-        flash(
-            f"Access code saved for {canonical}. Share the 6-digit code with the employee; "
-            "it is not shown again here.",
-            "success",
-        )
+        flash(f"Access code saved for {canonical}.", "success")
         return redirect(url_for("reports"))
 
     @app.post("/reports/employee-access-code/generate")
@@ -15561,11 +15584,7 @@ def create_app() -> Flask:
         if err:
             flash(err, "error")
             return redirect(url_for("reports"))
-        flash(
-            f"New access code for {canonical}: {code}. Give this to the employee once; "
-            "it will not be displayed again.",
-            "success",
-        )
+        flash(f"Access code auto-generated for {canonical}. Click 'Show' in the table to view it.", "success")
         return redirect(url_for("reports"))
 
     @app.post("/reports/employee-access-code/clear")
