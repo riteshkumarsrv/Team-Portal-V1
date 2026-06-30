@@ -2636,18 +2636,27 @@ def _verify_portal_employee_access_code(
     normalized = _normalize_portal_access_code(code)
     if not canonical or not normalized:
         return False
-    digest = _portal_employee_access_code_hmac(app, normalized)
     conn = get_db(app)
     row = conn.execute(
         """
-        SELECT code_hmac, employee_email FROM portal_employee_access_code
+        SELECT code_hmac, code_plain, employee_email FROM portal_employee_access_code
         WHERE employee_name = ?
         """,
         (canonical,),
     ).fetchone()
     conn.close()
-    if not row or str(row["code_hmac"] or "") != digest:
+    if not row:
         return False
+    # Primary: compare against stored plaintext (persistent across deploys / key rotations)
+    stored_plain = str(row["code_plain"] or "").strip()
+    if stored_plain:
+        if not secrets.compare_digest(stored_plain, normalized):
+            return False
+    else:
+        # Fallback: HMAC verification (pre-migration rows without code_plain)
+        digest = _portal_employee_access_code_hmac(app, normalized)
+        if str(row["code_hmac"] or "") != digest:
+            return False
     login_em = normalize_email(login_email)
     if login_em:
         roster_em = _roster_email_for_employee(app, canonical)
@@ -4122,16 +4131,24 @@ def _verify_lpo_manager_code(app: Flask, lpo_email: str, code: str) -> bool:
     em = normalize_email(lpo_email)
     if not em:
         return False
-    digest = _lpo_manager_code_hmac(app, normalized)
     conn = get_db(app)
     row = conn.execute(
-        "SELECT code_hmac FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
+        "SELECT code_hmac, code_plain FROM lpo_manager_emails WHERE email = ? COLLATE NOCASE",
         (em,),
     ).fetchone()
     conn.close()
-    if not row or not str(row["code_hmac"] or ""):
+    if not row:
         return False
-    return str(row["code_hmac"]) == digest
+    # Primary: compare against stored plaintext (persistent across deploys / key rotations)
+    stored_plain = str(row["code_plain"] or "").strip()
+    if stored_plain:
+        return secrets.compare_digest(stored_plain, normalized)
+    # Fallback: HMAC (pre-code_plain rows)
+    stored_hmac = str(row["code_hmac"] or "")
+    if not stored_hmac:
+        return False
+    digest = _lpo_manager_code_hmac(app, normalized)
+    return stored_hmac == digest
 
 
 def _lpo_assigned_team_ids(conn: sqlite3.Connection, email: str) -> list[int]:

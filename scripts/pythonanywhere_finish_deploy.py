@@ -37,8 +37,22 @@ def upload_bytes(base: str, headers: dict[str, str], remote: str, data: bytes, n
         raise RuntimeError(f"Upload {remote}: {r.status_code} {r.text[:400]}")
 
 
+def _read_local_env_value(key: str) -> str:
+    """Read a value from the local .env file, return empty string if not found."""
+    env_file = ROOT / ".env"
+    if not env_file.is_file():
+        return ""
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line[len(key) + 1:].strip()
+    return ""
+
+
 def build_env(domain: str, manager_password: str) -> str:
-    secret = secrets.token_urlsafe(48)
+    # Reuse stable secret key from local .env so stored HMACs/sessions survive deploys.
+    # Only generate a new one if the local .env has none yet.
+    secret = _read_local_env_value("FLASK_SECRET_KEY") or secrets.token_urlsafe(48)
     return f"""FLASK_SECRET_KEY={secret}
 MANAGER_DASHBOARD_PASSWORD={manager_password}
 TEAM_TRACKER_PRODUCTION=1
