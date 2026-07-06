@@ -10071,16 +10071,23 @@ def _enrich_kanban_appreciation(conn: sqlite3.Connection, buckets: dict[str, lis
 
 
 def _format_activity_ts(raw: str) -> str:
-    s = (raw or "").strip().replace("+00:00", "Z")
+    """Format a UTC ISO timestamp as 'dd-Mmm : HH:MM' in IST (UTC+5:30)."""
+    from datetime import timezone, timedelta
+    s = (raw or "").strip().replace("+00:00", "Z").replace("Z", "")
     if not s:
         return ""
-    if "T" in s:
-        date_part, rest = s.split("T", 1)
-        time_part = rest.replace("Z", "").split(".")[0][:8]
-        if len(time_part) >= 5:
-            time_part = time_part[:5]
-        return f"{date_part} {time_part} UTC"
-    return s[:19]
+    try:
+        if "T" in s:
+            dt_str = s.split(".")[0]  # strip microseconds
+            dt_utc = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        else:
+            dt_utc = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        IST = timezone(timedelta(hours=5, minutes=30))
+        dt_ist = dt_utc.astimezone(IST)
+        month_abbr = dt_ist.strftime("%b")  # Jan, Feb, …
+        return f"{dt_ist.day:02d}-{month_abbr} : {dt_ist.strftime('%H:%M')}"
+    except (ValueError, TypeError):
+        return s[:16]
 
 
 def _strip_appended_standup_lines_from_notes(notes: str) -> str:
@@ -10107,7 +10114,7 @@ def _fetch_kanban_standup_updates_map(conn: sqlite3.Connection, item_ids: list[i
         SELECT id, item_id, body, committed_hours, created_at
         FROM scrum_item_activity
         WHERE item_id IN ({ph}) AND lower(trim(from_column)) = 'doing' AND lower(trim(to_column)) = 'doing'
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at DESC, id DESC
         """,
         ids,
     ):
@@ -10138,7 +10145,7 @@ def _fetch_kanban_item_activity_log_map(conn: sqlite3.Connection, item_ids: list
         SELECT id, item_id, body, committed_hours, from_column, to_column, created_at
         FROM scrum_item_activity
         WHERE item_id IN ({ph})
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at DESC, id DESC
         """,
         ids,
     ):
