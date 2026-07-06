@@ -3567,6 +3567,9 @@ def init_db(app: Flask) -> None:
     cols_item4 = {row[1] for row in conn.execute("PRAGMA table_info(scrum_sprint_item)")}
     if "done_artifacts" not in cols_item4:
         conn.execute("ALTER TABLE scrum_sprint_item ADD COLUMN done_artifacts TEXT NOT NULL DEFAULT '[]'")
+    cols_item5 = {row[1] for row in conn.execute("PRAGMA table_info(scrum_sprint_item)")}
+    if "jira_id" not in cols_item5:
+        conn.execute("ALTER TABLE scrum_sprint_item ADD COLUMN jira_id TEXT NOT NULL DEFAULT ''")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS scrum_item_activity (
@@ -9942,7 +9945,7 @@ def _load_kanban_cards(conn: sqlite3.Connection, sprint_id: int, assignee: str, 
     for r in conn.execute(
         """
         SELECT i.id, i.title, i.estimate_hours, i.status, i.notes, i.dod, i.done_artifacts, i.sort_order, i.kanban_column, i.task_kind,
-               i.sticky_color_hex, i.area, k.label AS kind_label, k.color_hex AS kind_color_hex
+               i.sticky_color_hex, i.area, COALESCE(i.jira_id,'') AS jira_id, k.label AS kind_label, k.color_hex AS kind_color_hex
         FROM scrum_sprint_item i
         LEFT JOIN scrum_team_task_kind k ON k.team_id = ? AND k.code = i.task_kind
         WHERE i.sprint_id = ? AND i.assignee = ?
@@ -9981,6 +9984,7 @@ def _load_kanban_cards(conn: sqlite3.Connection, sprint_id: int, assignee: str, 
                 "kind_label": kind_label,
                 "kind_color_hex": kind_color,
                 "area": (str(r["area"] or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]),
+                "jira_id": (str(r["jira_id"] or "").strip() if "jira_id" in r.keys() else ""),
                 "sticky_color_hex_raw": _normalize_hex_color(sticky_hex)
                 if sticky_hex and _SCRUM_HEX_COLOR.match(sticky_hex)
                 else "",
@@ -11481,6 +11485,7 @@ def create_app() -> Flask:
                 "item_note": url_for("portal_scrum_api_item_note"),
                 "item_activity_update": url_for("portal_scrum_api_activity_update"),
                 "item_add": url_for("portal_scrum_api_item_add"),
+                "item_jira_id": url_for("portal_scrum_api_item_jira_id"),
                 "area_suggest": url_for("portal_scrum_api_areas", sprint_id=int(sprint_id)),
             },
             kb_form_urls={
@@ -11910,6 +11915,36 @@ def create_app() -> Flask:
         if not payload:
             return jsonify({"ok": False, "error": "not_found"}), 404
         return jsonify({"ok": True, **payload})
+
+    @app.post("/portal/scrum/api/item/jira-id")
+    def portal_scrum_api_item_jira_id():
+        """Save a Jira ticket ID / URL on a sticky (portal employee)."""
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        jira_id = (data.get("jira_id") or "").strip()[:500]
+        if not item_id or not sprint_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        row = conn.execute(
+            "SELECT id FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            (item_id, sprint_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        conn.execute(
+            "UPDATE scrum_sprint_item SET jira_id = ?, updated_at = ? WHERE id = ?",
+            (jira_id, _utc_stamp(), item_id),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "jira_id": jira_id})
 
     @app.post("/portal/scrum/api/item/checklist/add")
     def portal_scrum_api_item_checklist_add():
@@ -13893,6 +13928,7 @@ def create_app() -> Flask:
                 "item_add": url_for("scrum_api_item_add"),
                 "item_appreciation": url_for("scrum_api_item_appreciation"),
                 "item_appreciation_delete_all": url_for("scrum_api_item_appreciation_delete_all"),
+                "item_jira_id": url_for("scrum_api_item_jira_id"),
                 "area_suggest": url_for("scrum_api_areas"),
             },
             kb_form_urls={
@@ -14176,6 +14212,38 @@ def create_app() -> Flask:
         conn.commit()
         conn.close()
         return jsonify({"ok": True, "deleted": deleted})
+
+    @app.post("/scrum/api/item/jira-id")
+    def scrum_api_item_jira_id():
+        """Save a Jira ticket ID / URL on a sticky (manager or portal)."""
+        is_mgr = _manager_logged_in()
+        is_portal = not is_mgr and session.get("portal_user")
+        if not is_mgr and not is_portal:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        item_id = _parse_optional_int(data.get("item_id"))
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        jira_id = (data.get("jira_id") or "").strip()[:500]
+        if not item_id or not sprint_id:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        row = conn.execute(
+            "SELECT id FROM scrum_sprint_item WHERE id = ? AND sprint_id = ? AND sprint_id IN (SELECT id FROM scrum_sprint WHERE team_id = ?)",
+            (item_id, sprint_id, team_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        conn.execute(
+            "UPDATE scrum_sprint_item SET jira_id = ?, updated_at = ? WHERE id = ?",
+            (jira_id, _utc_stamp(), item_id),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "jira_id": jira_id})
 
     @app.get("/scrum/api/areas")
     def scrum_api_areas():
