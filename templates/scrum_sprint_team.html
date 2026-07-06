@@ -678,7 +678,7 @@
                 <div class="scrum-td-collapsed-summary">
                   {% for n in nn[:4] %}
                     <div class="scrum-cl-line{% if n.recent_24h %} scrum-note-recent-24h{% endif %}">
-                      <time datetime="{{ n.created_at }}">{{ n.created_at[:10] }}</time>
+                      <time datetime="{{ n.created_at }}">{{ n.created_at_display or n.created_at[:10] }}</time>
                       {% if n.committed_hours and n.committed_hours > 0.0001 %}
                         <span> +{{ "%.1f"|format(n.committed_hours) }}h</span>
                       {% endif %}
@@ -703,7 +703,7 @@
                     {% for n in m.last_notes %}
                       <div class="scrum-note-card{% if n.recent_24h %} scrum-note-card-recent-24h{% endif %}">
                         <div class="scrum-note-card-top">
-                          <time class="scrum-note-date" datetime="{{ n.created_at }}">{{ n.created_at[:10] }}</time>
+                          <time class="scrum-note-date" datetime="{{ n.created_at }}">{{ n.created_at_display or n.created_at[:10] }}</time>
                           {% if n.committed_hours and n.committed_hours > 0.0001 %}
                             <span class="scrum-note-hours">+{{ "%.1f"|format(n.committed_hours) }}h</span>
                           {% endif %}

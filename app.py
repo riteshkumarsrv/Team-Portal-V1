@@ -8944,6 +8944,7 @@ def _last_notes_for_assignee(conn: sqlite3.Connection, sprint_id: int, assignee:
                 "from_column": r["from_column"],
                 "to_column": r["to_column"],
                 "created_at": r["created_at"],
+                "created_at_display": _format_activity_ts(str(r["created_at"] or "")),
                 "title": (r["title"] or "").strip(),
                 "recent_24h": recent_24h,
             }
