@@ -372,7 +372,6 @@
                 data-from-column="{{ col }}"
                 data-estimate-hours="{{ card.estimate_hours }}"
                 data-logged-hours="{% if col in ('doing', 'done') %}{{ '%.2f'|format(card.committed_logged_hours|default(0)) }}{% else %}0{% endif %}"
-                data-jira-id="{{ card.jira_id|default('')|e }}"
               >
                 <div class="scrum-sticky-corner">
                   {% if ((card.appreciation_count|default(0))|int > 0) or (not _portal and not sprint_readonly) %}
@@ -422,28 +421,6 @@
                 {% if card.area %}
                   <p class="scrum-sticky-area" title="{{ card.area }}">{{ card.area }}</p>
                 {% endif %}
-                <div class="scrum-sticky-jira"
-                     draggable="false"
-                     onclick="event.stopPropagation();"
-                     onmousedown="event.stopPropagation();"
-                     data-item-id="{{ card.id }}"
-                     data-sprint-id="{{ sprint_id }}">
-                  {% if card.jira_id %}
-                    {% set jira_href = card.jira_id if card.jira_id.startswith('http') else '' %}
-                    <span class="scrum-jira-badge" title="Jira: {{ card.jira_id }}">
-                      <svg viewBox="0 0 16 16" width="10" height="10" fill="#2684ff" style="flex-shrink:0;"><path d="M8 0C3.6 0 0 3.6 0 8s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm4 9H9v3H7V9H4V7h3V4h2v3h3v2z"/></svg>
-                      {% if jira_href %}<a href="{{ jira_href }}" target="_blank" rel="noopener" class="scrum-jira-link">{{ card.jira_id }}</a>{% else %}<span class="scrum-jira-text">{{ card.jira_id }}</span>{% endif %}
-                      <button type="button" class="scrum-jira-edit-btn" title="Edit Jira ID" aria-label="Edit Jira">✏</button>
-                    </span>
-                  {% else %}
-                    <button type="button" class="scrum-jira-add-btn" title="Add Jira ID or link">+ Jira</button>
-                  {% endif %}
-                  <span class="scrum-jira-input-wrap" style="display:none;">
-                    <input type="text" class="scrum-jira-input" placeholder="PROJ-123 or URL" maxlength="500" />
-                    <button type="button" class="scrum-jira-save-btn">✓</button>
-                    <button type="button" class="scrum-jira-cancel-btn">✕</button>
-                  </span>
-                </div>
                 <details
                   class="scrum-sticky-attachments"
                   draggable="false"
@@ -2076,145 +2053,4 @@
     })();
   </script>
 
-  {# ── Jira field interactions ──────────────────────────────────────────── #}
-  <script>
-  (function () {
-    var apiUrls = (function () {
-      try { return JSON.parse(document.getElementById("kb-api-urls").textContent); } catch(e) { return {}; }
-    })();
-    var jiraIdUrl = apiUrls.item_jira_id || "";
-
-    function getCsrfT() {
-      var m = document.querySelector('meta[name="csrf-token"]');
-      return m ? m.getAttribute("content") : "";
-    }
-
-    function saveJiraId(wrap, itemId, sprintId, value) {
-      if (!jiraIdUrl) return;
-      var token = getCsrfT();
-      fetch(jiraIdUrl, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRFToken": token },
-        body: JSON.stringify({ csrf_token: token, item_id: itemId, sprint_id: sprintId, jira_id: value }),
-      }).then(function (r) { return r.json(); }).then(function (j) {
-        if (j.ok) {
-          var sticky = wrap.closest(".scrum-sticky");
-          if (sticky) sticky.setAttribute("data-jira-id", j.jira_id || "");
-          rebuildJiraUI(wrap, j.jira_id || "", sprintId);
-        } else {
-          alert("Could not save Jira ID: " + (j.error || "unknown error"));
-        }
-      }).catch(function () { alert("Network error saving Jira ID."); });
-    }
-
-    function rebuildJiraUI(wrap, jiraId, sprintId) {
-      var badge = wrap.querySelector(".scrum-jira-badge");
-      var addBtn = wrap.querySelector(".scrum-jira-add-btn");
-      var inputWrap = wrap.querySelector(".scrum-jira-input-wrap");
-      if (inputWrap) inputWrap.style.display = "none";
-
-      if (jiraId) {
-        if (addBtn) addBtn.style.display = "none";
-        if (badge) {
-          var isUrl = jiraId.startsWith("http");
-          var linkEl = badge.querySelector(".scrum-jira-link");
-          var textEl = badge.querySelector(".scrum-jira-text");
-          if (isUrl) {
-            if (!linkEl && textEl) { textEl.outerHTML = '<a href="' + jiraId + '" target="_blank" rel="noopener" class="scrum-jira-link">' + jiraId + '</a>'; }
-            else if (linkEl) { linkEl.href = jiraId; linkEl.textContent = jiraId; }
-          } else {
-            if (linkEl) { linkEl.outerHTML = '<span class="scrum-jira-text">' + jiraId + '</span>'; }
-            else if (textEl) { textEl.textContent = jiraId; }
-          }
-          badge.style.display = "";
-        } else {
-          var isUrl2 = jiraId.startsWith("http");
-          var inner = isUrl2
-            ? '<a href="' + jiraId + '" target="_blank" rel="noopener" class="scrum-jira-link">' + jiraId + '</a>'
-            : '<span class="scrum-jira-text">' + jiraId + '</span>';
-          var newBadge = document.createElement("span");
-          newBadge.className = "scrum-jira-badge";
-          newBadge.title = "Jira: " + jiraId;
-          newBadge.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" fill="#2684ff" style="flex-shrink:0;"><path d="M8 0C3.6 0 0 3.6 0 8s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm4 9H9v3H7V9H4V7h3V4h2v3h3v2z"/></svg>'
-            + inner + '<button type="button" class="scrum-jira-edit-btn" title="Edit Jira ID">✏</button>';
-          wrap.insertBefore(newBadge, inputWrap);
-          bindJiraBadge(newBadge, wrap);
-        }
-      } else {
-        if (badge) badge.style.display = "none";
-        if (addBtn) addBtn.style.display = "";
-      }
-    }
-
-    function showJiraInput(wrap) {
-      var badge = wrap.querySelector(".scrum-jira-badge");
-      var addBtn = wrap.querySelector(".scrum-jira-add-btn");
-      var inputWrap = wrap.querySelector(".scrum-jira-input-wrap");
-      var inp = inputWrap && inputWrap.querySelector(".scrum-jira-input");
-      if (!inputWrap) return;
-      var sticky = wrap.closest(".scrum-sticky");
-      var cur = sticky ? (sticky.getAttribute("data-jira-id") || "") : "";
-      if (inp) inp.value = cur;
-      if (badge) badge.style.display = "none";
-      if (addBtn) addBtn.style.display = "none";
-      inputWrap.style.display = "flex";
-      if (inp) inp.focus();
-    }
-
-    function bindJiraBadge(badge, wrap) {
-      if (!badge) return;
-      var editBtn = badge.querySelector(".scrum-jira-edit-btn");
-      if (editBtn) editBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        showJiraInput(wrap);
-      });
-    }
-
-    function initJiraField(wrap) {
-      var itemId = parseInt(wrap.getAttribute("data-item-id"), 10);
-      var sprintId = parseInt(wrap.getAttribute("data-sprint-id"), 10);
-      var addBtn = wrap.querySelector(".scrum-jira-add-btn");
-      var badge = wrap.querySelector(".scrum-jira-badge");
-      var inputWrap = wrap.querySelector(".scrum-jira-input-wrap");
-      var inp = inputWrap && inputWrap.querySelector(".scrum-jira-input");
-      var saveBtn = inputWrap && inputWrap.querySelector(".scrum-jira-save-btn");
-      var cancelBtn = inputWrap && inputWrap.querySelector(".scrum-jira-cancel-btn");
-
-      if (addBtn) addBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        showJiraInput(wrap);
-      });
-
-      bindJiraBadge(badge, wrap);
-
-      if (inp) {
-        inp.addEventListener("keydown", function (e) {
-          if (e.key === "Enter") { e.preventDefault(); saveJiraId(wrap, itemId, sprintId, inp.value.trim()); }
-          if (e.key === "Escape") { rebuildJiraUI(wrap, wrap.closest(".scrum-sticky") ? (wrap.closest(".scrum-sticky").getAttribute("data-jira-id") || "") : "", sprintId); }
-        });
-        inp.addEventListener("blur", function () {
-          setTimeout(function () {
-            if (inputWrap.style.display !== "none") {
-              saveJiraId(wrap, itemId, sprintId, inp.value.trim());
-            }
-          }, 200);
-        });
-      }
-      if (saveBtn) saveBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        saveJiraId(wrap, itemId, sprintId, inp ? inp.value.trim() : "");
-      });
-      if (cancelBtn) cancelBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        var cur = wrap.closest(".scrum-sticky") ? (wrap.closest(".scrum-sticky").getAttribute("data-jira-id") || "") : "";
-        rebuildJiraUI(wrap, cur, sprintId);
-      });
-    }
-
-    document.querySelectorAll(".scrum-sticky-jira").forEach(function (wrap) {
-      initJiraField(wrap);
-    });
-  })();
-  </script>
 {% endblock %}
