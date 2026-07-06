@@ -10085,7 +10085,7 @@ def _format_activity_ts(raw: str) -> str:
         IST = timezone(timedelta(hours=5, minutes=30))
         dt_ist = dt_utc.astimezone(IST)
         month_abbr = dt_ist.strftime("%b")  # Jan, Feb, …
-        return f"{dt_ist.day:02d}-{month_abbr} : {dt_ist.strftime('%H:%M')}"
+        return f"{dt_ist.day:02d}-{month_abbr} : {dt_ist.strftime('%H:%M:%S')}"
     except (ValueError, TypeError):
         return s[:16]
 
