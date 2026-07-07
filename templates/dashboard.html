@@ -135,6 +135,7 @@
               <th class="ws-total-col" rowspan="2" title="Sum of leave day-units this month (full weekday leave = 1, half-day = 0.5). Same rules as the day cells.">Total</th>
               <th class="ws-eleave-col" rowspan="2" title="Nokia e-tool approved day-units this month (green A cells): 1 per full day, 0.5 per half-day. Computed automatically.">eLeave<br />Count</th>
               <th class="ws-gap-col" rowspan="2" title="eLeaveCount minus Total. Negative means the tracker shows more leave than eLeave.">GAP</th>
+              <th class="ws-compoff-col" rowspan="2" title="Compensatory-off day-units this month (CO cells). Marked by clicking a day cell and selecting CompOFF.">CompOff</th>
               {% for d in days %}
                 <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
               {% endfor %}
@@ -162,6 +163,7 @@
                   <span class="ws-eleave-display" aria-label="Nokia eLeave day-units for {{ row.employee }}">{{ '%.2f'|format(row.eleave_days) if row.eleave_days is defined else '0.00' }}</span>
                 </td>
                 <td class="ws-gap-col{% if row.gap_days is defined and row.gap_days < -0.0001 %} ws-gap-col-negative{% endif %}">{{ row.gap_days if row.gap_days is defined else 0 }}</td>
+                <td class="ws-compoff-col{% if row.compoff_days is defined and row.compoff_days > 0 %} ws-compoff-col-active{% endif %}" title="CompOff days used: {{ row.compoff_days if row.compoff_days is defined else 0 }}">{{ row.compoff_days if row.compoff_days is defined else 0 }}</td>
                 {% for cell in row.cells %}
                   {% set wk = days[loop.index0].is_weekend %}
                   {% set dmeta = days[loop.index0] %}
@@ -200,7 +202,7 @@
         <span><span class="legend-box" style="background: #c4b5fd"></span>LL</span>
         <span><span class="legend-box" style="background: rgba(148, 163, 184, 0.35)"></span>CO</span>
         <span><span class="legend-box" style="background: rgba(34, 197, 94, 0.35)"></span>A</span>
-        <span class="ws-legend-note">Total = leave day-units this month (1 = full day, 0.5 = half; <strong>CompOFF</strong> is shown as CO but not counted) · ½ = half day · dashed = pending · <strong>A</strong> = approved via Nokia e-tool · <strong>eLeave Count</strong> = Nokia A day-units this month (auto) · <strong>GAP</strong> = eLeaveCount − Total (shown in red when negative).</span>
+        <span class="ws-legend-note">Total = leave day-units this month (1 = full day, 0.5 = half; <strong>CompOFF</strong> not counted in Total) · ½ = half day · dashed = pending · <strong>A</strong> = Nokia e-tool approved · <strong>eLeave Count</strong> = Nokia A day-units · <strong>GAP</strong> = eLeaveCount − Total (red when negative) · <strong>CompOff</strong> = CO day-units used this month (click day cell → select CompOFF to mark).</span>
       </div>
 
       <dialog id="dashboard-meet-add-dialog" class="meet-dialog">

@@ -186,19 +186,21 @@
   --ws-total-w: 2.35rem;
   --ws-eleave-w: 0;
   --ws-gap-w: 0;
-  --ws-lead-cols-w: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
+  --ws-compoff-w: 0;
+  --ws-lead-cols-w: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w));
 }
 
 .ws-month-fit.ws-lead-5 {
   --ws-eleave-w: 4.25rem;
   --ws-gap-w: 2.65rem;
+  --ws-compoff-w: 2.85rem;
 }
 
 /* Dashboard month grid: optional # column before name (sticky strip). */
 .ws-month-fit.ws-lead-5.ws-has-rownum {
   --ws-rownum-w: 2.1rem;
   --ws-lead-cols-w: calc(
-    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w)
+    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w)
   );
 }
 
@@ -237,6 +239,11 @@
 .ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-gap-col,
 .ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-gap-col {
   left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w));
+}
+
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-compoff-col,
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-compoff-col {
+  left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
 }
 
 .ws-month-fit .ws-table {
@@ -319,6 +326,27 @@
 
 .ws-month-fit .ws-table td.ws-gap-col.ws-gap-col-negative {
   color: #f87171 !important;
+}
+
+.ws-month-fit .ws-table th.ws-compoff-col,
+.ws-month-fit .ws-table td.ws-compoff-col {
+  width: var(--ws-compoff-w);
+  min-width: var(--ws-compoff-w);
+  max-width: var(--ws-compoff-w);
+  left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
+  padding: 0.2rem 0.06rem;
+  text-align: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: rgba(30, 41, 59, 0.98) !important;
+  color: #94a3b8 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  position: sticky;
+}
+
+.ws-month-fit .ws-table td.ws-compoff-col.ws-compoff-col-active {
+  color: #6ee7b7 !important;
 }
 
 .ws-month-fit .ws-eleave-input {

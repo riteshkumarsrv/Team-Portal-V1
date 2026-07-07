@@ -4924,6 +4924,7 @@ def build_month_context(
         cells: list[dict | None] = []
         leave_days_total = 0.0
         nokia_a_day_units = 0.0
+        compoff_days = 0.0
         for dm in days_meta:
             d = dm["date"]
             d_iso = d.isoformat()
@@ -4940,6 +4941,8 @@ def build_month_context(
                     day_unit = 0.5 if dur in ("half_am", "half_pm") else 1.0
                     if _leave_reason_counts_toward_day_units(row["reason"]):
                         leave_days_total += day_unit
+                    if (row["reason"] or "").strip().casefold() == "compoff":
+                        compoff_days += day_unit
                     if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in desc:
                         nokia_a_day_units += day_unit
                 code = leave_cell_code(row["reason"], row["duration_type"], eff, desc)
@@ -4979,6 +4982,7 @@ def build_month_context(
                 "leave_days_total": tot_r,
                 "eleave_days": round(el_days, 2),
                 "gap_days": gap_days,
+                "compoff_days": round(compoff_days, 2),
                 "cells": cells,
             }
         )
@@ -15258,6 +15262,7 @@ def create_app() -> Flask:
         cells: list[dict | None] = []
         leave_days_total = 0.0
         nokia_a_day_units = 0.0
+        compoff_days = 0.0
         for dm in days_meta:
             row = day_leave_map.get(dm["iso"])
             cell: dict | None = None
@@ -15267,6 +15272,8 @@ def create_app() -> Flask:
                 day_unit = 0.5 if dtype in ("half_am", "half_pm") else 1.0
                 if _leave_reason_counts_toward_day_units(row["reason"]):
                     leave_days_total += day_unit
+                if (row["reason"] or "").strip().casefold() == "compoff":
+                    compoff_days += day_unit
                 if NOKIA_AUDIT_LEAVE_DESCRIPTION_MARKER in desc:
                     nokia_a_day_units += day_unit
                 eff = str(row["status"] or "approved")
@@ -15289,6 +15296,7 @@ def create_app() -> Flask:
                 "leave_days_total": round(leave_days_total, 2),
                 "eleave_days": round(nokia_a_day_units, 2),
                 "gap_days": round(nokia_a_day_units - leave_days_total, 2),
+                "compoff_days": round(compoff_days, 2),
                 "cells": cells,
             }]
 
