@@ -4093,6 +4093,16 @@ body.page-scrum-board .scrum-team-hero-main--compact {
 .kb-ie-est { width: 4.5rem; }
 .kb-ie-area { width: 100%; box-sizing: border-box; margin-top: 0.1rem; display: block; }
 
+/* ── Within-doing drag-to-reorder indicator ── */
+.kb-reorder-indicator {
+  height: 3px;
+  background: #6366f1;
+  border-radius: 2px;
+  margin: 2px 4px;
+  pointer-events: none;
+  box-shadow: 0 0 6px rgba(99,102,241,.6);
+}
+
 .scrum-done-edit {
   margin: 0.5rem 0 0;
   border-radius: 12px;

@@ -1088,7 +1088,12 @@
         if (!data || data.itemId == null || data.itemId === "") return;
         var toCol = normalizeKbCol(zone.getAttribute("data-drop-column"));
         var fromCol = normalizeKbCol(data.from);
-        if (!toCol || toCol === fromCol) return;
+        // Allow same-column reorder only within "doing"
+        if (!toCol || (toCol === fromCol && toCol !== "doing")) return;
+        if (toCol === "doing" && fromCol === "doing") {
+          // Reorder handled by the doing-specific drop logic; already persisted there
+          return;
+        }
 
         if (fromCol === "doing" && toCol === "do") {
           var lh =
@@ -1365,6 +1370,88 @@
           e.dataTransfer.effectAllowed = "move";
         });
       });
+
+      // ── Within-"doing" drag-to-reorder ──────────────────────────────────
+      (function () {
+        var doingZone = document.querySelector('[data-drop-column="doing"]');
+        if (!doingZone) return;
+
+        var dragSrcId = null;
+        var indicator = document.createElement("div");
+        indicator.className = "kb-reorder-indicator";
+        indicator.style.cssText = "display:none;height:3px;background:#6366f1;border-radius:2px;margin:2px 4px;pointer-events:none;";
+
+        function getStickyCards() {
+          return Array.from(doingZone.querySelectorAll(".scrum-sticky[data-item-id]"));
+        }
+
+        function getTargetCard(y) {
+          var cards = getStickyCards().filter(function (c) { return c !== indicator; });
+          for (var i = 0; i < cards.length; i++) {
+            var rect = cards[i].getBoundingClientRect();
+            var mid = rect.top + rect.height / 2;
+            if (y < mid) return { card: cards[i], before: true };
+          }
+          return { card: cards[cards.length - 1] || null, before: false };
+        }
+
+        doingZone.addEventListener("dragover", function (e) {
+          var cards = getStickyCards();
+          var isDoing = cards.some(function (c) { return c.getAttribute("data-item-id") === dragSrcId; });
+          if (!isDoing) return;
+          e.preventDefault();
+          e.stopPropagation();
+          doingZone.classList.remove("drag-over");
+          var target = getTargetCard(e.clientY);
+          if (target.card) {
+            if (target.before) target.card.parentNode.insertBefore(indicator, target.card);
+            else target.card.parentNode.insertBefore(indicator, target.card.nextSibling);
+          }
+          indicator.style.display = "block";
+        }, true);
+
+        doingZone.addEventListener("dragleave", function (e) {
+          if (doingZone.contains(e.relatedTarget)) return;
+          indicator.style.display = "none";
+        });
+
+        doingZone.addEventListener("drop", function (e) {
+          indicator.style.display = "none";
+          var data = parseDragPayload(e.dataTransfer);
+          if (!data || !data.itemId || normalizeKbCol(data.from) !== "doing") return;
+          var cards = getStickyCards().filter(function (c) { return c !== indicator; });
+          var isDoing = cards.some(function (c) { return c.getAttribute("data-item-id") === String(data.itemId); });
+          if (!isDoing) return;
+          e.preventDefault();
+          e.stopPropagation();
+          doingZone.classList.remove("drag-over");
+
+          var target = getTargetCard(e.clientY);
+          var srcCard = doingZone.querySelector('.scrum-sticky[data-item-id="' + data.itemId + '"]');
+          if (!srcCard || !target.card || srcCard === target.card) return;
+
+          if (target.before) target.card.parentNode.insertBefore(srcCard, target.card);
+          else target.card.parentNode.insertBefore(srcCard, target.card.nextSibling);
+
+          var orderedIds = getStickyCards()
+            .filter(function (c) { return c !== indicator; })
+            .map(function (c) { return parseInt(c.getAttribute("data-item-id"), 10); });
+
+          var sprintId = cfg && cfg.sprintId;
+          if (!sprintId || !apiUrls.item_reorder) return;
+          postJson(apiUrls.item_reorder, { sprint_id: sprintId, ordered_ids: orderedIds })
+            .catch(function () {});
+        }, true);
+
+        getStickyCards().forEach(function (card) {
+          card.addEventListener("dragstart", function () { dragSrcId = card.getAttribute("data-item-id"); });
+          card.addEventListener("dragend", function () {
+            dragSrcId = null;
+            indicator.style.display = "none";
+          });
+        });
+      })();
+      // ── End within-doing reorder ─────────────────────────────────────────
 
       } /* end !readOnly: drag/drop */
 

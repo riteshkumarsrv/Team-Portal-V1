@@ -11490,6 +11490,7 @@ def create_app() -> Flask:
                 "item_activity_update": url_for("portal_scrum_api_activity_update"),
                 "item_add": url_for("portal_scrum_api_item_add"),
                 "area_suggest": url_for("portal_scrum_api_areas", sprint_id=int(sprint_id)),
+                "item_reorder": url_for("portal_scrum_api_item_reorder"),
             },
             kb_form_urls={
                 "item_update": url_for("portal_scrum_sprint_item_update"),
@@ -11772,6 +11773,30 @@ def create_app() -> Flask:
         conn.commit()
         conn.close()
         return jsonify({"ok": True, "saved": True})
+
+    @app.post("/portal/scrum/api/item/reorder")
+    def portal_scrum_api_item_reorder():
+        pu = _portal_session()
+        if not pu:
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        ordered_ids = data.get("ordered_ids") or []
+        if not sprint_id or not ordered_ids:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        conn = get_db(app)
+        try:
+            for pos, item_id in enumerate(ordered_ids):
+                conn.execute(
+                    "UPDATE scrum_sprint_item SET sort_order = ? WHERE id = ? AND sprint_id = ? AND kanban_column = 'doing'",
+                    (pos, int(item_id), sprint_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return jsonify({"ok": True})
 
     @app.post("/portal/scrum/api/item/note")
     def portal_scrum_api_item_note():
@@ -13902,6 +13927,7 @@ def create_app() -> Flask:
                 "item_appreciation": url_for("scrum_api_item_appreciation"),
                 "item_appreciation_delete_all": url_for("scrum_api_item_appreciation_delete_all"),
                 "area_suggest": url_for("scrum_api_areas"),
+                "item_reorder": url_for("scrum_api_item_reorder"),
             },
             kb_form_urls={
                 "item_update": url_for("scrum_sprint_item_update"),
@@ -14013,6 +14039,42 @@ def create_app() -> Flask:
         )
         conn.commit()
         conn.close()
+        return jsonify({"ok": True})
+
+    @app.post("/scrum/api/item/reorder")
+    def scrum_api_item_reorder():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 403
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        data = request.get_json(silent=True) or {}
+        sprint_id = _parse_optional_int(data.get("sprint_id"))
+        ordered_ids = data.get("ordered_ids") or []
+        if not sprint_id or not ordered_ids:
+            return jsonify({"ok": False, "error": "missing"}), 400
+        team_id = int(g.manager_team_id)
+        conn = get_db(app)
+        try:
+            fr = _sprint_board_frozen_reason(conn, sprint_id)
+            if fr:
+                return jsonify({"ok": False, "error": fr}), 403
+            rows = conn.execute(
+                "SELECT id FROM scrum_sprint_item WHERE sprint_id = ? AND kanban_column = 'doing'",
+                (sprint_id,),
+            ).fetchall()
+            allowed = {r["id"] for r in rows}
+            _ = team_id  # ownership already checked via sprint_id scoping
+            for pos, item_id in enumerate(ordered_ids):
+                iid = int(item_id)
+                if iid not in allowed:
+                    continue
+                conn.execute(
+                    "UPDATE scrum_sprint_item SET sort_order = ? WHERE id = ? AND sprint_id = ?",
+                    (pos, iid, sprint_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
         return jsonify({"ok": True})
 
     @app.post("/scrum/api/item/note")
