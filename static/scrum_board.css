@@ -4055,6 +4055,16 @@ body.page-scrum-board .scrum-team-hero-main--compact {
 }
 
 /* ── Inline edit fields (In-progress stickies) ── */
+.kb-ie-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.4rem;
+}
+.kb-ie-meta .scrum-sticky-area {
+  flex: 0 0 100%;
+  margin: 0.1rem 0 0;
+}
 .kb-ie-trigger {
   cursor: text;
   border-radius: 3px;
@@ -4062,7 +4072,14 @@ body.page-scrum-board .scrum-team-hero-main--compact {
 }
 .kb-ie-trigger:hover { background: rgba(99,102,241,.13); }
 .kb-ie-trigger[data-ie="type"] { cursor: pointer; }
-.kb-ie-empty { color: var(--sc-muted); font-style: italic; font-size: 0.72rem; }
+.kb-ie-empty {
+  color: var(--sc-muted);
+  font-style: italic;
+  font-size: 0.72rem;
+  min-height: 1.2rem;
+  display: block;
+  padding: 0.1rem 0.2rem;
+}
 .kb-ie-input, .kb-ie-type {
   font-size: 0.78rem;
   padding: 0.15rem 0.35rem;
@@ -4074,7 +4091,7 @@ body.page-scrum-board .scrum-team-hero-main--compact {
   max-width: 100%;
 }
 .kb-ie-est { width: 4.5rem; }
-.kb-ie-area { width: 100%; box-sizing: border-box; margin-top: 0.15rem; }
+.kb-ie-area { width: 100%; box-sizing: border-box; margin-top: 0.1rem; display: block; }
 
 .scrum-done-edit {
   margin: 0.5rem 0 0;

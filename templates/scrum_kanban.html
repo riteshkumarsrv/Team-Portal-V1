@@ -433,13 +433,13 @@
                     <input class="kb-ie-input kb-ie-est" data-ie="estimate" type="text" inputmode="decimal"
                            maxlength="10" style="display:none;" value="{{ '%.2f'|format(card.estimate_hours) }}"
                            placeholder="hours" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
+                    {# Area — double-click to edit (kept inside meta so querySelector works directly) #}
+                    <p class="scrum-sticky-area kb-ie-trigger kb-ie-area-display{% if not card.area %} kb-ie-empty{% endif %}"
+                       data-ie="area" title="Double-click to edit Area">{{ card.area or '+ area' }}</p>
+                    <input class="kb-ie-input kb-ie-area" data-ie="area" type="text" maxlength="500"
+                           style="display:none;" value="{{ card.area or '' }}" placeholder="area / component"
+                           onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
                   </div>
-                  {# Area — double-click to edit #}
-                  <p class="scrum-sticky-area kb-ie-trigger kb-ie-area-display{% if not card.area %} kb-ie-empty{% endif %}"
-                     data-ie="area" title="Double-click to edit Area">{{ card.area or '+ area' }}</p>
-                  <input class="kb-ie-input kb-ie-area" data-ie="area" type="text" maxlength="500"
-                         style="display:none;" value="{{ card.area }}" placeholder="area / component"
-                         onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
                 {% else %}
                   <div class="scrum-sticky-meta">
                     <span class="scrum-sticky-badge">{{ card.kind_label }}</span>
@@ -2074,10 +2074,8 @@
     }
 
     function activateField(meta, field) {
-      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger') ||
-                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
-      var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input') ||
-                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-input');
+      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
+      var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input');
       if (!trigger || !input) return;
       trigger.style.display = "none";
       input.style.display   = "";
@@ -2116,20 +2114,14 @@
     }
 
     function cancelField(meta, field) {
-      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger') ||
-                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
-      var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input') ||
-                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-input');
+      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
+      var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input');
       if (input)   input.style.display   = "none";
       if (trigger) trigger.style.display = "";
     }
 
     document.querySelectorAll(".kb-ie-meta").forEach(function (meta) {
-      var parent = meta.parentNode;
-      // triggers inside meta (type, estimate) and area trigger is a sibling
-      var allTriggers = Array.from(meta.querySelectorAll(".kb-ie-trigger"))
-        .concat(Array.from(parent.querySelectorAll(".kb-ie-trigger[data-ie='area']")));
-      allTriggers.forEach(function (trigger) {
+      meta.querySelectorAll(".kb-ie-trigger").forEach(function (trigger) {
         trigger.addEventListener("dblclick", function (e) {
           e.stopPropagation();
           e.preventDefault();
@@ -2137,9 +2129,6 @@
           activateField(meta, field);
         });
       });
-      // area input is a sibling of meta, pass meta for save context
-      var areaInput = parent.querySelector(".kb-ie-area");
-      if (areaInput) areaInput.setAttribute("data-meta-ref", meta.getAttribute("data-item-id"));
     });
   })();
   </script>
