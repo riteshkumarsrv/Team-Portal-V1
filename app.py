@@ -3444,6 +3444,18 @@ def init_db(app: Flask) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_leave_tracker_eleaves_tm ON leave_tracker_eleaves(team_id, year, month);
 
+        CREATE TABLE IF NOT EXISTS leave_tracker_compoff_av (
+            team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            employee_name TEXT NOT NULL,
+            days REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (team_id, year, month, employee_name)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_leave_tracker_compoff_av_tm ON leave_tracker_compoff_av(team_id, year, month);
+
         CREATE TABLE IF NOT EXISTS scrum_sprint (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -12626,6 +12638,11 @@ def create_app() -> Flask:
             roster,
         ).fetchall()
         dashboard_sprint_summaries = _dashboard_sprint_summaries(conn, int(g.manager_team_id))
+        _cav_rows = conn.execute(
+            "SELECT employee_name, days FROM leave_tracker_compoff_av WHERE team_id = ? AND year = ? AND month = ?",
+            (int(g.manager_team_id), year, month),
+        ).fetchall()
+        compoff_av_map = {r["employee_name"]: float(r["days"] or 0) for r in _cav_rows}
         conn.close()
 
         reason_labels = dict(LEAVE_REASONS)
@@ -12653,6 +12670,7 @@ def create_app() -> Flask:
             dashboard_sprint_summaries=dashboard_sprint_summaries,
             today_iso=date.today().isoformat(),
             all_records_filter_q=_rq,
+            compoff_av_map=compoff_av_map,
             **ctx,
         )
 
@@ -12959,6 +12977,47 @@ def create_app() -> Flask:
         conn.execute(
             """
             INSERT INTO leave_tracker_eleaves (team_id, year, month, employee_name, days, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(team_id, year, month, employee_name) DO UPDATE SET
+                days = excluded.days,
+                updated_at = excluded.updated_at
+            """,
+            (int(team_id), y, mo, emp, days, ts),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "days": days})
+
+    @app.post("/dashboard/api/leave-tracker-compoff-av")
+    def dashboard_api_leave_tracker_compoff_av():
+        if not _manager_logged_in():
+            return jsonify({"ok": False, "error": "auth"}), 401
+        if not _csrf_api_ok(app):
+            return jsonify({"ok": False, "error": "csrf"}), 400
+        team_id = getattr(g, "manager_team_id", None)
+        if team_id is None:
+            return jsonify({"ok": False, "error": "team"}), 400
+        payload = request.get_json(silent=True) or {}
+        try:
+            y = int(payload.get("year"))
+            mo = int(payload.get("month"))
+            emp = str(payload.get("employee_name") or "").strip()
+            raw = payload.get("days")
+            days = 0.0 if (raw is None or str(raw).strip() == "") else float(raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+        if not (1 <= mo <= 12) or not emp:
+            return jsonify({"ok": False, "error": "bad_input"}), 400
+        if days < 0:
+            days = 0.0
+        roster_t = tuple(g.manager_roster)
+        if emp not in roster_t:
+            return jsonify({"ok": False, "error": "roster"}), 400
+        conn = get_db(app)
+        ts = _utc_stamp()
+        conn.execute(
+            """
+            INSERT INTO leave_tracker_compoff_av (team_id, year, month, employee_name, days, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(team_id, year, month, employee_name) DO UPDATE SET
                 days = excluded.days,

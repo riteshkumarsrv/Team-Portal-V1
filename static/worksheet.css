@@ -187,20 +187,22 @@
   --ws-eleave-w: 0;
   --ws-gap-w: 0;
   --ws-compoff-w: 0;
-  --ws-lead-cols-w: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w));
+  --ws-coffav-w: 0;
+  --ws-lead-cols-w: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w) + var(--ws-coffav-w));
 }
 
 .ws-month-fit.ws-lead-5 {
-  --ws-eleave-w: 4.25rem;
-  --ws-gap-w: 2.65rem;
-  --ws-compoff-w: 2.85rem;
+  --ws-eleave-w: 3.6rem;
+  --ws-gap-w: 2.2rem;
+  --ws-compoff-w: 2.4rem;
+  --ws-coffav-w: 2.4rem;
 }
 
 /* Dashboard month grid: optional # column before name (sticky strip). */
 .ws-month-fit.ws-lead-5.ws-has-rownum {
-  --ws-rownum-w: 2.1rem;
+  --ws-rownum-w: 1.8rem;
   --ws-lead-cols-w: calc(
-    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w)
+    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w) + var(--ws-coffav-w)
   );
 }
 
@@ -244,6 +246,11 @@
 .ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-compoff-col,
 .ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-compoff-col {
   left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
+}
+
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-coffav-col,
+.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-coffav-col {
+  left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w));
 }
 
 .ws-month-fit .ws-table {
@@ -334,9 +341,10 @@
   min-width: var(--ws-compoff-w);
   max-width: var(--ws-compoff-w);
   left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
-  padding: 0.2rem 0.06rem;
+  padding: 0.12rem 0.04rem;
   text-align: center;
   font-weight: 700;
+  font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #94a3b8 !important;
@@ -347,6 +355,46 @@
 
 .ws-month-fit .ws-table td.ws-compoff-col.ws-compoff-col-active {
   color: #6ee7b7 !important;
+}
+.ws-month-fit .ws-table td.ws-compoff-col.ws-coff-ok {
+  color: #4ade80 !important;
+  font-weight: 700;
+}
+.ws-month-fit .ws-table td.ws-compoff-col.ws-coff-over {
+  color: #f87171 !important;
+  font-weight: 700;
+}
+
+.ws-month-fit .ws-table th.ws-coffav-col,
+.ws-month-fit .ws-table td.ws-coffav-col {
+  width: var(--ws-coffav-w);
+  min-width: var(--ws-coffav-w);
+  max-width: var(--ws-coffav-w);
+  left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w));
+  padding: 0.12rem 0.04rem;
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.7rem;
+  background: rgba(30, 41, 59, 0.98) !important;
+  color: #e2e8f0 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  position: sticky;
+}
+
+.ws-month-fit .ws-table td.ws-coffav-editable {
+  cursor: pointer;
+}
+.ws-month-fit .ws-table td.ws-coffav-editable:hover {
+  background: rgba(99, 102, 241, 0.15) !important;
+}
+.ws-coffav-input {
+  border: 1px solid #6366f1;
+  border-radius: 3px;
+  background: #1e1e38;
+  color: #e2e8f0;
+  outline: none;
+  padding: 0.05rem 0.1rem;
 }
 
 .ws-month-fit .ws-eleave-input {
