@@ -253,7 +253,7 @@
   width: 100%;
   max-width: 100%;
   table-layout: fixed;
-  font-size: clamp(0.38rem, 0.36vw + 0.3rem, 0.54rem);
+  font-size: clamp(0.42rem, 0.4vw + 0.33rem, 0.6rem);
 }
 
 .ws-month-fit .ws-table th,
@@ -269,7 +269,7 @@
 .ws-month-fit .ws-table th.ws-gap-col,
 .ws-month-fit .ws-table th.ws-compoff-col,
 .ws-month-fit .ws-table th.ws-coffav-col {
-  font-size: clamp(0.26rem, 0.22vw + 0.18rem, 0.36rem);
+  font-size: clamp(0.29rem, 0.24vw + 0.2rem, 0.4rem);
   font-weight: 400;
   letter-spacing: 0;
 }
@@ -286,7 +286,7 @@
   word-break: normal;
   line-height: 1.2;
   padding: 0.16rem 0.25rem;
-  font-size: clamp(0.38rem, 0.34vw + 0.28rem, 0.51rem);
+  font-size: clamp(0.42rem, 0.37vw + 0.31rem, 0.56rem);
   font-weight: 400;
 }
 
@@ -352,7 +352,7 @@
   padding: 0.08rem 0.04rem;
   text-align: center;
   font-weight: 400;
-  font-size: 0.52rem;
+  font-size: 0.57rem;
   font-variant-numeric: tabular-nums;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #94a3b8 !important;
@@ -378,7 +378,7 @@
   padding: 0.08rem 0.04rem;
   text-align: center;
   font-weight: 400;
-  font-size: 0.52rem;
+  font-size: 0.57rem;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #e2e8f0 !important;
 }
@@ -405,7 +405,7 @@
   margin: 0;
   padding: 0.08rem 0.05rem;
   font: inherit;
-  font-size: clamp(0.36rem, 0.32vw + 0.26rem, 0.5rem);
+  font-size: clamp(0.4rem, 0.35vw + 0.29rem, 0.55rem);
   font-weight: 400;
   text-align: center;
   border-radius: 4px;
@@ -419,7 +419,7 @@
   width: 100%;
   box-sizing: border-box;
   padding: 0.07rem 0.04rem;
-  font-size: clamp(0.36rem, 0.32vw + 0.26rem, 0.5rem);
+  font-size: clamp(0.4rem, 0.35vw + 0.29rem, 0.55rem);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
   text-align: center;
@@ -459,7 +459,7 @@
 
 /* Weekday row (M, T, W, …): first-letter only, compact */
 .ws-month-fit .ws-table thead tr:first-child th.ws-dayhead {
-  font-size: clamp(0.3rem, 0.26vw + 0.2rem, 0.42rem);
+  font-size: clamp(0.33rem, 0.29vw + 0.22rem, 0.46rem);
   letter-spacing: 0;
   font-weight: 400;
   line-height: 1.05;
@@ -489,7 +489,7 @@
   min-width: 0 !important;
   height: auto;
   min-height: 1.1rem;
-  font-size: clamp(0.36rem, 0.33vw + 0.27rem, 0.5rem);
+  font-size: clamp(0.4rem, 0.36vw + 0.3rem, 0.55rem);
   font-weight: 400;
 }
 
