@@ -4054,6 +4054,28 @@ body.page-scrum-board .scrum-team-hero-main--compact {
   line-height: 1.35;
 }
 
+/* ── Inline edit fields (In-progress stickies) ── */
+.kb-ie-trigger {
+  cursor: text;
+  border-radius: 3px;
+  transition: background .12s;
+}
+.kb-ie-trigger:hover { background: rgba(99,102,241,.13); }
+.kb-ie-trigger[data-ie="type"] { cursor: pointer; }
+.kb-ie-empty { color: var(--sc-muted); font-style: italic; font-size: 0.72rem; }
+.kb-ie-input, .kb-ie-type {
+  font-size: 0.78rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid #6366f1;
+  background: #1e1e38;
+  color: #e2e8f0;
+  outline: none;
+  max-width: 100%;
+}
+.kb-ie-est { width: 4.5rem; }
+.kb-ie-area { width: 100%; box-sizing: border-box; margin-top: 0.15rem; }
+
 .scrum-done-edit {
   margin: 0.5rem 0 0;
   border-radius: 12px;

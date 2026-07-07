@@ -414,12 +414,40 @@
                   data-item-id="{{ card.id }}"
                   {% endif %}
                 >{{ card.title }}</p>
-                <div class="scrum-sticky-meta">
-                  <span class="scrum-sticky-badge">{{ card.kind_label }}</span>
-                  <span>{{ "%.1f"|format(card.estimate_hours) }}h est.</span>
-                </div>
-                {% if card.area %}
-                  <p class="scrum-sticky-area" title="{{ card.area }}">{{ card.area }}</p>
+                {% if col == 'doing' and not sprint_readonly %}
+                  {# ── Inline-editable meta for In-progress stickies ── #}
+                  <div class="scrum-sticky-meta kb-ie-meta"
+                       data-item-id="{{ card.id }}"
+                       data-sprint-id="{{ sprint_id }}"
+                       data-update-url="{{ kb_form_urls.item_update }}">
+                    {# Type badge — double-click to edit #}
+                    <span class="scrum-sticky-badge kb-ie-trigger" data-ie="type" title="Double-click to edit Type">{{ card.kind_label }}</span>
+                    <select class="kb-ie-input kb-ie-type" data-ie="type" style="display:none;"
+                            onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
+                      {% for k in task_kinds_rows %}
+                        <option value="{{ k.code }}" {% if (card.task_kind or 'ndy') == k.code %}selected{% endif %}>{{ k.label }}</option>
+                      {% endfor %}
+                    </select>
+                    {# Estimate — double-click to edit #}
+                    <span class="kb-ie-trigger kb-ie-est-display" data-ie="estimate" title="Double-click to edit Estimate">{{ "%.1f"|format(card.estimate_hours) }}h est.</span>
+                    <input class="kb-ie-input kb-ie-est" data-ie="estimate" type="text" inputmode="decimal"
+                           maxlength="10" style="display:none;" value="{{ '%.2f'|format(card.estimate_hours) }}"
+                           placeholder="hours" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
+                  </div>
+                  {# Area — double-click to edit #}
+                  <p class="scrum-sticky-area kb-ie-trigger kb-ie-area-display{% if not card.area %} kb-ie-empty{% endif %}"
+                     data-ie="area" title="Double-click to edit Area">{{ card.area or '+ area' }}</p>
+                  <input class="kb-ie-input kb-ie-area" data-ie="area" type="text" maxlength="500"
+                         style="display:none;" value="{{ card.area }}" placeholder="area / component"
+                         onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
+                {% else %}
+                  <div class="scrum-sticky-meta">
+                    <span class="scrum-sticky-badge">{{ card.kind_label }}</span>
+                    <span>{{ "%.1f"|format(card.estimate_hours) }}h est.</span>
+                  </div>
+                  {% if card.area %}
+                    <p class="scrum-sticky-area" title="{{ card.area }}">{{ card.area }}</p>
+                  {% endif %}
                 {% endif %}
                 <details
                   class="scrum-sticky-attachments"
@@ -493,41 +521,6 @@
                     <p class="scrum-sticky-attachment-hint">No links on this sticky.</p>
                   {% endif %}
                 </details>
-                {% if col == 'doing' and not sprint_readonly %}
-                  <details class="scrum-do-edit scrum-doing-est-edit">
-                    <summary class="scrum-do-edit-summary">Adjust plan estimate</summary>
-                    <form
-                      method="post"
-                      action="{{ kb_form_urls.item_update }}"
-                      class="scrum-do-edit-form scrum-doing-est-form"
-                      draggable="false"
-                      onclick="event.stopPropagation();"
-                      onmousedown="event.stopPropagation();"
-                    >
-                      {% include "partials/csrf.html" %}
-                      <input type="hidden" name="item_id" value="{{ card.id }}" />
-                      <input type="hidden" name="sprint_id" value="{{ sprint_id }}" />
-                      <div class="field">
-                        <label for="doing-est-{{ card.id }}">Estimated hours <span class="req">*</span></label>
-                        <input
-                          id="doing-est-{{ card.id }}"
-                          name="estimate_hours"
-                          type="text"
-                          inputmode="decimal"
-                          required
-                          value="{{ '%.2f'|format(card.estimate_hours) }}"
-                          autocomplete="off"
-                        />
-                      </div>
-                      <p class="scrum-doing-est-hint">
-                        Changes the plan hours for task burn on this sticky. Logged stand-up / move hours are unchanged.
-                      </p>
-                      <div class="scrum-do-edit-actions">
-                        <button type="submit" class="btn secondary small">Save estimate</button>
-                      </div>
-                    </form>
-                  </details>
-                {% endif %}
                 {% if col == 'do' and card.dod %}
                   <p class="scrum-sticky-dod-preview" title="Definition of done">{{ card.dod }}</p>
                 {% endif %}
@@ -2051,6 +2044,103 @@
         });
       });
     })();
+  </script>
+
+  {# ── Inline edit: Type / Estimate / Area on In-progress stickies ── #}
+  <script>
+  (function () {
+    var csrfToken = (document.getElementById("kb-csrf") || {}).value || "";
+
+    function getCsrf() {
+      var m = document.querySelector('meta[name="csrf-token"]');
+      return m ? m.getAttribute("content") : csrfToken;
+    }
+
+    function saveField(meta, field, value) {
+      var url = meta.getAttribute("data-update-url");
+      var itemId = meta.getAttribute("data-item-id");
+      var sprintId = meta.getAttribute("data-sprint-id");
+      if (!url || !itemId) return;
+      var fd = new FormData();
+      fd.append("csrf_token", getCsrf());
+      fd.append("item_id", itemId);
+      fd.append("sprint_id", sprintId);
+      if (field === "type")     fd.append("task_kind", value);
+      if (field === "estimate") fd.append("estimate_hours", value);
+      if (field === "area")     fd.append("area", value);
+      fetch(url, { method: "POST", credentials: "same-origin", body: fd })
+        .then(function () { window.location.reload(); })
+        .catch(function () { window.location.reload(); });
+    }
+
+    function activateField(meta, field) {
+      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
+      var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input') ||
+                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-input');
+      if (!trigger || !input) return;
+      trigger.style.display = "none";
+      input.style.display   = "";
+      if (input.tagName === "SELECT") {
+        input.focus();
+        input.addEventListener("change", function onChg() {
+          input.removeEventListener("change", onChg);
+          saveField(meta, field, input.value);
+        });
+        input.addEventListener("keydown", function onKey(e) {
+          if (e.key === "Escape") {
+            input.removeEventListener("keydown", onKey);
+            cancelField(meta, field);
+          }
+        });
+        input.addEventListener("blur", function onBlur() {
+          input.removeEventListener("blur", onBlur);
+          cancelField(meta, field);
+        });
+      } else {
+        input.select();
+        function commit() {
+          var val = input.value.trim();
+          if (val !== "") saveField(meta, field, val);
+          else cancelField(meta, field);
+        }
+        input.addEventListener("keydown", function onKey(e) {
+          if (e.key === "Enter") { e.preventDefault(); input.removeEventListener("keydown", onKey); commit(); }
+          if (e.key === "Escape") { input.removeEventListener("keydown", onKey); cancelField(meta, field); }
+        });
+        input.addEventListener("blur", function onBlur() {
+          input.removeEventListener("blur", onBlur);
+          setTimeout(commit, 120);
+        });
+      }
+    }
+
+    function cancelField(meta, field) {
+      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger') ||
+                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
+      var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input') ||
+                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-input');
+      if (input)   input.style.display   = "none";
+      if (trigger) trigger.style.display = "";
+    }
+
+    document.querySelectorAll(".kb-ie-meta").forEach(function (meta) {
+      var parent = meta.parentNode;
+      // triggers inside meta (type, estimate) and area trigger is a sibling
+      var allTriggers = Array.from(meta.querySelectorAll(".kb-ie-trigger"))
+        .concat(Array.from(parent.querySelectorAll(".kb-ie-trigger[data-ie='area']")));
+      allTriggers.forEach(function (trigger) {
+        trigger.addEventListener("dblclick", function (e) {
+          e.stopPropagation();
+          e.preventDefault();
+          var field = trigger.getAttribute("data-ie");
+          activateField(meta, field);
+        });
+      });
+      // area input is a sibling of meta, pass meta for save context
+      var areaInput = parent.querySelector(".kb-ie-area");
+      if (areaInput) areaInput.setAttribute("data-meta-ref", meta.getAttribute("data-item-id"));
+    });
+  })();
   </script>
 
 {% endblock %}
