@@ -2074,7 +2074,8 @@
     }
 
     function activateField(meta, field) {
-      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
+      var trigger = meta.querySelector('[data-ie="' + field + '"].kb-ie-trigger') ||
+                    meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-trigger');
       var input   = meta.querySelector('[data-ie="' + field + '"].kb-ie-input') ||
                     meta.parentNode.querySelector('[data-ie="' + field + '"].kb-ie-input');
       if (!trigger || !input) return;
