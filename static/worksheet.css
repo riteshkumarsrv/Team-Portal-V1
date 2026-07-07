@@ -77,8 +77,8 @@
 .ws-datehead {
   background: rgba(30, 41, 59, 0.8);
   color: #94a3b8;
-  font-size: 0.75rem;
-  font-weight: 500;
+  font-size: 0.56rem;
+  font-weight: 400;
 }
 
 /* Saturday / Sunday columns */
@@ -196,13 +196,16 @@
   --ws-gap-w: 2.2rem;
   --ws-compoff-w: 2.4rem;
   --ws-coffav-w: 2.4rem;
+  /* CoffAv and CoffTkn are at the right end, not in lead cols */
+  --ws-lead-cols-w: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
 }
 
 /* Dashboard month grid: optional # column before name (sticky strip). */
 .ws-month-fit.ws-lead-5.ws-has-rownum {
   --ws-rownum-w: 1.8rem;
+  /* CoffAv/CoffTkn are trailing columns, not counted in lead width */
   --ws-lead-cols-w: calc(
-    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w) + var(--ws-coffav-w)
+    var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w)
   );
 }
 
@@ -243,27 +246,20 @@
   left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w));
 }
 
-.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-compoff-col,
-.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-compoff-col {
-  left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
-}
-
-.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table th.ws-coffav-col,
-.ws-month-fit.ws-lead-5.ws-has-rownum .ws-table td.ws-coffav-col {
-  left: calc(var(--ws-rownum-w) + var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w));
-}
+/* CoffAv and CoffTkn are now trailing (right-end) columns — no left sticky override needed */
 
 .ws-month-fit .ws-table {
   min-width: 0;
   width: 100%;
   max-width: 100%;
   table-layout: fixed;
-  font-size: clamp(0.5rem, 0.48vw + 0.4rem, 0.72rem);
+  font-size: clamp(0.38rem, 0.36vw + 0.3rem, 0.54rem);
 }
 
 .ws-month-fit .ws-table th,
 .ws-month-fit .ws-table td {
-  padding: 0.14rem 0.05rem;
+  padding: 0.1rem 0.04rem;
+  font-weight: 400;
 }
 
 .ws-month-fit .ws-table th.ws-name,
@@ -277,8 +273,9 @@
   text-overflow: ellipsis;
   word-break: normal;
   line-height: 1.2;
-  padding: 0.22rem 0.3rem;
-  font-size: clamp(0.5rem, 0.45vw + 0.38rem, 0.68rem);
+  padding: 0.16rem 0.25rem;
+  font-size: clamp(0.38rem, 0.34vw + 0.28rem, 0.51rem);
+  font-weight: 400;
 }
 
 .ws-month-fit .ws-table th.ws-total-col,
@@ -287,9 +284,9 @@
   min-width: var(--ws-total-w);
   max-width: var(--ws-total-w);
   left: var(--ws-name-col);
-  padding: 0.2rem 0.08rem;
+  padding: 0.1rem 0.05rem;
   text-align: center;
-  font-weight: 700;
+  font-weight: 500;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #e2e8f0 !important;
   box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
@@ -303,10 +300,10 @@
   min-width: var(--ws-eleave-w);
   max-width: var(--ws-eleave-w);
   left: calc(var(--ws-name-col) + var(--ws-total-w));
-  padding: 0.12rem 0.06rem;
+  padding: 0.08rem 0.04rem;
   text-align: center;
   vertical-align: middle;
-  font-weight: 600;
+  font-weight: 400;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #e2e8f0 !important;
   box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
@@ -320,9 +317,9 @@
   min-width: var(--ws-gap-w);
   max-width: var(--ws-gap-w);
   left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w));
-  padding: 0.2rem 0.06rem;
+  padding: 0.1rem 0.04rem;
   text-align: center;
-  font-weight: 700;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #cbd5e1 !important;
@@ -337,20 +334,16 @@
 
 .ws-month-fit .ws-table th.ws-compoff-col,
 .ws-month-fit .ws-table td.ws-compoff-col {
-  width: var(--ws-compoff-w);
-  min-width: var(--ws-compoff-w);
-  max-width: var(--ws-compoff-w);
-  left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w));
-  padding: 0.12rem 0.04rem;
+  width: var(--ws-compoff-w) !important;
+  min-width: var(--ws-compoff-w) !important;
+  max-width: var(--ws-compoff-w) !important;
+  padding: 0.08rem 0.04rem;
   text-align: center;
-  font-weight: 700;
-  font-size: 0.7rem;
+  font-weight: 400;
+  font-size: 0.52rem;
   font-variant-numeric: tabular-nums;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #94a3b8 !important;
-  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
-  z-index: 2;
-  position: sticky;
 }
 
 .ws-month-fit .ws-table td.ws-compoff-col.ws-compoff-col-active {
@@ -358,28 +351,24 @@
 }
 .ws-month-fit .ws-table td.ws-compoff-col.ws-coff-ok {
   color: #4ade80 !important;
-  font-weight: 700;
+  font-weight: 500;
 }
 .ws-month-fit .ws-table td.ws-compoff-col.ws-coff-over {
   color: #f87171 !important;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .ws-month-fit .ws-table th.ws-coffav-col,
 .ws-month-fit .ws-table td.ws-coffav-col {
-  width: var(--ws-coffav-w);
-  min-width: var(--ws-coffav-w);
-  max-width: var(--ws-coffav-w);
-  left: calc(var(--ws-name-col) + var(--ws-total-w) + var(--ws-eleave-w) + var(--ws-gap-w) + var(--ws-compoff-w));
-  padding: 0.12rem 0.04rem;
+  width: var(--ws-coffav-w) !important;
+  min-width: var(--ws-coffav-w) !important;
+  max-width: var(--ws-coffav-w) !important;
+  padding: 0.08rem 0.04rem;
   text-align: center;
-  font-weight: 600;
-  font-size: 0.7rem;
+  font-weight: 400;
+  font-size: 0.52rem;
   background: rgba(30, 41, 59, 0.98) !important;
   color: #e2e8f0 !important;
-  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.35);
-  z-index: 2;
-  position: sticky;
 }
 
 .ws-month-fit .ws-table td.ws-coffav-editable {
@@ -402,10 +391,10 @@
   max-width: 100%;
   box-sizing: border-box;
   margin: 0;
-  padding: 0.12rem 0.08rem;
+  padding: 0.08rem 0.05rem;
   font: inherit;
-  font-size: clamp(0.48rem, 0.42vw + 0.34rem, 0.66rem);
-  font-weight: 600;
+  font-size: clamp(0.36rem, 0.32vw + 0.26rem, 0.5rem);
+  font-weight: 400;
   text-align: center;
   border-radius: 4px;
   border: 1px solid rgba(148, 163, 184, 0.45);
@@ -417,9 +406,9 @@
   display: block;
   width: 100%;
   box-sizing: border-box;
-  padding: 0.1rem 0.04rem;
-  font-size: clamp(0.48rem, 0.42vw + 0.34rem, 0.66rem);
-  font-weight: 700;
+  padding: 0.07rem 0.04rem;
+  font-size: clamp(0.36rem, 0.32vw + 0.26rem, 0.5rem);
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
   text-align: center;
   color: #86efac;
@@ -456,11 +445,11 @@
   text-overflow: ellipsis;
 }
 
-/* Weekday row (MON, TUE, …): smaller type so 3-letter labels fit narrow day cells */
+/* Weekday row (M, T, W, …): first-letter only, compact */
 .ws-month-fit .ws-table thead tr:first-child th.ws-dayhead {
-  font-size: clamp(0.36rem, 0.32vw + 0.24rem, 0.5rem);
-  letter-spacing: 0.02em;
-  font-weight: 600;
+  font-size: clamp(0.3rem, 0.26vw + 0.2rem, 0.42rem);
+  letter-spacing: 0;
+  font-weight: 400;
   line-height: 1.05;
 }
 
@@ -471,12 +460,14 @@
 }
 
 /* Dashboard month grid: Name + Total + eLeaveCount + GAP, then day columns from 5th cell */
+/* CoffAv + CoffTkn are trailing and override width via !important */
 .ws-month-fit.ws-lead-5:not(.ws-has-rownum) .ws-table tbody td:nth-child(n + 5) {
   width: calc((100% - var(--ws-lead-cols-w)) / var(--ws-days, 31));
   min-width: 0;
 }
 
 /* Same layout with leading # column: day cells from 6th td */
+/* CoffAv + CoffTkn are trailing and override width via !important */
 .ws-month-fit.ws-lead-5.ws-has-rownum .ws-table tbody td:nth-child(n + 6) {
   width: calc((100% - var(--ws-lead-cols-w)) / var(--ws-days, 31));
   min-width: 0;
@@ -485,8 +476,9 @@
 .ws-month-fit .ws-cell {
   min-width: 0 !important;
   height: auto;
-  min-height: 1.45rem;
-  font-size: clamp(0.48rem, 0.44vw + 0.36rem, 0.66rem);
+  min-height: 1.1rem;
+  font-size: clamp(0.36rem, 0.33vw + 0.27rem, 0.5rem);
+  font-weight: 400;
 }
 
 .ws-month-fit.ws-readonly .ws-cell {

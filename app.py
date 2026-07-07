@@ -4925,7 +4925,7 @@ def build_month_context(
             {
                 "date": d,
                 "iso": d.isoformat(),
-                "weekday": calendar.day_abbr[wd],
+                "weekday": calendar.day_abbr[wd][0],
                 "day": d.day,
                 "is_weekend": is_weekend,
             }
@@ -5523,7 +5523,7 @@ def build_sprint_leave_tracker_context(
             {
                 "date": d,
                 "iso": d.isoformat(),
-                "weekday": calendar.day_abbr[wd],
+                "weekday": calendar.day_abbr[wd][0],
                 "day": d.day,
                 "is_weekend": is_weekend,
             }
@@ -5680,7 +5680,7 @@ def build_kanban_leave_worksheet_context(
             {
                 "date": d,
                 "iso": d_iso,
-                "weekday": calendar.day_abbr[wd],
+                "weekday": calendar.day_abbr[wd][0],
                 "day": d.day,
                 "is_weekend": is_weekend,
             }
@@ -5925,7 +5925,7 @@ def build_meet_context(app: Flask, anchor: date, roster: Sequence[str] | None = 
             {
                 "date": d,
                 "iso": d.isoformat(),
-                "weekday": calendar.day_abbr[wd],
+                "weekday": calendar.day_abbr[wd][0],
                 "label": d.strftime("%a %d %b"),
                 "is_anchor": d == anchor,
                 "is_today": d == today,
@@ -15313,7 +15313,7 @@ def create_app() -> Flask:
             days_meta.append({
                 "date": d,
                 "iso": d.isoformat(),
-                "weekday": calendar.day_abbr[wd],
+                "weekday": calendar.day_abbr[wd][0],
                 "day": d.day,
                 "is_weekend": wd >= 5,
             })

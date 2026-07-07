@@ -133,13 +133,13 @@
               <th class="ws-rownum-col" rowspan="2" title="Row">#</th>
               <th class="ws-name" rowspan="2" title="Employee">{{ month_name }}</th>
               <th class="ws-total-col" rowspan="2" title="Sum of leave day-units this month (full weekday leave = 1, half-day = 0.5). Same rules as the day cells.">Total</th>
-              <th class="ws-eleave-col" rowspan="2" title="Nokia e-tool approved day-units this month (green A cells): 1 per full day, 0.5 per half-day. Computed automatically.">eLeave<br />Count</th>
+              <th class="ws-eleave-col" rowspan="2" title="Nokia e-tool approved day-units this month (green A cells): 1 per full day, 0.5 per half-day. Computed automatically.">eLeave(A)</th>
               <th class="ws-gap-col" rowspan="2" title="eLeaveCount minus Total. Negative means the tracker shows more leave than eLeave.">GAP</th>
-              <th class="ws-compoff-col" rowspan="2" title="CompOff days taken this month (CO cells). Green = within available, red = exceeded.">CoffTkn</th>
-              <th class="ws-coffav-col" rowspan="2" title="CompOff days available. Click to edit.">CoffAv<br/><small style="font-weight:400;font-size:0.6em;opacity:.7">(click)</small></th>
               {% for d in days %}
                 <th class="ws-dayhead{% if d.is_weekend %} ws-weekend-head{% endif %}">{{ d.weekday }}</th>
               {% endfor %}
+              <th class="ws-coffav-col" rowspan="2" title="CompOff days available. Click to edit.">CoffAv<br/><small style="font-weight:400;font-size:0.6em;opacity:.7">(click)</small></th>
+              <th class="ws-compoff-col" rowspan="2" title="CompOff days taken this month (CO cells). Green = within available, red = exceeded.">CoffTkn</th>
             </tr>
             <tr>
               {% for d in days %}
@@ -166,20 +166,6 @@
                   <span class="ws-eleave-display" aria-label="Nokia eLeave day-units for {{ row.employee }}">{{ '%.2f'|format(row.eleave_days) if row.eleave_days is defined else '0.00' }}</span>
                 </td>
                 <td class="ws-gap-col{% if row.gap_days is defined and row.gap_days < -0.0001 %} ws-gap-col-negative{% endif %}">{{ row.gap_days if row.gap_days is defined else 0 }}</td>
-                <td class="ws-compoff-col{% if coff_av > 0 %}{% if coff_tkn <= coff_av %} ws-coff-ok{% else %} ws-coff-over{% endif %}{% elif coff_tkn > 0 %} ws-compoff-col-active{% endif %}"
-                    title="CompOff taken: {{ coff_tkn }}">{{ coff_tkn }}</td>
-                <td class="ws-coffav-col ws-coffav-editable"
-                    data-emp="{{ row.employee }}"
-                    data-year="{{ year }}"
-                    data-month="{{ month }}"
-                    data-val="{{ '%.1f'|format(coff_av) }}"
-                    title="CompOff available: {{ '%.1f'|format(coff_av) }}. Click to edit.">
-                  <span class="ws-coffav-display">{{ '%.1f'|format(coff_av) }}</span>
-                  <input class="ws-coffav-input" type="text" inputmode="decimal"
-                         value="{{ '%.1f'|format(coff_av) }}" maxlength="5"
-                         style="display:none;width:2.2rem;font-size:0.7rem;text-align:center;"
-                         onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
-                </td>
                 {% for cell in row.cells %}
                   {% set wk = days[loop.index0].is_weekend %}
                   {% set dmeta = days[loop.index0] %}
@@ -205,6 +191,20 @@
                     ></td>
                   {% endif %}
                 {% endfor %}
+                <td class="ws-coffav-col ws-coffav-editable"
+                    data-emp="{{ row.employee }}"
+                    data-year="{{ year }}"
+                    data-month="{{ month }}"
+                    data-val="{{ '%.1f'|format(coff_av) }}"
+                    title="CompOff available: {{ '%.1f'|format(coff_av) }}. Click to edit.">
+                  <span class="ws-coffav-display">{{ '%.1f'|format(coff_av) }}</span>
+                  <input class="ws-coffav-input" type="text" inputmode="decimal"
+                         value="{{ '%.1f'|format(coff_av) }}" maxlength="5"
+                         style="display:none;width:2.2rem;font-size:0.7rem;text-align:center;"
+                         onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
+                </td>
+                <td class="ws-compoff-col{% if coff_av > 0 %}{% if coff_tkn <= coff_av %} ws-coff-ok{% else %} ws-coff-over{% endif %}{% elif coff_tkn > 0 %} ws-compoff-col-active{% endif %}"
+                    title="CompOff taken: {{ coff_tkn }}">{{ coff_tkn }}</td>
               </tr>
             {% endfor %}
           </tbody>
