@@ -262,6 +262,18 @@
   font-weight: 400;
 }
 
+/* Lead-column header labels: half the normal cell size, non-bold */
+.ws-month-fit .ws-table th.ws-rownum-col,
+.ws-month-fit .ws-table th.ws-total-col,
+.ws-month-fit .ws-table th.ws-eleave-col,
+.ws-month-fit .ws-table th.ws-gap-col,
+.ws-month-fit .ws-table th.ws-compoff-col,
+.ws-month-fit .ws-table th.ws-coffav-col {
+  font-size: clamp(0.26rem, 0.22vw + 0.18rem, 0.36rem);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
 .ws-month-fit .ws-table th.ws-name,
 .ws-month-fit .ws-table td.ws-name {
   width: var(--ws-name-col);
