@@ -10825,22 +10825,31 @@ def _apply_scrum_portal_proposal_core(
         if item_id is None:
             return False, "missing_item"
         row = conn.execute(
-            "SELECT assignee, kanban_column FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
+            "SELECT assignee, kanban_column, team_id FROM scrum_sprint_item WHERE id = ? AND sprint_id = ?",
             (item_id, sprint_id),
         ).fetchone()
         if not row or (row["assignee"] or "").strip() != proposer:
             return False, "forbidden"
         if _normalize_kanban_column(row["kanban_column"] if "kanban_column" in row.keys() else None) != "doing":
             return False, "wrong_column"
-        est = _parse_hours_field(str(payload.get("estimate_hours", "0")))
-        if est <= SCRUM_HOUR_EPS:
-            return False, "estimate_required"
+        updates: dict = {}
+        if "estimate_hours" in payload:
+            est = _parse_hours_field(str(payload.get("estimate_hours", "0")))
+            if est <= SCRUM_HOUR_EPS:
+                return False, "estimate_required"
+            updates["estimate_hours"] = est
+        if "task_kind" in payload:
+            tid = row["team_id"] if "team_id" in row.keys() else None
+            updates["task_kind"] = _coerce_sprint_item_task_kind(conn, tid, payload.get("task_kind"))
+        if "area" in payload:
+            updates["area"] = (payload.get("area") or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]
+        if not updates:
+            return False, "no_fields"
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [ts, item_id, sprint_id]
         conn.execute(
-            """
-            UPDATE scrum_sprint_item SET estimate_hours = ?, updated_at = ?
-            WHERE id = ? AND sprint_id = ?
-            """,
-            (est, ts, item_id, sprint_id),
+            f"UPDATE scrum_sprint_item SET {set_clause}, updated_at = ? WHERE id = ? AND sprint_id = ?",
+            values,
         )
         return True, None
 
@@ -12138,18 +12147,27 @@ def create_app() -> Flask:
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
 
         if cur_col == "doing":
-            est = _parse_hours_field(request.form.get("estimate_hours"))
-            if est <= SCRUM_HOUR_EPS:
+            pl: dict = {}
+            if request.form.get("estimate_hours") is not None:
+                est = _parse_hours_field(request.form.get("estimate_hours"))
+                if est <= SCRUM_HOUR_EPS:
+                    conn.close()
+                    flash("Estimated hours must be greater than zero while this sticky is In progress.", "error")
+                    return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
+                pl["estimate_hours"] = est
+            if request.form.get("task_kind") is not None:
+                pl["task_kind"] = _coerce_sprint_item_task_kind(conn, team_id, request.form.get("task_kind"))
+            if request.form.get("area") is not None:
+                pl["area"] = (request.form.get("area") or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]
+            if not pl:
                 conn.close()
-                flash("Estimated hours must be greater than zero while this sticky is In progress.", "error")
                 return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
-            pl = {"estimate_hours": est}
             _insert_scrum_portal_proposal(
                 conn, team_id, sprint_id, item_id, "item_update_doing_estimate", roster_name, pl
             )
             conn.commit()
             conn.close()
-            flash("Plan estimate updated.", "success")
+            flash("In progress sticky updated.", "success")
             return redirect(url_for("portal_scrum_kanban_board", sprint_id=sprint_id))
 
         if cur_col != "do":
@@ -14758,22 +14776,30 @@ def create_app() -> Flask:
             return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
 
         if cur_col == "doing":
-            est = _parse_hours_field(request.form.get("estimate_hours"))
-            if est <= SCRUM_HOUR_EPS:
+            updates: dict = {}
+            if request.form.get("estimate_hours") is not None:
+                est = _parse_hours_field(request.form.get("estimate_hours"))
+                if est <= SCRUM_HOUR_EPS:
+                    conn.close()
+                    flash("Estimated hours must be greater than zero while this sticky is In progress.", "error")
+                    return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
+                updates["estimate_hours"] = est
+            if request.form.get("task_kind") is not None:
+                updates["task_kind"] = _coerce_sprint_item_task_kind(conn, team_id, request.form.get("task_kind"))
+            if request.form.get("area") is not None:
+                updates["area"] = (request.form.get("area") or "").strip()[:SCRUM_STICKY_AREA_MAX_LEN]
+            if not updates:
                 conn.close()
-                flash("Estimated hours must be greater than zero while this sticky is In progress.", "error")
                 return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
-            st = _status_for_kanban_column("doing")
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [ts, item_id, sprint_id]
             conn.execute(
-                """
-                UPDATE scrum_sprint_item SET estimate_hours = ?, status = ?, updated_at = ?
-                WHERE id = ? AND sprint_id = ?
-                """,
-                (est, st, ts, item_id, sprint_id),
+                f"UPDATE scrum_sprint_item SET {set_clause}, updated_at = ? WHERE id = ? AND sprint_id = ?",
+                values,
             )
             conn.commit()
             conn.close()
-            flash("Plan estimate updated for this In progress sticky.", "success")
+            flash("In progress sticky updated.", "success")
             return redirect(url_for("scrum_member_board", sprint_id=sprint_id, assignee=assignee))
 
         if cur_col != "do":

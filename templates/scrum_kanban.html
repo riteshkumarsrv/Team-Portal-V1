@@ -436,8 +436,9 @@
                     {# Area — double-click to edit (kept inside meta so querySelector works directly) #}
                     <p class="scrum-sticky-area kb-ie-trigger kb-ie-area-display{% if not card.area %} kb-ie-empty{% endif %}"
                        data-ie="area" title="Double-click to edit Area">{{ card.area or '+ area' }}</p>
-                    <input class="kb-ie-input kb-ie-area" data-ie="area" type="text" maxlength="500"
-                           style="display:none;" value="{{ card.area or '' }}" placeholder="area / component"
+                    <input class="kb-ie-input kb-ie-area" data-ie="area" name="area" type="text" maxlength="500"
+                           style="display:none;" value="{{ card.area or '' }}" placeholder="e.g. component or stream"
+                           autocomplete="off"
                            onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" />
                   </div>
                 {% else %}
@@ -2186,7 +2187,9 @@
         input.select();
         function commit() {
           var val = input.value.trim();
-          if (val !== "") saveField(meta, field, val);
+          // Area can be cleared to empty; estimate must be non-empty
+          if (field === "area") saveField(meta, field, val);
+          else if (val !== "") saveField(meta, field, val);
           else cancelField(meta, field);
         }
         input.addEventListener("keydown", function onKey(e) {
