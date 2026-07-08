@@ -654,7 +654,8 @@
                   {% for i in [0, 1, 2, 3] %}
                     <div class="scrum-cl-line">
                       {% if i < dp|length %}
-                        {{ dp[i][:52] }}{% if dp[i]|length > 52 %}…{% endif %}
+                        {% set dp_title = dp[i].title if dp[i] is mapping else dp[i] %}
+                        {{ dp_title[:52] }}{% if dp_title|length > 52 %}…{% endif %}
                       {% else %}
                         <span class="scrum-cl-line-muted">—</span>
                       {% endif %}
