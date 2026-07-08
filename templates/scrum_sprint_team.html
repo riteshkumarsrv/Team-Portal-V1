@@ -1019,49 +1019,78 @@
   })();
   </script>
 
-  {# ── Sticky detail popup modal ──────────────────────────────────────────── #}
+  {# ── Sticky detail popup — full editable sticky card ───────────────────── #}
+  <input type="hidden" id="sd-csrf" value="{{ csrf_token() }}" />
   <dialog id="sticky-detail-dialog" style="
-    border:none; border-radius:16px; padding:0; max-width:420px; width:95vw;
-    background:#0f1828; color:#e2e8f0; box-shadow:0 24px 64px rgba(0,0,0,.7);
+    border:none; border-radius:16px; padding:0; max-width:340px; width:95vw;
+    background:#0d1424; color:#e2e8f0; box-shadow:0 24px 64px rgba(0,0,0,.8);
+    border-left:4px solid var(--sd-sk,#64748b);
   ">
-    <div style="padding:1.1rem 1.25rem 0.8rem; position:relative;">
-      <button id="sticky-detail-close" style="
-        position:absolute; top:.6rem; right:.8rem; background:none; border:none;
-        color:#94a3b8; font-size:1.3rem; cursor:pointer; line-height:1;" aria-label="Close">✕</button>
-      <div id="sticky-detail-kind" style="display:inline-block; padding:.18rem .55rem; border-radius:6px;
-        font-size:.72rem; font-weight:600; margin-bottom:.45rem; background:#7c3aed; color:#fff;"></div>
-      <h3 id="sticky-detail-title" style="margin:0 0 .3rem; font-size:1rem; font-weight:700; color:#f1f5f9; line-height:1.35;"></h3>
-      <div style="font-size:.78rem; color:#94a3b8; margin-bottom:.6rem;">
-        <span id="sticky-detail-assignee"></span>
-        <span id="sticky-detail-area" style="margin-left:.6rem; color:#7dd3fc;"></span>
+    <div id="sd-inner" style="padding:.75rem .9rem .9rem; position:relative; overflow-y:auto; max-height:90vh;">
+      {# header row #}
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:.5rem; gap:.5rem;">
+        <h3 id="sd-title" style="margin:0; font-size:.95rem; font-weight:700; color:#f1f5f9; line-height:1.35; flex:1;"></h3>
+        <button id="sd-close" style="background:none;border:none;color:#64748b;font-size:1.1rem;cursor:pointer;line-height:1;flex-shrink:0;" aria-label="Close">✕</button>
       </div>
-      <div style="display:flex; gap:.5rem; align-items:center; margin-bottom:.75rem; flex-wrap:wrap;">
-        <span id="sticky-detail-est" style="font-size:.8rem; color:#cbd5e1;"></span>
-        <span style="color:#475569">·</span>
-        <span id="sticky-detail-burnt" style="font-size:.8rem; color:#fde68a;"></span>
-        <span style="color:#475569">·</span>
-        <span id="sticky-detail-pct" style="font-size:.8rem; font-weight:600;"></span>
+      {# badges row #}
+      <div style="display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; margin-bottom:.45rem;">
+        <span id="sd-kind" style="display:inline-block;padding:.15rem .45rem;border-radius:6px;font-size:.7rem;font-weight:600;color:#fff;"></span>
+        <span id="sd-est" style="font-size:.78rem;color:#94a3b8;"></span>
+      </div>
+      <div id="sd-area" style="font-size:.78rem;color:#7dd3fc;margin-bottom:.6rem;"></div>
+
+      {# burn section #}
+      <div id="sd-burn-wrap" style="background:rgba(255,255,255,.05);border-radius:10px;padding:.55rem .7rem;margin-bottom:.65rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
+          <span id="sd-burn-pct" style="font-size:.85rem;font-weight:700;"></span>
+          <span style="font-size:.72rem;color:#94a3b8;">Task burn</span>
+        </div>
+        <div style="font-size:.72rem;color:#94a3b8;margin-bottom:.35rem;">
+          <span id="sd-burn-meta"></span>
+        </div>
+        <div style="font-size:.65rem;color:#64748b;margin-bottom:.18rem;">ESTIMATE (SCALE MAX <span id="sd-bar-max"></span>)</div>
+        <div style="background:rgba(245,158,11,.25);border-radius:3px;height:5px;margin-bottom:.28rem;">
+          <div style="height:100%;border-radius:3px;background:#f59e0b;width:100%;"></div>
+        </div>
+        <div style="font-size:.65rem;color:#64748b;margin-bottom:.18rem;">BURNT (RED = STRETCH)</div>
+        <div style="background:rgba(255,255,255,.07);border-radius:3px;height:5px;">
+          <div id="sd-burnt-bar" style="height:100%;border-radius:3px;transition:width .4s;"></div>
+        </div>
       </div>
 
-      {# Burn bar #}
-      <div style="background:rgba(255,255,255,.07); border-radius:4px; height:6px; margin-bottom:.85rem; overflow:hidden;">
-        <div id="sticky-detail-bar" style="height:100%; border-radius:4px; transition:width .4s;"></div>
+      {# attached links #}
+      <div id="sd-links-wrap" style="margin-bottom:.65rem;display:none;">
+        <details open>
+          <summary style="font-size:.78rem;color:#94a3b8;cursor:pointer;margin-bottom:.3rem;">&#9658; Attach links</summary>
+          <div id="sd-links" style="display:flex;flex-direction:column;gap:.3rem;padding:.3rem 0 0 .6rem;"></div>
+        </details>
       </div>
 
-      {# Links #}
-      <div id="sticky-detail-links-wrap" style="margin-bottom:.8rem; display:none;">
-        <div style="font-size:.72rem; color:#64748b; margin-bottom:.3rem; letter-spacing:.04em;">ATTACHED LINKS</div>
-        <div id="sticky-detail-links" style="display:flex; flex-direction:column; gap:.3rem;"></div>
+      {# activity log #}
+      <div id="sd-activity-wrap" style="margin-bottom:.7rem;display:none;">
+        <div id="sd-activity" style="display:flex;flex-direction:column;gap:.45rem;max-height:220px;overflow-y:auto;"></div>
       </div>
 
-      {# Activity #}
-      <div id="sticky-detail-activity-wrap" style="margin-bottom:.5rem; display:none;">
-        <div style="font-size:.72rem; color:#64748b; margin-bottom:.3rem; letter-spacing:.04em;">RECENT ACTIVITY</div>
-        <div id="sticky-detail-activity" style="display:flex; flex-direction:column; gap:.4rem; max-height:180px; overflow-y:auto;"></div>
+      {# stand-up update form #}
+      <div id="sd-note-wrap" style="border-top:1px solid rgba(255,255,255,.08);padding-top:.65rem;margin-top:.1rem;display:none;">
+        <div style="font-size:.82rem;font-weight:600;color:#f59e0b;margin-bottom:.4rem;">Stand-up update</div>
+        <textarea id="sd-note-body" rows="3" placeholder="What changed since last sync?"
+          style="width:100%;box-sizing:border-box;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
+                 border-radius:8px;color:#e2e8f0;font-size:.8rem;padding:.45rem .55rem;resize:vertical;outline:none;"></textarea>
+        <div style="font-size:.72rem;color:#64748b;margin:.45rem 0 .2rem;letter-spacing:.04em;">BURNT HOURS (THIS UPDATE)</div>
+        <input id="sd-note-hrs" type="text" inputmode="decimal" value="0"
+          style="width:7rem;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
+                 border-radius:6px;color:#e2e8f0;font-size:.85rem;padding:.3rem .5rem;outline:none;" />
+        <div style="margin-top:.6rem;display:flex;gap:.5rem;align-items:center;">
+          <button id="sd-save-btn" style="
+            background:#f59e0b;color:#0f172a;border:none;border-radius:8px;
+            padding:.4rem 1rem;font-size:.82rem;font-weight:600;cursor:pointer;">Save update</button>
+          <span id="sd-save-msg" style="font-size:.75rem;"></span>
+        </div>
       </div>
 
-      <div style="margin-top:.8rem; text-align:right;">
-        <a id="sticky-detail-board-link" href="#" style="font-size:.78rem; color:#818cf8;">Open on board ↗</a>
+      <div style="margin-top:.7rem;text-align:right;">
+        <a id="sd-board-link" href="#" target="_blank" style="font-size:.75rem;color:#818cf8;text-decoration:none;">Open on board ↗</a>
       </div>
     </div>
   </dialog>
@@ -1070,78 +1099,162 @@
   (function () {
     var dlg = document.getElementById("sticky-detail-dialog");
     var detailUrl = "{{ url_for('scrum_api_item_detail') }}";
-    var boardBase = "{{ url_for('scrum_sprint_team', sprint_id=sprint_id) }}".replace("/team", "");
+    var noteUrl   = "{{ url_for('scrum_api_item_note') }}";
+    var currentItem = null;
 
-    function colLabel(c) {
-      return c === "doing" ? "In progress" : c === "do" ? "To DO" : c === "backlog" ? "Backlog" : c === "done" ? "Done" : c;
+    function getCsrf() { return (document.getElementById("sd-csrf") || {}).value || ""; }
+
+    function postJson(url, body) {
+      body.csrf_token = getCsrf();
+      return fetch(url, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrf() },
+        body: JSON.stringify(body),
+      }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok && j.ok, j: j }; }); });
     }
 
-    function openPopup(itemId, assignee, sprintId) {
+    function fmtTs(ts) {
+      if (!ts) return "";
+      // Convert "2026-07-07T09:35:14" → "07-Jul : 09:35:14"
+      var d = new Date(ts.replace(" ", "T") + (ts.indexOf("Z") < 0 ? "Z" : ""));
+      var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return ("0" + d.getUTCDate()).slice(-2) + "-" + months[d.getUTCMonth()] + " : "
+           + ("0" + d.getUTCHours()).slice(-2) + ":" + ("0" + d.getUTCMinutes()).slice(-2) + ":"
+           + ("0" + d.getUTCSeconds()).slice(-2);
+    }
+
+    function renderActivity(acts) {
+      var el = document.getElementById("sd-activity");
+      var wrap = document.getElementById("sd-activity-wrap");
+      el.innerHTML = "";
+      var shown = acts.filter(function (a) { return a.body || a.committed_hours > 0; });
+      if (!shown.length) { wrap.style.display = "none"; return; }
+      shown.forEach(function (ac) {
+        var d = document.createElement("div");
+        d.style.cssText = "background:rgba(255,255,255,.04);border-radius:8px;padding:.4rem .55rem;";
+        var hrsHtml = ac.committed_hours > 0
+          ? '<span style="display:inline-block;background:rgba(56,189,248,.15);color:#7dd3fc;border-radius:4px;padding:.05rem .35rem;font-size:.72rem;margin-left:.35rem;">+' + ac.committed_hours.toFixed(1) + 'h</span>' : "";
+        d.innerHTML = '<div style="font-size:.75rem;color:#7dd3fc;">' + fmtTs(ac.created_at) + hrsHtml + '</div>'
+          + (ac.body ? '<div style="font-size:.78rem;color:#cbd5e1;margin-top:.2rem;">' + ac.body.replace(/</g,"&lt;") + '</div>' : "");
+        el.appendChild(d);
+      });
+      wrap.style.display = "";
+    }
+
+    function openPopup(itemId) {
       fetch(detailUrl + "?item_id=" + itemId)
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          if (!data.ok) return;
+          if (!data.ok) { alert("Could not load sticky."); return; }
           var it = data.item;
-          document.getElementById("sticky-detail-kind").textContent = it.kind_label;
-          document.getElementById("sticky-detail-kind").style.background = it.kind_color;
-          document.getElementById("sticky-detail-title").textContent = it.title;
-          document.getElementById("sticky-detail-assignee").textContent = it.assignee;
-          document.getElementById("sticky-detail-area").textContent = it.area ? "· " + it.area : "";
-          document.getElementById("sticky-detail-est").textContent = it.estimate_hours.toFixed(1) + "h est.";
-          document.getElementById("sticky-detail-burnt").textContent = it.burnt_hours.toFixed(1) + "h logged";
-          var pctEl = document.getElementById("sticky-detail-pct");
-          pctEl.textContent = it.burn_pct + "% burn";
-          pctEl.style.color = it.burn_pct >= 100 ? "#f87171" : it.burn_pct >= 75 ? "#fbbf24" : "#4ade80";
-          var bar = document.getElementById("sticky-detail-bar");
-          var pct = Math.min(it.burn_pct, 120);
+          currentItem = it;
+
+          dlg.style.setProperty("--sd-sk", it.kind_color);
+          document.getElementById("sd-title").textContent = it.title;
+          var kindEl = document.getElementById("sd-kind");
+          kindEl.textContent = it.kind_label;
+          kindEl.style.background = it.kind_color;
+          document.getElementById("sd-est").textContent = it.estimate_hours.toFixed(1) + "h est.";
+          document.getElementById("sd-area").textContent = it.area || "";
+          document.getElementById("sd-area").style.display = it.area ? "" : "none";
+
+          // Burn
+          var pct = it.burn_pct;
+          var pctEl = document.getElementById("sd-burn-pct");
+          pctEl.textContent = pct + "%  Task burn";
+          pctEl.style.color = pct >= 100 ? "#f87171" : pct >= 75 ? "#fbbf24" : "#e2e8f0";
+          document.getElementById("sd-burn-meta").textContent =
+            it.burnt_hours.toFixed(1) + "h logged · " + it.estimate_hours.toFixed(1) + "h est.";
+          document.getElementById("sd-bar-max").textContent = it.estimate_hours.toFixed(1) + "H";
+          var bar = document.getElementById("sd-burnt-bar");
           bar.style.width = Math.min(pct, 100) + "%";
           bar.style.background = pct >= 100 ? "#f87171" : pct >= 75 ? "#fbbf24" : "#4ade80";
 
           // Links
-          var linksWrap = document.getElementById("sticky-detail-links-wrap");
-          var linksEl = document.getElementById("sticky-detail-links");
+          var linksWrap = document.getElementById("sd-links-wrap");
+          var linksEl = document.getElementById("sd-links");
           linksEl.innerHTML = "";
           if (it.links && it.links.length) {
             it.links.forEach(function (lk) {
               var a = document.createElement("a");
               a.href = lk.url; a.target = "_blank"; a.rel = "noopener";
               a.textContent = lk.label || lk.url;
-              a.style.cssText = "font-size:.8rem; color:#7dd3fc; text-decoration:none; word-break:break-all;";
+              a.style.cssText = "font-size:.78rem;color:#7dd3fc;text-decoration:none;word-break:break-all;";
               linksEl.appendChild(a);
             });
             linksWrap.style.display = "";
           } else { linksWrap.style.display = "none"; }
 
-          // Activity
-          var actWrap = document.getElementById("sticky-detail-activity-wrap");
-          var actEl = document.getElementById("sticky-detail-activity");
-          actEl.innerHTML = "";
-          var acts = (it.activity || []).filter(function (a) { return a.body || a.committed_hours > 0; });
-          if (acts.length) {
-            acts.forEach(function (ac) {
-              var d = document.createElement("div");
-              d.style.cssText = "font-size:.75rem; color:#cbd5e1; border-left:2px solid #334155; padding-left:.5rem;";
-              var ts = ac.created_at ? ac.created_at.substring(0, 16).replace("T", " ") : "";
-              var move = (ac.from_column && ac.to_column && ac.from_column !== ac.to_column)
-                ? " · " + colLabel(ac.from_column) + " → " + colLabel(ac.to_column) : "";
-              var hrs = ac.committed_hours > 0 ? " · +" + ac.committed_hours.toFixed(1) + "h" : "";
-              d.innerHTML = '<span style="color:#64748b">' + ts + move + hrs + "</span>"
-                + (ac.body ? '<div style="margin-top:.2rem">' + ac.body.substring(0, 120) + "</div>" : "");
-              actEl.appendChild(d);
-            });
-            actWrap.style.display = "";
-          } else { actWrap.style.display = "none"; }
+          renderActivity(it.activity || []);
 
-          // Board link (member board anchored to this sticky)
-          var boardUrl = "/scrum/sprint/" + (sprintId || "{{ sprint_id }}") + "/board?assignee=" + encodeURIComponent(it.assignee) + "#kb-item-" + it.id;
-          document.getElementById("sticky-detail-board-link").href = boardUrl;
+          // Stand-up form — only for In Progress stickies
+          var noteWrap = document.getElementById("sd-note-wrap");
+          noteWrap.style.display = (it.kanban_column === "doing") ? "" : "none";
+          document.getElementById("sd-note-body").value = "";
+          document.getElementById("sd-note-hrs").value = "0";
+          document.getElementById("sd-save-msg").textContent = "";
+
+          // Board link
+          document.getElementById("sd-board-link").href =
+            "/scrum/sprint/{{ sprint_id }}/board?assignee=" + encodeURIComponent(it.assignee) + "#kb-item-" + it.id;
 
           dlg.showModal();
         })
         .catch(function () { alert("Could not load sticky details."); });
     }
 
-    document.getElementById("sticky-detail-close").addEventListener("click", function () { dlg.close(); });
+    // Save stand-up update
+    document.getElementById("sd-save-btn").addEventListener("click", function () {
+      if (!currentItem) return;
+      var note = document.getElementById("sd-note-body").value.trim();
+      var hrs = parseFloat(document.getElementById("sd-note-hrs").value) || 0;
+      if (!note && hrs <= 0) {
+        document.getElementById("sd-save-msg").style.color = "#f87171";
+        document.getElementById("sd-save-msg").textContent = "Enter a note or hours.";
+        return;
+      }
+      var btn = document.getElementById("sd-save-btn");
+      btn.disabled = true;
+      postJson(noteUrl, {
+        item_id: currentItem.id,
+        sprint_id: {{ sprint_id }},
+        assignee: currentItem.assignee,
+        note: note,
+        committed_hours: hrs,
+      }).then(function (res) {
+        btn.disabled = false;
+        if (res.ok) {
+          document.getElementById("sd-save-msg").style.color = "#4ade80";
+          document.getElementById("sd-save-msg").textContent = "Saved!";
+          document.getElementById("sd-note-body").value = "";
+          document.getElementById("sd-note-hrs").value = "0";
+          // Refresh activity
+          currentItem.burnt_hours += hrs;
+          currentItem.burn_pct = currentItem.estimate_hours > 0
+            ? Math.round((currentItem.burnt_hours / currentItem.estimate_hours) * 100) : 0;
+          var newAct = { body: note, committed_hours: hrs, from_column: "doing", to_column: "doing",
+                         created_at: new Date().toISOString() };
+          currentItem.activity = [newAct].concat(currentItem.activity || []);
+          renderActivity(currentItem.activity);
+          // Update burn display
+          var pct = currentItem.burn_pct;
+          document.getElementById("sd-burn-pct").textContent = pct + "%  Task burn";
+          document.getElementById("sd-burn-meta").textContent =
+            currentItem.burnt_hours.toFixed(1) + "h logged · " + currentItem.estimate_hours.toFixed(1) + "h est.";
+          document.getElementById("sd-burnt-bar").style.width = Math.min(pct, 100) + "%";
+          document.getElementById("sd-burnt-bar").style.background = pct >= 100 ? "#f87171" : pct >= 75 ? "#fbbf24" : "#4ade80";
+        } else {
+          document.getElementById("sd-save-msg").style.color = "#f87171";
+          document.getElementById("sd-save-msg").textContent = (res.j && res.j.error) || "Error saving.";
+        }
+      }).catch(function () {
+        btn.disabled = false;
+        document.getElementById("sd-save-msg").style.color = "#f87171";
+        document.getElementById("sd-save-msg").textContent = "Network error.";
+      });
+    });
+
+    document.getElementById("sd-close").addEventListener("click", function () { dlg.close(); });
     dlg.addEventListener("click", function (e) { if (e.target === dlg) dlg.close(); });
 
     document.addEventListener("click", function (e) {
@@ -1150,10 +1263,7 @@
       e.preventDefault();
       var href = chip.getAttribute("href") || "";
       var idMatch = href.match(/#kb-item-(\d+)/);
-      var sprintMatch = href.match(/sprint_id=(\d+)/);
-      if (idMatch) {
-        openPopup(parseInt(idMatch[1], 10), null, sprintMatch ? sprintMatch[1] : null);
-      }
+      if (idMatch) openPopup(parseInt(idMatch[1], 10));
     });
   })();
   </script>
