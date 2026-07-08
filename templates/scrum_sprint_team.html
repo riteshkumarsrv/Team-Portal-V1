@@ -1018,4 +1018,143 @@
     }
   })();
   </script>
+
+  {# ── Sticky detail popup modal ──────────────────────────────────────────── #}
+  <dialog id="sticky-detail-dialog" style="
+    border:none; border-radius:16px; padding:0; max-width:420px; width:95vw;
+    background:#0f1828; color:#e2e8f0; box-shadow:0 24px 64px rgba(0,0,0,.7);
+  ">
+    <div style="padding:1.1rem 1.25rem 0.8rem; position:relative;">
+      <button id="sticky-detail-close" style="
+        position:absolute; top:.6rem; right:.8rem; background:none; border:none;
+        color:#94a3b8; font-size:1.3rem; cursor:pointer; line-height:1;" aria-label="Close">✕</button>
+      <div id="sticky-detail-kind" style="display:inline-block; padding:.18rem .55rem; border-radius:6px;
+        font-size:.72rem; font-weight:600; margin-bottom:.45rem; background:#7c3aed; color:#fff;"></div>
+      <h3 id="sticky-detail-title" style="margin:0 0 .3rem; font-size:1rem; font-weight:700; color:#f1f5f9; line-height:1.35;"></h3>
+      <div style="font-size:.78rem; color:#94a3b8; margin-bottom:.6rem;">
+        <span id="sticky-detail-assignee"></span>
+        <span id="sticky-detail-area" style="margin-left:.6rem; color:#7dd3fc;"></span>
+      </div>
+      <div style="display:flex; gap:.5rem; align-items:center; margin-bottom:.75rem; flex-wrap:wrap;">
+        <span id="sticky-detail-est" style="font-size:.8rem; color:#cbd5e1;"></span>
+        <span style="color:#475569">·</span>
+        <span id="sticky-detail-burnt" style="font-size:.8rem; color:#fde68a;"></span>
+        <span style="color:#475569">·</span>
+        <span id="sticky-detail-pct" style="font-size:.8rem; font-weight:600;"></span>
+      </div>
+
+      {# Burn bar #}
+      <div style="background:rgba(255,255,255,.07); border-radius:4px; height:6px; margin-bottom:.85rem; overflow:hidden;">
+        <div id="sticky-detail-bar" style="height:100%; border-radius:4px; transition:width .4s;"></div>
+      </div>
+
+      {# Links #}
+      <div id="sticky-detail-links-wrap" style="margin-bottom:.8rem; display:none;">
+        <div style="font-size:.72rem; color:#64748b; margin-bottom:.3rem; letter-spacing:.04em;">ATTACHED LINKS</div>
+        <div id="sticky-detail-links" style="display:flex; flex-direction:column; gap:.3rem;"></div>
+      </div>
+
+      {# Activity #}
+      <div id="sticky-detail-activity-wrap" style="margin-bottom:.5rem; display:none;">
+        <div style="font-size:.72rem; color:#64748b; margin-bottom:.3rem; letter-spacing:.04em;">RECENT ACTIVITY</div>
+        <div id="sticky-detail-activity" style="display:flex; flex-direction:column; gap:.4rem; max-height:180px; overflow-y:auto;"></div>
+      </div>
+
+      <div style="margin-top:.8rem; text-align:right;">
+        <a id="sticky-detail-board-link" href="#" style="font-size:.78rem; color:#818cf8;">Open on board ↗</a>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+  (function () {
+    var dlg = document.getElementById("sticky-detail-dialog");
+    var detailUrl = "{{ url_for('scrum_api_item_detail') }}";
+    var boardBase = "{{ url_for('scrum_sprint_team', sprint_id=sprint_id) }}".replace("/team", "");
+
+    function colLabel(c) {
+      return c === "doing" ? "In progress" : c === "do" ? "To DO" : c === "backlog" ? "Backlog" : c === "done" ? "Done" : c;
+    }
+
+    function openPopup(itemId, assignee, sprintId) {
+      fetch(detailUrl + "?item_id=" + itemId)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok) return;
+          var it = data.item;
+          document.getElementById("sticky-detail-kind").textContent = it.kind_label;
+          document.getElementById("sticky-detail-kind").style.background = it.kind_color;
+          document.getElementById("sticky-detail-title").textContent = it.title;
+          document.getElementById("sticky-detail-assignee").textContent = it.assignee;
+          document.getElementById("sticky-detail-area").textContent = it.area ? "· " + it.area : "";
+          document.getElementById("sticky-detail-est").textContent = it.estimate_hours.toFixed(1) + "h est.";
+          document.getElementById("sticky-detail-burnt").textContent = it.burnt_hours.toFixed(1) + "h logged";
+          var pctEl = document.getElementById("sticky-detail-pct");
+          pctEl.textContent = it.burn_pct + "% burn";
+          pctEl.style.color = it.burn_pct >= 100 ? "#f87171" : it.burn_pct >= 75 ? "#fbbf24" : "#4ade80";
+          var bar = document.getElementById("sticky-detail-bar");
+          var pct = Math.min(it.burn_pct, 120);
+          bar.style.width = Math.min(pct, 100) + "%";
+          bar.style.background = pct >= 100 ? "#f87171" : pct >= 75 ? "#fbbf24" : "#4ade80";
+
+          // Links
+          var linksWrap = document.getElementById("sticky-detail-links-wrap");
+          var linksEl = document.getElementById("sticky-detail-links");
+          linksEl.innerHTML = "";
+          if (it.links && it.links.length) {
+            it.links.forEach(function (lk) {
+              var a = document.createElement("a");
+              a.href = lk.url; a.target = "_blank"; a.rel = "noopener";
+              a.textContent = lk.label || lk.url;
+              a.style.cssText = "font-size:.8rem; color:#7dd3fc; text-decoration:none; word-break:break-all;";
+              linksEl.appendChild(a);
+            });
+            linksWrap.style.display = "";
+          } else { linksWrap.style.display = "none"; }
+
+          // Activity
+          var actWrap = document.getElementById("sticky-detail-activity-wrap");
+          var actEl = document.getElementById("sticky-detail-activity");
+          actEl.innerHTML = "";
+          var acts = (it.activity || []).filter(function (a) { return a.body || a.committed_hours > 0; });
+          if (acts.length) {
+            acts.forEach(function (ac) {
+              var d = document.createElement("div");
+              d.style.cssText = "font-size:.75rem; color:#cbd5e1; border-left:2px solid #334155; padding-left:.5rem;";
+              var ts = ac.created_at ? ac.created_at.substring(0, 16).replace("T", " ") : "";
+              var move = (ac.from_column && ac.to_column && ac.from_column !== ac.to_column)
+                ? " · " + colLabel(ac.from_column) + " → " + colLabel(ac.to_column) : "";
+              var hrs = ac.committed_hours > 0 ? " · +" + ac.committed_hours.toFixed(1) + "h" : "";
+              d.innerHTML = '<span style="color:#64748b">' + ts + move + hrs + "</span>"
+                + (ac.body ? '<div style="margin-top:.2rem">' + ac.body.substring(0, 120) + "</div>" : "");
+              actEl.appendChild(d);
+            });
+            actWrap.style.display = "";
+          } else { actWrap.style.display = "none"; }
+
+          // Board link (member board anchored to this sticky)
+          var boardUrl = "/scrum/sprint/" + (sprintId || "{{ sprint_id }}") + "/board?assignee=" + encodeURIComponent(it.assignee) + "#kb-item-" + it.id;
+          document.getElementById("sticky-detail-board-link").href = boardUrl;
+
+          dlg.showModal();
+        })
+        .catch(function () { alert("Could not load sticky details."); });
+    }
+
+    document.getElementById("sticky-detail-close").addEventListener("click", function () { dlg.close(); });
+    dlg.addEventListener("click", function (e) { if (e.target === dlg) dlg.close(); });
+
+    document.addEventListener("click", function (e) {
+      var chip = e.target.closest(".scrum-doing-chip-link");
+      if (!chip) return;
+      e.preventDefault();
+      var href = chip.getAttribute("href") || "";
+      var idMatch = href.match(/#kb-item-(\d+)/);
+      var sprintMatch = href.match(/sprint_id=(\d+)/);
+      if (idMatch) {
+        openPopup(parseInt(idMatch[1], 10), null, sprintMatch ? sprintMatch[1] : null);
+      }
+    });
+  })();
+  </script>
 {% endblock %}
