@@ -1127,26 +1127,44 @@
       var el = document.getElementById("sd-activity");
       var wrap = document.getElementById("sd-activity-wrap");
       el.innerHTML = "";
-      var shown = acts.filter(function (a) { return a.body || a.committed_hours > 0; });
+      var shown = acts.filter(function (a) { return (a.body || a.note) || (a.committed_hours || 0) > 0; });
       if (!shown.length) { wrap.style.display = "none"; return; }
       shown.forEach(function (ac) {
         var d = document.createElement("div");
         d.style.cssText = "background:rgba(255,255,255,.04);border-radius:8px;padding:.4rem .55rem;";
-        var hrsHtml = ac.committed_hours > 0
-          ? '<span style="display:inline-block;background:rgba(56,189,248,.15);color:#7dd3fc;border-radius:4px;padding:.05rem .35rem;font-size:.72rem;margin-left:.35rem;">+' + ac.committed_hours.toFixed(1) + 'h</span>' : "";
+        var ch = parseFloat(ac.committed_hours || 0);
+        var hrsHtml = ch > 0
+          ? '<span style="display:inline-block;background:rgba(56,189,248,.15);color:#7dd3fc;border-radius:4px;padding:.05rem .35rem;font-size:.72rem;margin-left:.35rem;">+' + ch.toFixed(1) + 'h</span>' : "";
+        var bodyText = (ac.body || ac.note || "").toString();
         d.innerHTML = '<div style="font-size:.75rem;color:#7dd3fc;">' + fmtTs(ac.created_at) + hrsHtml + '</div>'
-          + (ac.body ? '<div style="font-size:.78rem;color:#cbd5e1;margin-top:.2rem;">' + ac.body.replace(/</g,"&lt;") + '</div>' : "");
+          + (bodyText ? '<div style="font-size:.78rem;color:#cbd5e1;margin-top:.2rem;">' + bodyText.replace(/</g,"&lt;") + '</div>' : "");
         el.appendChild(d);
       });
       wrap.style.display = "";
     }
 
     function openPopup(itemId) {
-      fetch(detailUrl + "?item_id=" + itemId)
+      fetch(detailUrl + "?item_id=" + itemId + "&sprint_id={{ sprint_id }}")
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) { alert("Could not load sticky."); return; }
           var it = data.item;
+          // Normalise field names from the existing endpoint payload
+          it.kind_color  = it.kind_color_hex || it.kind_color || "#64748b";
+          it.burnt_hours = parseFloat(it.committed_logged_hours || it.burnt_hours || 0);
+          it.burn_pct    = parseFloat(it.burn_pct || 0);
+          it.kanban_column = it.kanban_column || "";
+          it.area = it.area || "";
+          // Build unified activity list from activity_log + standup_updates
+          var rawActs = (data.activity_log || []).concat(data.standup_updates || []);
+          rawActs.sort(function (a, b) {
+            return (b.created_at || "").localeCompare(a.created_at || "");
+          });
+          it._acts = rawActs;
+          // Links from attachments array if present
+          it.links = (it.attachments || []).map(function (a) {
+            return { label: a.label || a.url || a.filename, url: a.url || a.preview_url || "#" };
+          });
           currentItem = it;
 
           dlg.style.setProperty("--sd-sk", it.kind_color);
@@ -1154,8 +1172,8 @@
           var kindEl = document.getElementById("sd-kind");
           kindEl.textContent = it.kind_label;
           kindEl.style.background = it.kind_color;
-          document.getElementById("sd-est").textContent = it.estimate_hours.toFixed(1) + "h est.";
-          document.getElementById("sd-area").textContent = it.area || "";
+          document.getElementById("sd-est").textContent = parseFloat(it.estimate_hours || 0).toFixed(1) + "h est.";
+          document.getElementById("sd-area").textContent = it.area;
           document.getElementById("sd-area").style.display = it.area ? "" : "none";
 
           // Burn
@@ -1164,8 +1182,8 @@
           pctEl.textContent = pct + "%  Task burn";
           pctEl.style.color = pct >= 100 ? "#f87171" : pct >= 75 ? "#fbbf24" : "#e2e8f0";
           document.getElementById("sd-burn-meta").textContent =
-            it.burnt_hours.toFixed(1) + "h logged · " + it.estimate_hours.toFixed(1) + "h est.";
-          document.getElementById("sd-bar-max").textContent = it.estimate_hours.toFixed(1) + "H";
+            it.burnt_hours.toFixed(1) + "h logged · " + parseFloat(it.estimate_hours || 0).toFixed(1) + "h est.";
+          document.getElementById("sd-bar-max").textContent = parseFloat(it.estimate_hours || 0).toFixed(1) + "H";
           var bar = document.getElementById("sd-burnt-bar");
           bar.style.width = Math.min(pct, 100) + "%";
           bar.style.background = pct >= 100 ? "#f87171" : pct >= 75 ? "#fbbf24" : "#4ade80";
@@ -1185,7 +1203,7 @@
             linksWrap.style.display = "";
           } else { linksWrap.style.display = "none"; }
 
-          renderActivity(it.activity || []);
+          renderActivity(it._acts);
 
           // Stand-up form — only for In Progress stickies
           var noteWrap = document.getElementById("sd-note-wrap");
@@ -1234,8 +1252,8 @@
             ? Math.round((currentItem.burnt_hours / currentItem.estimate_hours) * 100) : 0;
           var newAct = { body: note, committed_hours: hrs, from_column: "doing", to_column: "doing",
                          created_at: new Date().toISOString() };
-          currentItem.activity = [newAct].concat(currentItem.activity || []);
-          renderActivity(currentItem.activity);
+          currentItem._acts = [newAct].concat(currentItem._acts || []);
+          renderActivity(currentItem._acts);
           // Update burn display
           var pct = currentItem.burn_pct;
           document.getElementById("sd-burn-pct").textContent = pct + "%  Task burn";
