@@ -8647,7 +8647,7 @@ def build_sprint_export_xlsx_bytes(
             int(cnt.get("done", 0)),
             float(m["est_total_hours"]),
             float(m["committed_total_hours"]),
-            "; ".join(str(x) for x in (m.get("doing_preview") or [])),
+            "; ".join(str(x.get("title", x) if isinstance(x, dict) else x) for x in (m.get("doing_preview") or [])),
         ] + day_vals
         # Columns (1-based) that hold percentage values from _xlsx_pct_disp (stored as 0–1 float)
         # col 3 = Sprint burnt %, 4 = NDY%, 5 = FSY%, 6 = CODE%, 13 = Improvement%, 14 = P&T%
@@ -9258,10 +9258,10 @@ def _sprint_team_overview_rows(
             counts[col] = counts.get(col, 0) + 1
         done_n = counts["done"]
         doing_preview = [
-            str(t[0] or "").strip()
+            {"id": t[0], "title": str(t[1] or "").strip()}
             for t in conn.execute(
                 """
-                SELECT title FROM scrum_sprint_item
+                SELECT id, title FROM scrum_sprint_item
                 WHERE sprint_id = ? AND assignee = ? AND lower(trim(kanban_column)) = 'doing'
                 ORDER BY sort_order, id LIMIT 4
                 """,

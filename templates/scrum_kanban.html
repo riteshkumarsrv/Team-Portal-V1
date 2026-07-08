@@ -366,6 +366,7 @@
             {% for card in cards_by_col[col] %}
               <div
                 class="scrum-sticky"
+                id="kb-item-{{ card.id }}"
                 style="--sk: {{ card.kind_color_hex }};"
                 draggable="true"
                 data-item-id="{{ card.id }}"
@@ -2220,6 +2221,25 @@
         });
       });
     });
+  })();
+  </script>
+  <script>
+  // ── Highlight sticky from #kb-item-NNN anchor (linked from Team Overview chips) ──
+  (function () {
+    function highlightAnchor() {
+      var hash = window.location.hash;
+      if (!hash || !hash.startsWith("#kb-item-")) return;
+      var el = document.querySelector(hash);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("kb-item-highlight");
+      setTimeout(function () { el.classList.remove("kb-item-highlight"); }, 2800);
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", highlightAnchor);
+    } else {
+      highlightAnchor();
+    }
   })();
   </script>
 

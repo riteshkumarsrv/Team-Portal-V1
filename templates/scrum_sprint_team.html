@@ -665,7 +665,15 @@
                 {% if m.doing_preview %}
                   <div class="scrum-doing-stack">
                     {% for t in m.doing_preview %}
-                      <span class="scrum-doing-chip" title="{{ t }}">{{ t[:48] }}{% if t|length > 48 %}…{% endif %}</span>
+                      {% set t_title = t.title if t is mapping else t %}
+                      {% set t_id = t.id if t is mapping else none %}
+                      {% if t_id %}
+                        <a class="scrum-doing-chip scrum-doing-chip-link"
+                           href="{{ url_for('scrum_member_board', sprint_id=sprint_id, assignee=m.name) }}#kb-item-{{ t_id }}"
+                           title="Open sticky: {{ t_title }}">{{ t_title[:48] }}{% if t_title|length > 48 %}…{% endif %}</a>
+                      {% else %}
+                        <span class="scrum-doing-chip" title="{{ t_title }}">{{ t_title[:48] }}{% if t_title|length > 48 %}…{% endif %}</span>
+                      {% endif %}
                     {% endfor %}
                   </div>
                 {% else %}
