@@ -709,7 +709,7 @@
                     <button type="button" class="btn secondary small kb-add-note scrum-note-save" data-item-id="{{ card.id }}">Save update</button>
                   </div>
                 {% endif %}
-                {% if col == 'do' %}
+                {% if col in ('do', 'backlog') %}
                 <div class="scrum-sticky-actions scrum-sticky-actions-footer" draggable="false" onmousedown="event.stopPropagation();">
                   <form
                     method="post"
