@@ -1161,10 +1161,19 @@
             return (b.created_at || "").localeCompare(a.created_at || "");
           });
           it._acts = rawActs;
-          // Links from attachments array if present
-          it.links = (it.attachments || []).map(function (a) {
-            return { label: a.label || a.url || a.filename, url: a.url || a.preview_url || "#" };
-          });
+          // Links: attachments where rel_path is a URL (is_link==true)
+          it.links = (it.attachments || [])
+            .filter(function (a) { return a.is_link || (a.rel_path || "").match(/^https?:\/\//); })
+            .map(function (a) {
+              var url   = a.rel_path || a.url || "#";
+              var label = (a.original_filename || a.label || "").trim();
+              if (!label || label === url) {
+                // shorten raw URL to a readable hostname + path
+                try { var u = new URL(url); label = u.hostname + (u.pathname !== "/" ? u.pathname : ""); }
+                catch(e) { label = url.slice(0, 60); }
+              }
+              return { label: label, url: url };
+            });
           currentItem = it;
 
           dlg.style.setProperty("--sd-sk", it.kind_color);
@@ -1195,9 +1204,12 @@
           if (it.links && it.links.length) {
             it.links.forEach(function (lk) {
               var a = document.createElement("a");
-              a.href = lk.url; a.target = "_blank"; a.rel = "noopener";
-              a.textContent = lk.label || lk.url;
-              a.style.cssText = "font-size:.78rem;color:#7dd3fc;text-decoration:none;word-break:break-all;";
+              a.href = lk.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+              a.textContent = "\uD83D\uDD17 " + (lk.label || lk.url);
+              a.title = lk.url;
+              a.style.cssText = "display:block;font-size:.78rem;color:#7dd3fc;word-break:break-all;padding:.1rem 0;border-bottom:1px solid rgba(125,211,252,.12);";
+              a.onmouseover = function(){ this.style.textDecoration="underline"; };
+              a.onmouseout  = function(){ this.style.textDecoration="none"; };
               linksEl.appendChild(a);
             });
             linksWrap.style.display = "";
