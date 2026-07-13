@@ -14541,6 +14541,37 @@ def create_app() -> Flask:
             flash("Unknown sprint.", "error")
             return redirect(url_for("scrum"))
         # Deleting is allowed even when the sprint is closed or past end (hub + team cleanup).
+        # Explicit cascade since SQLite foreign_keys pragma is off.
+        item_ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM scrum_sprint_item WHERE sprint_id = ?", (sid,)
+            ).fetchall()
+        ]
+        if item_ids:
+            ph = ",".join("?" * len(item_ids))
+            conn.execute(f"DELETE FROM scrum_item_activity     WHERE item_id IN ({ph})", item_ids)
+            conn.execute(f"DELETE FROM scrum_item_appreciation WHERE item_id IN ({ph})", item_ids)
+            conn.execute(f"DELETE FROM scrum_item_linked_file  WHERE item_id IN ({ph})", item_ids)
+            conn.execute(f"DELETE FROM scrum_item_checklist    WHERE item_id IN ({ph})", item_ids)
+            conn.execute(f"DELETE FROM scrum_sprint_item_attachment WHERE item_id IN ({ph})", item_ids)
+            conn.execute(
+                f"UPDATE scrum_daily_task SET sprint_item_id = NULL WHERE sprint_item_id IN ({ph})",
+                item_ids,
+            )
+            conn.execute(
+                f"UPDATE scrum_portal_proposal SET item_id = NULL WHERE item_id IN ({ph})",
+                item_ids,
+            )
+            # scrum_item_activity__m exists only on some DBs (migration artifact)
+            try:
+                conn.execute(f"DELETE FROM scrum_item_activity__m WHERE item_id IN ({ph})", item_ids)
+            except Exception:  # noqa: BLE001
+                pass
+        conn.execute("DELETE FROM scrum_sprint_item         WHERE sprint_id = ?", (sid,))
+        conn.execute("DELETE FROM scrum_sprint_member_goal  WHERE sprint_id = ?", (sid,))
+        conn.execute("DELETE FROM scrum_portal_proposal     WHERE sprint_id = ?", (sid,))
+        conn.execute("UPDATE scrum_daily_task SET sprint_id = NULL WHERE sprint_id = ?", (sid,))
         conn.execute("DELETE FROM scrum_sprint WHERE id = ? AND team_id = ?", (sid, team_id))
         conn.commit()
         conn.close()
