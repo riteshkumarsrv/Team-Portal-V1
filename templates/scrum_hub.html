@@ -10,7 +10,6 @@
     <div class="scrum-hub-hero-top">
       <div class="scrum-hub-hero-top-lede scrum-hub-hero-title-actions">
         <h2 class="page-heading scrum-hub-hero-team-title">{{ active_team_name or "Team" }}</h2>
-        <a class="btn secondary small scrum-hub-leave-dashboard" href="{{ url_for('dashboard') }}">Leave tracker</a>
       </div>
       {% if manager_logged_in and manager_teams %}
         {% set tp_prefix = "scrum-hub-" %}
